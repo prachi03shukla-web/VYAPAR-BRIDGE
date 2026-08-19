@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { MessageSquare, X, Send, Bot, Loader2, Sparkles, SendHorizontal } from 'lucide-react';
+import { MessageSquare, X, Send, Bot, Loader2, Sparkles, SendHorizontal, Settings, Key, Check } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { BRAND_LOGO_SRC, BRAND_NAME } from '../constants/brandLogo';
@@ -7,10 +7,14 @@ import { BRAND_LOGO_SRC, BRAND_NAME } from '../constants/brandLogo';
 export const AIChatbotWidget: React.FC = () => {
   const navigate = useNavigate();
   const [isOpen, setIsOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [customApiKey, setCustomApiKey] = useState(() => localStorage.getItem('user_gemini_api_key') || '');
+  const [keySavedToast, setKeySavedToast] = useState(false);
+
   const [messages, setMessages] = useState<{ role: 'user' | 'assistant'; text: string }[]>([
     {
       role: 'assistant',
-      text: '🙏 **Namaste! Main Vyapar Bridge AI Assistant hoon.**\n\nAap mujhse Vyapar Bridge App use karne, Profile banana, Post top par lane, Payment & Verification, aur India ke B2B Trade (Software, Hardware, Plastics, Leather, Textiles, FMCG, Ceramics, etc.) ke baare mein kuch bhi pooch sakte hain!'
+      text: '🙏 **Namaste! Main Vyapar Bridge Gemini AI Assistant hoon.**\n\nAap mujhse Vyapar Bridge App use karne, Profile banana, Post top par lane, Payment & Verification ke alawa **General Knowledge, Business Strategy, Science, Coding ya koi bhi sawal** pooch sakte hain!'
     }
   ]);
   const [input, setInput] = useState('');
@@ -31,7 +35,20 @@ export const AIChatbotWidget: React.FC = () => {
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages, isOpen]);
+  }, [messages, isOpen, isSettingsOpen]);
+
+  const saveCustomKey = () => {
+    if (customApiKey.trim()) {
+      localStorage.setItem('user_gemini_api_key', customApiKey.trim());
+    } else {
+      localStorage.removeItem('user_gemini_api_key');
+    }
+    setKeySavedToast(true);
+    setTimeout(() => {
+      setKeySavedToast(false);
+      setIsSettingsOpen(false);
+    }, 1200);
+  };
 
   const handleLinkClick = (e: React.MouseEvent<HTMLDivElement>) => {
     let target = e.target as HTMLElement;
@@ -51,6 +68,68 @@ export const AIChatbotWidget: React.FC = () => {
         }
       }
     }
+  };
+
+  // Direct Gemini REST API Call for Vercel Client-Side Real AI
+  const callGeminiDirectly = async (userQuery: string, history: { role: string; text: string }[]): Promise<string | null> => {
+    const apiKey = (
+      customApiKey ||
+      import.meta.env.VITE_GEMINI_API_KEY ||
+      process.env.GEMINI_API_KEY ||
+      process.env.VITE_GEMINI_API_KEY ||
+      localStorage.getItem('user_gemini_api_key') ||
+      ''
+    ).trim();
+
+    if (!apiKey) return null;
+
+    const systemInstruction = `You are a helpful, all-knowing Gemini AI Assistant integrated into "Vyapar Bridge" - India's B2B & B2C Multi-Industry Business Network.
+
+Your core capabilities:
+1. General Knowledge AI: You can answer ANY general question the user asks (Science, Math, Coding, Business, History, Daily Life, Jokes, Marketing, etc.) just like standard Google Gemini or ChatGPT.
+2. Vyapar Bridge App Support: You provide direct, helpful answers to Indian business owners, factories, dealers, software providers, hardware traders, plastics/leather manufacturers, photographers, video studios, and buyers.
+
+APP FREQUENTLY ASKED QUESTIONS (FAQ):
+- Profile Creation: Click "Login/Register", select role (Factory, Dealer, Customer). Go to Profile -> Edit Profile to add Company Name, GST Number, Logo & PDF Catalogue.
+- Posting & Reels: Click "+ Post" on top bar. Upload Photos, Videos, PDF Catalogues, or Text. Click "✨ AI Auto-Hashtag" for auto hashtags. For Reels, go to "Reels" tab, click "Publish Reel".
+- Getting Posts to Top: Get Verified Blue Badge (Payment tab), use AI hashtags, post video reels, and stay active daily.
+- Payment & Blue Badge: Go to "Payment / Verified Badge" tab. Select Plan (Monthly ₹99, Yearly ₹1,188). Scan UPI QR, enter 12-digit UTR ID. Verified within 24 hours.
+- Direct Trade & Contact: Click WhatsApp or Phone icon on any post or profile to chat directly. Browse all verified Indian suppliers in "Members" tab.
+
+Instructions:
+- Reply in warm, conversational Hindi / Hinglish / English depending on the user's input language.
+- Format responses cleanly with bolding (**text**) and bullet points where helpful.
+- If the user asks general questions unrelated to the app, answer completely and accurately like standard Gemini AI.`;
+
+    const conversationText = history.slice(-6).map(h => `${h.role.toUpperCase()}: ${h.text}`).join('\n');
+    const fullPrompt = `${systemInstruction}\n\n${conversationText ? 'CONVERSATION HISTORY:\n' + conversationText + '\n\n' : ''}USER QUESTION: ${userQuery}\nASSISTANT:`;
+
+    const modelsToTry = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'];
+
+    for (const model of modelsToTry) {
+      try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: fullPrompt }] }]
+          })
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          const candidateText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (candidateText && candidateText.trim()) {
+            return candidateText.trim();
+          }
+        }
+      } catch (e) {
+        console.warn(`Gemini direct API model ${model} attempt note:`, e);
+      }
+    }
+
+    return null;
   };
 
   // Comprehensive, intelligent Hindi/Hinglish/English AI Assistant Engine for Vyapar Bridge App Usage & Trade
@@ -190,7 +269,7 @@ export const AIChatbotWidget: React.FC = () => {
     }
 
     // 8. General Intelligent Fallback
-    return `⚠️ **Gemini AI Connection Error:**\n\nAgar aap Vercel par hain, to kripya Vercel ke Environment Variables me \`GEMINI_API_KEY\` set karein. Jab tak API key set nahi hogi, main sirf app ki basic jankari de sakta hoon.\n\nMain aapki help kar sakta hoon:\n- 👤 **Profile kaise banayein**\n- 📢 **Post kaise daalein**\n- 💳 **Payment & Badge**\n\n(Aapka sawal: "${userQuery}")`;
+    return `🤖 **Vyapar Bridge Gemini AI:**\n\nAap vyapar bridge ke kisi bhi feature (Profile, Post, Reel, Verification) ke baare me pooch sakte hain!\n\n💡 **Tip for Vercel:** Agar aap Vercel par full Gemini AI capabilities chahte hain, to Chat Header par ⚙️ **Settings** icon dabakar apni Gemini API Key paste karein!`;
   };
 
   const handleSend = async (textToSend?: string) => {
@@ -228,12 +307,21 @@ export const AIChatbotWidget: React.FC = () => {
           }
         }
       } catch (apiErr) {
-        // Fall through to instant smart on-device engine
+        // Fall through to client-side direct Gemini call
       }
 
-      // 2. If server didn't provide a direct answer, use smart conversational AI engine
+      // 2. If server endpoint was not available, try direct client-side Gemini REST API
       if (!responseReceived) {
-        await new Promise((res) => setTimeout(res, 400));
+        const directReply = await callGeminiDirectly(userText, history);
+        if (directReply) {
+          setMessages((prev) => [...prev, { role: 'assistant', text: directReply }]);
+          responseReceived = true;
+        }
+      }
+
+      // 3. Fallback to smart conversational AI engine
+      if (!responseReceived) {
+        await new Promise((res) => setTimeout(res, 300));
         const aiAnswer = generateCommerceAIResponse(userText);
         setMessages((prev) => [...prev, { role: 'assistant', text: aiAnswer }]);
       }
@@ -267,7 +355,7 @@ export const AIChatbotWidget: React.FC = () => {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 20, scale: 0.95 }}
             transition={{ duration: 0.2 }}
-            className="mb-4 w-[92vw] sm:w-96 bg-zinc-900 text-white rounded-2xl shadow-2xl border border-amber-500/40 overflow-hidden flex flex-col max-h-[520px]"
+            className="mb-4 w-[92vw] sm:w-96 bg-zinc-900 text-white rounded-2xl shadow-2xl border border-amber-500/40 overflow-hidden flex flex-col max-h-[530px]"
           >
             {/* Header */}
             <div className="bg-gradient-to-r from-amber-600 via-yellow-600 to-amber-700 p-3.5 flex items-center justify-between text-white shadow-md">
@@ -281,101 +369,158 @@ export const AIChatbotWidget: React.FC = () => {
                 </div>
                 <div>
                   <h3 className="font-bold text-sm leading-tight flex items-center gap-1.5">
-                    <span>{BRAND_NAME} AI</span>
+                    <span>{BRAND_NAME} Gemini AI</span>
                     <span className="px-1.5 py-0.2 bg-black/40 border border-amber-300/50 rounded-full text-[9px] text-amber-200">
                       LIVE
                     </span>
                   </h3>
-                  <p className="text-amber-100 text-[11px]">B2B App Guide & Support Assistant</p>
+                  <p className="text-amber-100 text-[11px]">General Knowledge & B2B AI Guide</p>
                 </div>
               </div>
-              <button
-                onClick={() => setIsOpen(false)}
-                className="p-1.5 hover:bg-black/30 rounded-full transition-colors active:scale-95 cursor-pointer text-white"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setIsSettingsOpen(!isSettingsOpen)}
+                  title="Gemini API Key Settings"
+                  className="p-1.5 hover:bg-black/30 rounded-full transition-colors active:scale-95 cursor-pointer text-white"
+                >
+                  <Settings className="w-4 h-4 text-amber-200 hover:text-white" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsOpen(false)}
+                  className="p-1.5 hover:bg-black/30 rounded-full transition-colors active:scale-95 cursor-pointer text-white"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
             </div>
 
-            {/* Chat Area */}
-            <div className="flex-1 p-3.5 overflow-y-auto bg-zinc-950/90 space-y-3 min-h-[280px] max-h-[340px]">
-              {messages.map((msg, idx) => (
-                <div
-                  key={idx}
-                  className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-                  onClick={handleLinkClick}
-                >
-                  <div
-                    className={`max-w-[88%] rounded-2xl px-3.5 py-2.5 text-xs sm:text-sm whitespace-pre-wrap leading-relaxed ${
-                      msg.role === 'user'
-                        ? 'bg-gradient-to-r from-amber-500 to-amber-600 text-black font-semibold rounded-tr-none shadow-md'
-                        : 'bg-zinc-900 border border-amber-500/30 text-zinc-100 rounded-tl-none shadow-sm'
-                    }`}
+            {/* Settings Overlay View */}
+            {isSettingsOpen ? (
+              <div className="p-4 bg-zinc-950 text-xs space-y-3 min-h-[300px]">
+                <div className="flex items-center gap-2 text-amber-400 font-bold border-b border-zinc-800 pb-2">
+                  <Key className="w-4 h-4" />
+                  <span>Gemini API Key Setup (Vercel & Client)</span>
+                </div>
+                <p className="text-zinc-300 leading-relaxed">
+                  Agar aapne app Vercel par deploy ki hai, to yahan apni Google Gemini API Key add karke pure <strong>Gemini AI</strong> ko live activate kar sakte hain:
+                </p>
+                <div>
+                  <label className="block text-[11px] text-zinc-400 mb-1">Gemini API Key:</label>
+                  <input
+                    type="password"
+                    value={customApiKey}
+                    onChange={(e) => setCustomApiKey(e.target.value)}
+                    placeholder="AIzaSy..."
+                    className="w-full bg-zinc-900 border border-zinc-700 text-white rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                  />
+                </div>
+                {keySavedToast && (
+                  <div className="flex items-center gap-1.5 text-emerald-400 font-bold text-xs">
+                    <Check className="w-4 h-4" /> Key Saved Successfully! Activating Gemini AI...
+                  </div>
+                )}
+                <div className="flex justify-end gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsSettingsOpen(false)}
+                    className="px-3 py-1.5 bg-zinc-800 text-zinc-300 rounded-lg hover:bg-zinc-700 cursor-pointer"
                   >
+                    Back to Chat
+                  </button>
+                  <button
+                    type="button"
+                    onClick={saveCustomKey}
+                    className="px-4 py-1.5 bg-gradient-to-r from-amber-500 to-yellow-500 text-black font-bold rounded-lg hover:from-amber-400 hover:to-yellow-400 cursor-pointer shadow"
+                  >
+                    Save Key
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                {/* Chat Area */}
+                <div className="flex-1 p-3.5 overflow-y-auto bg-zinc-950/90 space-y-3 min-h-[280px] max-h-[340px]">
+                  {messages.map((msg, idx) => (
                     <div
-                      className="chatbot-message-content"
-                      dangerouslySetInnerHTML={{
-                        __html: msg.text
-                          .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-                          .replace(/\*(.*?)\*/g, '<em>$1</em>')
-                          .replace(/\[([^\]]*)\]\(([^)]+)\)/g, '<a href="$2" class="text-amber-400 font-semibold underline hover:text-amber-300 mx-0.5">$1</a>')
-                          .replace(/\n/g, '<br />')
-                      }}
+                      key={idx}
+                      className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                      onClick={handleLinkClick}
+                    >
+                      <div
+                        className={`max-w-[88%] rounded-2xl px-3.5 py-2.5 text-xs sm:text-sm whitespace-pre-wrap leading-relaxed ${
+                          msg.role === 'user'
+                            ? 'bg-gradient-to-r from-amber-500 to-amber-600 text-black font-semibold rounded-tr-none shadow-md'
+                            : 'bg-zinc-900 border border-amber-500/30 text-zinc-100 rounded-tl-none shadow-sm'
+                        }`}
+                      >
+                        <div
+                          className="chatbot-message-content"
+                          dangerouslySetInnerHTML={{
+                            __html: msg.text
+                              .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                              .replace(/\*(.*?)\*/g, '<em>$1</em>')
+                              .replace(/\[([^\]]*)\]\(([^)]+)\)/g, '<a href="$2" class="text-amber-400 font-semibold underline hover:text-amber-300 mx-0.5">$1</a>')
+                              .replace(/\n/g, '<br />')
+                          }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                  {isLoading && (
+                    <div className="flex justify-start">
+                      <div className="bg-zinc-900 border border-amber-500/30 rounded-2xl rounded-tl-none px-3.5 py-2.5 shadow-sm flex items-center space-x-2">
+                        <Loader2 className="w-4 h-4 text-amber-400 animate-spin" />
+                        <span className="text-xs text-zinc-400">Vyapar Gemini AI is thinking...</span>
+                      </div>
+                    </div>
+                  )}
+                  <div ref={messagesEndRef} />
+                </div>
+
+                {/* Quick Prompt Chips */}
+                <div className="px-3 py-2 bg-zinc-900/80 border-t border-zinc-800 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+                  {quickPrompts.map((prompt, pIdx) => (
+                    <button
+                      key={pIdx}
+                      onClick={() => handleSend(prompt)}
+                      disabled={isLoading}
+                      className="whitespace-nowrap px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 active:scale-95 border border-zinc-700 hover:border-amber-500/50 rounded-full text-[10px] sm:text-xs text-zinc-300 hover:text-amber-300 transition-all cursor-pointer disabled:opacity-50"
+                    >
+                      {prompt}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Input Area */}
+                <div className="p-2.5 bg-zinc-900 border-t border-zinc-800">
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      handleSend();
+                    }}
+                    className="flex items-center space-x-2"
+                  >
+                    <input
+                      type="text"
+                      value={input}
+                      onChange={(e) => setInput(e.target.value)}
+                      placeholder="Ask anything (App guide, Science, Math, Business)..."
+                      className="flex-1 bg-zinc-800 text-white placeholder-zinc-400 text-xs sm:text-sm rounded-full px-3.5 py-2 focus:outline-none focus:ring-2 focus:ring-amber-500 transition-all border border-zinc-700"
+                      disabled={isLoading}
                     />
-                  </div>
+                    <button
+                      type="submit"
+                      disabled={!input.trim() || isLoading}
+                      className="p-2 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-black font-bold rounded-full disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-md active:scale-95 cursor-pointer"
+                    >
+                      <Send className="w-4 h-4" />
+                    </button>
+                  </form>
                 </div>
-              ))}
-              {isLoading && (
-                <div className="flex justify-start">
-                  <div className="bg-zinc-900 border border-amber-500/30 rounded-2xl rounded-tl-none px-3.5 py-2.5 shadow-sm flex items-center space-x-2">
-                    <Loader2 className="w-4 h-4 text-amber-400 animate-spin" />
-                    <span className="text-xs text-zinc-400">Vyapar AI is thinking...</span>
-                  </div>
-                </div>
-              )}
-              <div ref={messagesEndRef} />
-            </div>
-
-            {/* Quick Prompt Chips */}
-            <div className="px-3 py-2 bg-zinc-900/80 border-t border-zinc-800 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
-              {quickPrompts.map((prompt, pIdx) => (
-                <button
-                  key={pIdx}
-                  onClick={() => handleSend(prompt)}
-                  disabled={isLoading}
-                  className="whitespace-nowrap px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 active:scale-95 border border-zinc-700 hover:border-amber-500/50 rounded-full text-[10px] sm:text-xs text-zinc-300 hover:text-amber-300 transition-all cursor-pointer disabled:opacity-50"
-                >
-                  {prompt}
-                </button>
-              ))}
-            </div>
-
-            {/* Input Area */}
-            <div className="p-2.5 bg-zinc-900 border-t border-zinc-800">
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  handleSend();
-                }}
-                className="flex items-center space-x-2"
-              >
-                <input
-                  type="text"
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  placeholder="Ask 'profile kaise banaye', 'post top kaise kare'..."
-                  className="flex-1 bg-zinc-800 text-white placeholder-zinc-400 text-xs sm:text-sm rounded-full px-3.5 py-2 focus:outline-none focus:ring-2 focus:ring-amber-500 transition-all border border-zinc-700"
-                  disabled={isLoading}
-                />
-                <button
-                  type="submit"
-                  disabled={!input.trim() || isLoading}
-                  className="p-2 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-black font-bold rounded-full disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-md active:scale-95 cursor-pointer"
-                >
-                  <Send className="w-4 h-4" />
-                </button>
-              </form>
-            </div>
+              </>
+            )}
           </motion.div>
         )}
       </AnimatePresence>
