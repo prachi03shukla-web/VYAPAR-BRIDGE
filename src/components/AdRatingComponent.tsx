@@ -7,31 +7,58 @@ export function AdRatingComponent({ ad, onRate }: { ad: any, onRate: (adId: stri
   const [hoverRating, setHoverRating] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   
-  // Try to check if user already rated this session (mocking)
-  const [hasRated, setHasRated] = useState(false);
+  // Check if user already rated this banner in localStorage
+  const [hasRated, setHasRated] = useState(() => {
+    try {
+      return localStorage.getItem(`rated_ad_${ad?.id}`) === 'true';
+    } catch (e) {
+      return false;
+    }
+  });
 
-  const averageRating = ad?.ratingCount ? (ad.totalRating / ad.ratingCount).toFixed(1) : '0.0';
+  const ratingVal = ad?.ratingCount ? (ad.totalRating / ad.ratingCount) : (ad?.rating || 4.9);
+  const averageRating = Number(ratingVal).toFixed(1);
 
   const handleRate = async (rating: number) => {
     if (hasRated || isSubmitting) return;
     
     setIsSubmitting(true);
     try {
-      const res = await fetch(`/api/advertisement/${ad.id}/rate`, {
+      const currentTotal = (Number(ad?.totalRating) || (Number(ad?.rating || 4.9) * 5)) + rating;
+      const currentCount = (Number(ad?.ratingCount) || 5) + 1;
+      
+      const updatedAd = {
+        ...ad,
+        totalRating: currentTotal,
+        ratingCount: currentCount,
+        rating: (currentTotal / currentCount).toFixed(1)
+      };
+
+      try {
+        localStorage.setItem(`rated_ad_${ad?.id}`, 'true');
+      } catch (e) {}
+
+      toast.success(`⭐ Rated ${rating} Stars! Thank you for rating this banner.`);
+      setHasRated(true);
+      onRate(ad.id, rating, updatedAd);
+
+      // Async backend call (non-blocking for static Vercel)
+      fetch(`/api/advertisement/${ad.id}/rate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ rating })
+      }).then(async (res) => {
+        if (res.ok) {
+          const data = await res.json();
+          if (data.success && data.ad) {
+            onRate(ad.id, rating, data.ad);
+          }
+        }
+      }).catch(err => {
+        console.warn('Backend ad rating sync note:', err);
       });
-      const data = await res.json();
-      if (data.success) {
-        toast.success(`You rated this ad ${rating} stars!`);
-        setHasRated(true);
-        onRate(ad.id, rating, data.ad);
-      } else {
-        toast.error('Failed to submit rating.');
-      }
     } catch (e) {
-      toast.error('Error submitting rating.');
+      console.error('Error submitting rating:', e);
     } finally {
       setIsSubmitting(false);
     }

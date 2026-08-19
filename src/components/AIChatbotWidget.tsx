@@ -180,9 +180,13 @@ export const AIChatbotWidget: React.FC = () => {
       q.includes('hardware') ||
       q.includes('software') ||
       q.includes('plastic') ||
-      q.includes('leather')
+      q.includes('leather') ||
+      q.includes('photo') ||
+      q.includes('video') ||
+      q.includes('camera') ||
+      q.includes('studio')
     ) {
-      return `🏭 **Vyapar Bridge Multi-Industry B2B Rate Index:**\n\n- 🧱 **Tiles & Ceramics (600x1200 GVT):** ₹22 - ₹36 / sq.ft\n- 🚽 **Sanitaryware One-Piece Closet:** ₹1,800 - ₹3,500 / pc\n- 💻 **B2B Billing & POS Software:** Factory Direct Custom Plans\n- 🔩 **Hardware & Power Tools:** Bulk Wholesale Factory Discount\n- 🧪 **Plastic & Polymers Raw Material:** Ex-Factory Bulk Quotes\n- 👞 **Leather & Footwear Goods:** Kanpur/Agra Wholesale Rates\n\nDirect factory rates ke liye **Members** tab se Verified Manufacturer se baat karein!`;
+      return `🏭 **Vyapar Bridge Multi-Industry B2B Rate Index:**\n\n- 🧱 **Tiles & Ceramics (600x1200 GVT):** ₹22 - ₹36 / sq.ft\n- 🚽 **Sanitaryware One-Piece Closet:** ₹1,800 - ₹3,500 / pc\n- 📸 **Product & Catalog Photography:** ₹150 - ₹500 / product shoot\n- 🚁 **Industrial & Drone Videography:** ₹5,000 - ₹25,000 / day shoot\n- 💻 **B2B Billing & POS Software:** Factory Direct Custom Plans\n- 🔩 **Hardware & Power Tools:** Bulk Wholesale Factory Discount\n- 🧪 **Plastic & Polymers Raw Material:** Ex-Factory Bulk Quotes\n- 👞 **Leather & Footwear Goods:** Kanpur/Agra Wholesale Rates\n\nDirect factory rates ke liye **Members** tab se Verified Manufacturer se baat karein!`;
     }
 
     // 8. General Intelligent Fallback

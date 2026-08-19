@@ -137,6 +137,23 @@ export const ALL_INDUSTRIES: IndustryHub[] = [
       { id: 'staples_grains', name: 'Grains, Rice & Pulses (दाल/चावल)', hindiName: 'अनाज, दाल व चावल', description: 'Basmati rice, wheat, pulses, chana, atta, maida, suji', tags: ['rice', 'wheat', 'dal', 'pulse', 'atta', 'grain', 'chana', 'flour'] },
       { id: 'spices_dryfruits', name: 'Spices & Dry Fruits (मसाले/मेवे)', hindiName: 'मसाले व ड्राई फ्रूट्स', description: 'Cardamom, clove, turmeric, almonds, cashews, raisins', tags: ['spice', 'dry fruits', 'masala', 'kaju', 'badam', 'haldi', 'mirch'] },
     ]
+  },
+  {
+    id: 'photography_media_studios',
+    name: 'Photography, Video Production & Studio Services',
+    shortName: 'Photography & Studio',
+    hindiName: 'फोटोग्राफी, वीडियो शूटिंग व स्टूडियो सेवाएं',
+    icon: '📸',
+    badge: 'Photography & Studio Hub',
+    color: 'from-violet-600 to-fuchsia-700',
+    description: 'Commercial product photography, industrial video shoots, drone surveys, camera & studio equipment, video editing & album printing',
+    subcategories: [
+      { id: 'all_photography', name: 'All Photography & Video Services', hindiName: 'सभी फोटोग्राफी व वीडियो सेवाएं', description: 'Complete commercial product shoots, industrial videos and studio work', tags: ['photography', 'photographer', 'video', 'shoot', 'studio', 'camera', 'photo'] },
+      { id: 'product_catalog_photography', name: 'Commercial Product & Catalog Photography', hindiName: 'प्रोडक्ट व कैटलॉग फोटोग्राफी', description: 'Tiles, machinery, shoes, garments, jewelry, e-commerce catalog shoots', tags: ['product photography', 'catalog shoot', 'ecommerce photography', 'tiles photography', 'model shoot', 'photoshoot'] },
+      { id: 'industrial_drone_videography', name: 'Industrial, Factory & Drone Videography', hindiName: 'इंडस्ट्रियल, फैक्ट्री व ड्रोन शूट', description: 'Factory walk-through videos, site construction videos, aerial 4K drone shoots', tags: ['industrial video', 'factory shoot', 'drone shoot', 'drone survey', 'site video', 'videography'] },
+      { id: 'cameras_lenses_studio_equipment', name: 'Cameras, Lenses, Lighting & Studio Equipment', hindiName: 'कैमरा, लेंस, लाइट व स्टूडियो उपकरण', description: 'DSLRs, mirrorless cameras, cinema lenses, softbox studio lights, gimbals, tripods', tags: ['camera', 'lens', 'studio light', 'softbox', 'gimbal', 'tripod', 'dslr', 'lighting'] },
+      { id: 'video_editing_album_printing', name: 'Video Editing, Album Printing & Framing', hindiName: 'वीडियो एडिटिंग, एल्बम प्रिंटिंग व फ्रेमिंग', description: '4K video editing, photobook album printing, LED walls, digital framing, color grading', tags: ['video editing', 'album printing', 'photobook', 'led wall', 'color grading', 'framing', 'album'] },
+    ]
   }
 ];
 
@@ -208,5 +225,11 @@ export const ALL_CATEGORY_OPTIONS: string[] = [
   'Spices & Dry Fruits (मसाले/मेवे)',
   'Edible Oils & Desi Ghee (तेल/घी)',
   'Corrugated Boxes & Cartons',
-  'Agro Seeds & Bio Fertilizers'
+  'Agro Seeds & Bio Fertilizers',
+
+  // Photography, Video & Studio Services
+  'Commercial Product & Catalog Photography (प्रोडक्ट व कैटलॉग फोटो)',
+  'Industrial, Factory & Drone Videography (फैक्ट्री व ड्रोन शूट)',
+  'Cameras, Lenses, Lighting & Studio Equipment (कैमरा व स्टूडियो सामान)',
+  'Video Editing, Album Printing & Framing (वीडियो एडिटिंग व एल्बम)'
 ];
