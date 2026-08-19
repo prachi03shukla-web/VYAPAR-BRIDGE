@@ -3936,13 +3936,31 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
     const isVideoFile = pendingReelFile.type.startsWith('video') || /\.(mp4|webm|mov|m4v|mkv)$/i.test(pendingReelFile.name);
     const mediaType = isVideoFile ? 'video' : 'image';
 
+    // Convert file to resilient Data URL for persistent storage on Vercel/Firestore
+    let persistentMediaUrl = '';
+    try {
+      if (!isVideoFile) {
+        persistentMediaUrl = await optimizeImageForPersistence(pendingReelFile);
+      } else {
+        persistentMediaUrl = await fileToDataURL(pendingReelFile);
+      }
+    } catch (e) {
+      console.warn('Reel file conversion note:', e);
+    }
+
+    const resolvedMediaUrl = persistentMediaUrl || (reelPreviewUrl && !reelPreviewUrl.startsWith('blob:') ? reelPreviewUrl : '');
+
+    const authorName = user?.name || currentUser?.name || localStorage.getItem('vyapar_user_name') || 'Vyapar Member';
+    const authorAvatar = user?.avatarUrl || user?.avatar || currentUser?.avatarUrl || currentUser?.avatar || BRAND_LOGO_SRC;
+    const authorRole = user?.role || currentUser?.role || 'factory';
+
     const authorUser = {
-      id: String(user.id),
-      name: user.name || 'Verified Member',
-      avatarUrl: user.avatarUrl || user.avatar || BRAND_LOGO_SRC,
-      avatar: user.avatarUrl || user.avatar || BRAND_LOGO_SRC,
-      role: user.role || 'factory',
-      isVerified: Boolean(user.isVerified)
+      id: String(user?.id || currentUser?.id || `user_${Date.now()}`),
+      name: authorName,
+      avatarUrl: authorAvatar,
+      avatar: authorAvatar,
+      role: authorRole,
+      isVerified: Boolean(user?.isVerified || currentUser?.isVerified)
     };
 
     try {
@@ -3950,7 +3968,7 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
       formData.append('title', 'New B2B Reel');
       formData.append('content', 'Uploaded from Home Reels');
       formData.append('hashtags', '#reel #b2b #tiles #products');
-      formData.append('userId', String(user.id));
+      formData.append('userId', authorUser.id);
       formData.append('userName', authorUser.name);
       formData.append('userRole', authorUser.role);
       formData.append('userAvatar', authorUser.avatarUrl);
@@ -4001,14 +4019,15 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
         const finalReelPost = publishedPost ? {
           ...publishedPost,
           type: publishedPost.type || mediaType,
-          mediaUrl: publishedPost.mediaUrl || reelPreviewUrl || '',
-          thumbnailUrl: publishedPost.thumbnailUrl || publishedPost.mediaUrl || reelPreviewUrl || '',
+          mediaUrl: resolvedMediaUrl || (publishedPost.mediaUrl && !publishedPost.mediaUrl.startsWith('blob:') ? publishedPost.mediaUrl : ''),
+          thumbnailUrl: resolvedMediaUrl || publishedPost.thumbnailUrl || '',
+          persistentMediaUrl: resolvedMediaUrl,
           user: publishedPost.user && publishedPost.user.name ? publishedPost.user : authorUser,
           userAvatar: authorUser.avatarUrl,
           music: publishedPost.music || musicObj
         } : {
           id: reelId,
-          userId: String(user.id),
+          userId: authorUser.id,
           userName: authorUser.name,
           userRole: authorUser.role,
           userAvatar: authorUser.avatarUrl,
@@ -4016,8 +4035,9 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
           content: 'Uploaded from Home Reels',
           hashtags: '#reel #b2b #tiles #products',
           type: mediaType,
-          mediaUrl: reelPreviewUrl || '',
-          thumbnailUrl: reelPreviewUrl || '',
+          mediaUrl: resolvedMediaUrl,
+          thumbnailUrl: resolvedMediaUrl,
+          persistentMediaUrl: resolvedMediaUrl,
           category: 'Commercial Wholesale',
           visibility: 'public',
           status: 'approved',
@@ -4634,14 +4654,14 @@ function CreatePost({ user }: { user: any }) {
     const generatedId = `post_${Date.now()}`;
 
     // Generate persistent base64 media URL if file is present
-    let persistentMediaUrl = filePreview || '';
-    let persistentThumbnailUrl = thumbnailPreview || filePreview || '';
+    let persistentMediaUrl = '';
+    let persistentThumbnailUrl = '';
     if (file) {
       try {
         if (!isVideo && !isPdf) {
           persistentMediaUrl = await optimizeImageForPersistence(file);
           persistentThumbnailUrl = persistentMediaUrl;
-        } else if (isPdf) {
+        } else {
           persistentMediaUrl = await fileToDataURL(file);
         }
       } catch (e) {
@@ -4654,13 +4674,18 @@ function CreatePost({ user }: { user: any }) {
       } catch (e) {}
     }
 
+    const authorName = user?.name || user?.companyName || user?.username || localStorage.getItem('vyapar_user_name') || 'Vyapar Member';
+    const authorAvatar = user?.avatarUrl || user?.avatar || localStorage.getItem('vyapar_user_avatar') || BRAND_LOGO_SRC;
+    const authorRole = user?.role || 'factory';
+
     const formData = new FormData();
     formData.append('title', title);
     formData.append('content', content);
     formData.append('hashtags', hashtags);
     formData.append('userId', String(user.id));
-    formData.append('userName', user.name || 'Verified Member');
-    formData.append('userRole', user.role || 'factory');
+    formData.append('userName', authorName);
+    formData.append('userRole', authorRole);
+    formData.append('userAvatar', authorAvatar);
     formData.append('type', postMediaType);
     formData.append('visibility', visibility);
     if (visibility === 'scheduled' && scheduledAt) {
@@ -4679,7 +4704,7 @@ function CreatePost({ user }: { user: any }) {
         hashtags,
         mediaType: postMediaType,
         userId: user.id,
-        userRole: user.role
+        userRole: authorRole
       });
 
       let isPendingApproval = false;
@@ -4711,26 +4736,32 @@ function CreatePost({ user }: { user: any }) {
         console.warn('Backend API note, using direct Firestore sync:', networkErr);
       }
 
+      const finalMedia = persistentMediaUrl || (filePreview && !filePreview.startsWith('blob:') ? filePreview : '');
+      const finalThumb = persistentThumbnailUrl || finalMedia;
+
       // Direct resilient Firestore and Local state sync
       const finalPostData = savedPost ? {
         ...savedPost,
-        mediaUrl: (persistentMediaUrl || (savedPost.mediaUrl && !savedPost.mediaUrl.startsWith('blob:') && !savedPost.mediaUrl.startsWith('/uploads') ? savedPost.mediaUrl : '') || savedPost.mediaUrl || ''),
-        thumbnailUrl: (persistentThumbnailUrl || persistentMediaUrl || (savedPost.thumbnailUrl && !savedPost.thumbnailUrl.startsWith('blob:') && !savedPost.thumbnailUrl.startsWith('/uploads') ? savedPost.thumbnailUrl : '') || savedPost.thumbnailUrl || ''),
+        userName: savedPost.userName || authorName,
+        userRole: savedPost.userRole || authorRole,
+        mediaUrl: (persistentMediaUrl || (savedPost.mediaUrl && !savedPost.mediaUrl.startsWith('blob:') && !savedPost.mediaUrl.startsWith('/uploads') ? savedPost.mediaUrl : '') || finalMedia),
+        thumbnailUrl: (persistentThumbnailUrl || persistentMediaUrl || (savedPost.thumbnailUrl && !savedPost.thumbnailUrl.startsWith('blob:') && !savedPost.thumbnailUrl.startsWith('/uploads') ? savedPost.thumbnailUrl : '') || finalThumb),
         status: isPendingApproval ? 'pending' : (savedPost.status || 'approved'),
         pending_admin_approval: isPendingApproval,
         aiFlagReason: aiFlagReason || null
       } : {
         id: generatedId,
         userId: String(user.id),
-        userName: user.name || 'Verified Member',
-        userRole: user.role || 'factory',
+        userName: authorName,
+        userRole: authorRole,
         title: title || '',
         content: content || '',
         description: content || '',
         hashtags: hashtags || '#vyaparbridge #tiles #business',
         type: postMediaType,
-        mediaUrl: persistentMediaUrl || filePreview || '',
-        thumbnailUrl: persistentThumbnailUrl || persistentMediaUrl || filePreview || '',
+        mediaUrl: finalMedia,
+        thumbnailUrl: finalThumb,
+        persistentMediaUrl: persistentMediaUrl,
         category: 'Commercial Wholesale',
         visibility: visibility || 'public',
         status: isPendingApproval ? 'pending' : 'approved',
@@ -4741,8 +4772,10 @@ function CreatePost({ user }: { user: any }) {
         createdAt: Date.now(),
         user: {
           id: String(user.id),
-          name: user.name || 'Member',
-          role: user.role || 'factory',
+          name: authorName,
+          avatar: authorAvatar,
+          avatarUrl: authorAvatar,
+          role: authorRole,
           isVerified: Boolean(user?.isVerified)
         }
       };
@@ -7130,14 +7163,16 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
       }
 
       const adminPostId = `post_admin_${Date.now()}`;
-      let persistentMediaUrl = mediaPreview || '';
-      let persistentThumbnailUrl = mediaPreview || '';
+      let persistentMediaUrl = '';
+      let persistentThumbnailUrl = '';
 
       if (mediaFile) {
         try {
           if (mediaType !== 'video') {
             persistentMediaUrl = await optimizeImageForPersistence(mediaFile);
             persistentThumbnailUrl = persistentMediaUrl;
+          } else {
+            persistentMediaUrl = await fileToDataURL(mediaFile);
           }
         } catch (mediaErr) {
           console.warn('Admin post media optimization note:', mediaErr);
@@ -10605,12 +10640,30 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
     const isVideoFile = pendingFile.type.startsWith('video') || /\.(mp4|webm|mov|m4v|mkv)$/i.test(pendingFile.name);
     const mediaType = isVideoFile ? 'video' : 'image';
 
+    // Convert file to Base64 Data URL for persistent Vercel & Firestore sync
+    let persistentMediaUrl = '';
+    try {
+      if (!isVideoFile) {
+        persistentMediaUrl = await optimizeImageForPersistence(pendingFile);
+      } else {
+        persistentMediaUrl = await fileToDataURL(pendingFile);
+      }
+    } catch (e) {
+      console.warn('Reel file conversion note:', e);
+    }
+
+    const resolvedMediaUrl = persistentMediaUrl || (previewUrl && !previewUrl.startsWith('blob:') ? previewUrl : '');
+
+    const authorName = currentUser?.name || currentUser?.companyName || currentUser?.username || localStorage.getItem('vyapar_user_name') || 'Vyapar Member';
+    const authorAvatar = currentUser?.avatarUrl || currentUser?.avatar || localStorage.getItem('vyapar_user_avatar') || BRAND_LOGO_SRC;
+    const authorRole = currentUser?.role || 'factory';
+
     const authorUser = {
       id: String(currentUser.id),
-      name: currentUser.name || 'Verified Member',
-      avatarUrl: currentUser.avatarUrl || currentUser.avatar || BRAND_LOGO_SRC,
-      avatar: currentUser.avatarUrl || currentUser.avatar || BRAND_LOGO_SRC,
-      role: currentUser.role || 'factory',
+      name: authorName,
+      avatarUrl: authorAvatar,
+      avatar: authorAvatar,
+      role: authorRole,
       isVerified: Boolean(currentUser.isVerified)
     };
 
@@ -10655,8 +10708,9 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
       const finalReel = publishedReel ? {
         ...publishedReel,
         type: publishedReel.type || mediaType,
-        mediaUrl: publishedReel.mediaUrl || previewUrl || '',
-        thumbnailUrl: publishedReel.thumbnailUrl || publishedReel.mediaUrl || previewUrl || '',
+        mediaUrl: resolvedMediaUrl || (publishedReel.mediaUrl && !publishedReel.mediaUrl.startsWith('blob:') ? publishedReel.mediaUrl : ''),
+        thumbnailUrl: resolvedMediaUrl || publishedReel.thumbnailUrl || '',
+        persistentMediaUrl: resolvedMediaUrl,
         user: publishedReel.user && publishedReel.user.name ? publishedReel.user : authorUser,
         userAvatar: authorUser.avatarUrl,
         music: publishedReel.music || musicObj
@@ -10670,8 +10724,9 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
         content: 'Uploaded from Reels',
         hashtags: '#reel #b2b #tiles #products',
         type: mediaType,
-        mediaUrl: previewUrl || '',
-        thumbnailUrl: previewUrl || '',
+        mediaUrl: resolvedMediaUrl,
+        thumbnailUrl: resolvedMediaUrl,
+        persistentMediaUrl: resolvedMediaUrl,
         category: 'Commercial Wholesale',
         visibility: 'public',
         status: 'approved',
@@ -12460,26 +12515,32 @@ function ProfilePage({
     const generatedId = `post_${Date.now()}`;
 
     // Convert file to Base64 data URL for resilient storage across Vercel & Firestore
-    let fileDataUrl = postFilePreview || '';
+    let fileDataUrl = '';
     if (postFile) {
       try {
         if (!isVideo && !isPdf) {
           fileDataUrl = await optimizeImageForPersistence(postFile);
-        } else if (isPdf) {
+        } else {
           fileDataUrl = await fileToDataURL(postFile);
         }
       } catch (e) {
-        fileDataUrl = postFilePreview || '';
+        console.warn('Profile post file conversion note:', e);
       }
     }
+
+    const resolvedProfileMedia = fileDataUrl || (postFilePreview && !postFilePreview.startsWith('blob:') ? postFilePreview : '');
+    const profileAuthorName = currentUser?.name || currentUser?.companyName || currentUser?.username || localStorage.getItem('vyapar_user_name') || 'Vyapar Member';
+    const profileAuthorAvatar = currentUser?.avatarUrl || currentUser?.avatar || localStorage.getItem('vyapar_user_avatar') || BRAND_LOGO_SRC;
+    const profileAuthorRole = currentUser?.role || 'factory';
 
     const formData = new FormData();
     formData.append('title', postTitle);
     formData.append('content', postContent);
     formData.append('hashtags', postHashtags || '#vyaparbridge #business');
     formData.append('userId', String(currentUser.id));
-    formData.append('userName', currentUser.name || 'Verified Member');
-    formData.append('userRole', currentUser.role || 'factory');
+    formData.append('userName', profileAuthorName);
+    formData.append('userRole', profileAuthorRole);
+    formData.append('userAvatar', profileAuthorAvatar);
     formData.append('type', postMediaType);
     if (postFile) {
       formData.append('media', postFile);
@@ -12527,23 +12588,26 @@ function ProfilePage({
 
       const finalProfilePost = savedPost ? {
         ...savedPost,
-        mediaUrl: (fileDataUrl || (savedPost.mediaUrl && !savedPost.mediaUrl.startsWith('blob:') && !savedPost.mediaUrl.startsWith('/uploads') ? savedPost.mediaUrl : '') || savedPost.mediaUrl || ''),
-        thumbnailUrl: (fileDataUrl || (savedPost.thumbnailUrl && !savedPost.thumbnailUrl.startsWith('blob:') && !savedPost.thumbnailUrl.startsWith('/uploads') ? savedPost.thumbnailUrl : '') || savedPost.thumbnailUrl || ''),
+        userName: savedPost.userName || profileAuthorName,
+        userRole: savedPost.userRole || profileAuthorRole,
+        mediaUrl: (resolvedProfileMedia || (savedPost.mediaUrl && !savedPost.mediaUrl.startsWith('blob:') && !savedPost.mediaUrl.startsWith('/uploads') ? savedPost.mediaUrl : '') || ''),
+        thumbnailUrl: (resolvedProfileMedia || (savedPost.thumbnailUrl && !savedPost.thumbnailUrl.startsWith('blob:') && !savedPost.thumbnailUrl.startsWith('/uploads') ? savedPost.thumbnailUrl : '') || ''),
         status: isPendingApproval ? 'pending' : (savedPost.status || 'approved'),
         pending_admin_approval: isPendingApproval,
         aiFlagReason: aiFlagReason || null
       } : {
         id: generatedId,
         userId: String(currentUser.id),
-        userName: currentUser.name || 'Verified Member',
-        userRole: currentUser.role || 'factory',
+        userName: profileAuthorName,
+        userRole: profileAuthorRole,
         title: postTitle || '',
         content: postContent || '',
         description: postContent || '',
         hashtags: postHashtags || '#vyaparbridge #business',
         type: postMediaType,
-        mediaUrl: fileDataUrl || postFilePreview || '',
-        thumbnailUrl: fileDataUrl || postFilePreview || '',
+        mediaUrl: resolvedProfileMedia,
+        thumbnailUrl: resolvedProfileMedia,
+        persistentMediaUrl: resolvedProfileMedia,
         category: 'Commercial Wholesale',
         visibility: 'public',
         status: isPendingApproval ? 'pending' : 'approved',
@@ -12554,8 +12618,10 @@ function ProfilePage({
         createdAt: Date.now(),
         user: {
           id: String(currentUser.id),
-          name: currentUser.name || 'Verified Member',
-          role: currentUser.role || 'factory',
+          name: profileAuthorName,
+          avatar: profileAuthorAvatar,
+          avatarUrl: profileAuthorAvatar,
+          role: profileAuthorRole,
           isVerified: Boolean(currentUser?.isVerified)
         }
       };

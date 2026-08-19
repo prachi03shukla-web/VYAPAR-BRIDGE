@@ -85,16 +85,21 @@ export async function syncPostToFirestore(postData: any): Promise<boolean> {
   try {
     const postId = postData.id ? String(postData.id) : `post_${Date.now()}`;
     
-    // Ensure mediaUrl is a persistent cloud/data URL, not an ephemeral local /uploads link
+    // Ensure mediaUrl is a persistent cloud/data URL, not an ephemeral local /uploads link or blob URL
     let resolvedMediaUrl = postData.mediaUrl || '';
     if (resolvedMediaUrl.startsWith('/uploads') || resolvedMediaUrl.startsWith('blob:')) {
-      resolvedMediaUrl = postData.persistentMediaUrl || postData.fileDataUrl || postData.mediaBase64 || postData.thumbnailUrl || resolvedMediaUrl;
+      resolvedMediaUrl = postData.persistentMediaUrl || postData.fileDataUrl || postData.mediaBase64 || postData.thumbnailUrl || '';
+      if (resolvedMediaUrl.startsWith('blob:')) resolvedMediaUrl = '';
     }
+
+    let resolvedThumbnailUrl = postData.thumbnailUrl || resolvedMediaUrl || '';
+    if (resolvedThumbnailUrl.startsWith('blob:')) resolvedThumbnailUrl = '';
 
     const cleanData = sanitizeForFirestore({
       ...postData,
       id: postId,
       mediaUrl: resolvedMediaUrl,
+      thumbnailUrl: resolvedThumbnailUrl,
       updatedAt: Date.now(),
       createdAt: postData.createdAt || Date.now()
     });
@@ -148,7 +153,18 @@ export async function fetchPostsFromFirestore(): Promise<any[]> {
       const data = docSnap.data();
       if (data && docSnap.id) {
         const existing = postsMap.get(String(docSnap.id)) || {};
-        postsMap.set(String(docSnap.id), { ...existing, ...data, id: docSnap.id });
+        const merged = { ...existing, ...data, id: docSnap.id };
+        
+        // Clean up blob URLs if present
+        if (merged.mediaUrl && merged.mediaUrl.startsWith('blob:')) {
+          merged.mediaUrl = merged.persistentMediaUrl || merged.fileDataUrl || merged.thumbnailUrl || '';
+          if (merged.mediaUrl.startsWith('blob:')) merged.mediaUrl = '';
+        }
+        if (merged.thumbnailUrl && merged.thumbnailUrl.startsWith('blob:')) {
+          merged.thumbnailUrl = merged.mediaUrl || '';
+        }
+        
+        postsMap.set(String(docSnap.id), merged);
       }
     });
   } catch (error) {
@@ -202,7 +218,18 @@ export function subscribeToPostsFromFirestore(callback: (posts: any[]) => void):
         const data = docSnap.data();
         if (data && docSnap.id) {
           const existing = postsMap.get(String(docSnap.id)) || {};
-          postsMap.set(String(docSnap.id), { ...existing, ...data, id: docSnap.id });
+          const merged = { ...existing, ...data, id: docSnap.id };
+
+          // Clean up blob URLs if present
+          if (merged.mediaUrl && merged.mediaUrl.startsWith('blob:')) {
+            merged.mediaUrl = merged.persistentMediaUrl || merged.fileDataUrl || merged.thumbnailUrl || '';
+            if (merged.mediaUrl.startsWith('blob:')) merged.mediaUrl = '';
+          }
+          if (merged.thumbnailUrl && merged.thumbnailUrl.startsWith('blob:')) {
+            merged.thumbnailUrl = merged.mediaUrl || '';
+          }
+
+          postsMap.set(String(docSnap.id), merged);
         }
       });
 
