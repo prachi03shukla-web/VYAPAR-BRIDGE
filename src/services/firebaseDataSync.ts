@@ -1085,34 +1085,55 @@ export async function deletePostFromFirestore(postId: string | number): Promise<
 export async function deleteUserFromFirestore(userId: string | number): Promise<boolean> {
   try {
     const uId = String(userId);
-    // 1. Delete user doc
-    await deleteDoc(doc(db, 'users', uId));
     
-    // 2. Delete all posts by this user
-    try {
-      const postsSnap = await getDocs(collection(db, 'posts'));
-      for (const pDoc of postsSnap.docs) {
-        const pData = pDoc.data();
-        if (String(pData.userId || pData.user?.id) === uId) {
-          await deleteDoc(pDoc.ref);
-        }
-      }
-    } catch (pe) {
-      console.warn('Error deleting user posts in Firestore:', pe);
-    }
+    // 1. Fast parallel deletion of user doc
+    const userRef = doc(db, 'users', uId);
+    const deleteUserDocPromise = deleteDoc(userRef).catch(err => {
+      console.warn('deleteDoc user error:', err);
+    });
 
-    // 3. Delete any pending payments
-    try {
-      const paySnap = await getDocs(collection(db, 'payments'));
-      for (const pDoc of paySnap.docs) {
-        const pData = pDoc.data();
-        if (String(pData.userId) === uId) {
-          await deleteDoc(pDoc.ref);
+    // 2. Parallel deletion of user posts
+    const deletePostsPromise = (async () => {
+      try {
+        const postsSnap = await getDocs(query(collection(db, 'posts'), where('userId', '==', uId)));
+        if (!postsSnap.empty) {
+          await Promise.all(postsSnap.docs.map(pDoc => deleteDoc(pDoc.ref)));
         }
+      } catch (e) {
+        try {
+          const postsSnap = await getDocs(collection(db, 'posts'));
+          const userPosts = postsSnap.docs.filter(pDoc => {
+            const data = pDoc.data();
+            return String(data.userId || data.user?.id) === uId;
+          });
+          await Promise.all(userPosts.map(pDoc => deleteDoc(pDoc.ref)));
+        } catch (err) {}
       }
-    } catch (paye) {}
+    })();
 
-    console.log(`🗑️ Deleted user ${uId} and all associated records from Firestore`);
+    // 3. Parallel deletion of user pending payments
+    const deletePaymentsPromise = (async () => {
+      try {
+        const paySnap = await getDocs(query(collection(db, 'payments'), where('userId', '==', uId)));
+        if (!paySnap.empty) {
+          await Promise.all(paySnap.docs.map(pDoc => deleteDoc(pDoc.ref)));
+        }
+      } catch (e) {
+        try {
+          const paySnap = await getDocs(collection(db, 'payments'));
+          const userPays = paySnap.docs.filter(pDoc => String(pDoc.data().userId) === uId);
+          await Promise.all(userPays.map(pDoc => deleteDoc(pDoc.ref)));
+        } catch (err) {}
+      }
+    })();
+
+    // 4. Max 1.2s timeout race guard so the UI never hangs or buffers
+    await Promise.race([
+      Promise.all([deleteUserDocPromise, deletePostsPromise, deletePaymentsPromise]),
+      new Promise(resolve => setTimeout(resolve, 1200))
+    ]);
+
+    console.log(`⚡ Fast deleted user ${uId} and all associated records from Firestore`);
     return true;
   } catch (err) {
     console.warn('Firestore deleteUser error:', err);

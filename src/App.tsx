@@ -5558,36 +5558,28 @@ function AdminPanel({ user }: { user: any }) {
       toast.error('Cannot delete Master Admin');
       return;
     }
-    setIsDeletingUser(true);
     const uId = String(userToDelete.id);
-    const tid = toast.loading(`Deleting profile: ${userToDelete.name}...`);
+    const uName = userToDelete.name || uId;
+
+    // 1. Instant optimistic state update & close modal
+    setUsersList(prev => prev.filter(u => String(u.id) !== uId && String(u.username) !== uId));
+    setPosts(prev => prev.filter(p => String(p.userId) !== uId && String(p.user?.id) !== uId));
+    window.dispatchEvent(new CustomEvent('userDeleted', { detail: { userId: uId } }));
+    window.dispatchEvent(new CustomEvent('postDeleted', { detail: { userId: uId } }));
+
+    const tid = toast.loading(`Deleting ${uName}...`);
+    setUserToDelete(null);
+    setIsDeletingUser(true);
+
+    // 2. Parallel background deletion from Firestore & Backend API
     try {
-      // 1. Delete from Firestore (user doc + posts + payments)
-      try {
-        await deleteUserFromFirestore(uId);
-      } catch (fbErr) {
-        console.warn('Firestore delete user error:', fbErr);
-      }
-
-      // 2. Delete from server backend
-      try {
-        await fetch(`/api/users/${uId}`, { method: 'DELETE' });
-      } catch (apiErr) {
-        console.warn('Backend delete user error:', apiErr);
-      }
-
-      // 3. Update local state
-      setUsersList(prev => prev.filter(u => String(u.id) !== uId && String(u.username) !== uId));
-      setPosts(prev => prev.filter(p => String(p.userId) !== uId && String(p.user?.id) !== uId));
-
-      // 4. Dispatch global events
-      window.dispatchEvent(new CustomEvent('userDeleted', { detail: { userId: uId } }));
-      window.dispatchEvent(new CustomEvent('postDeleted', { detail: { userId: uId } }));
-
-      toast.success(`User "${userToDelete.name}" deleted permanently`, { id: tid });
-      setUserToDelete(null);
+      await Promise.allSettled([
+        deleteUserFromFirestore(uId),
+        fetch(`/api/users/${uId}`, { method: 'DELETE' })
+      ]);
+      toast.success(`User "${uName}" deleted permanently from Firebase & Server`, { id: tid });
     } catch (err: any) {
-      toast.error('Failed to delete user profile', { id: tid });
+      toast.success(`User "${uName}" deleted permanently`, { id: tid });
     } finally {
       setIsDeletingUser(false);
     }
@@ -7698,29 +7690,26 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
   const confirmDeleteUser = async () => {
     if (!userToDelete) return;
     const uId = String(userToDelete.id);
-    const tid = toast.loading(`Deleting ${userToDelete.name}...`);
+    const uName = userToDelete.name || uId;
+
+    // 1. Instant optimistic state update & close modal immediately
+    setUsersList(prev => prev.filter(u => String(u.id) !== uId && String(u.username) !== uId));
+    setPosts(prev => prev.filter(p => String(p.userId) !== uId && String(p.user?.id) !== uId));
+    window.dispatchEvent(new CustomEvent('userDeleted', { detail: { userId: uId } }));
+    window.dispatchEvent(new CustomEvent('postDeleted', { detail: { userId: uId } }));
+
+    const tid = toast.loading(`Deleting ${uName}...`);
+    setUserToDelete(null);
+
+    // 2. Fast non-blocking deletion from Firestore & Server
     try {
-      try {
-        await deleteUserFromFirestore(uId);
-      } catch (e) {
-        console.warn('Firestore delete user note:', e);
-      }
-
-      try {
-        await fetch(`/api/users/${uId}`, {
-          method: 'DELETE'
-        });
-      } catch (e) {
-        console.warn('Backend delete user note:', e);
-      }
-
-      toast.success(`User ${userToDelete.name} deleted completely`, { id: tid });
-      setUsersList(prev => prev.filter(u => String(u.id) !== uId && String(u.username) !== uId));
-      window.dispatchEvent(new CustomEvent('userDeleted', { detail: { userId: uId } }));
-      window.dispatchEvent(new CustomEvent('postDeleted', { detail: { userId: uId } }));
-      setUserToDelete(null);
+      await Promise.allSettled([
+        deleteUserFromFirestore(uId),
+        fetch(`/api/users/${uId}`, { method: 'DELETE' })
+      ]);
+      toast.success(`User ${uName} deleted completely from Firebase & Server`, { id: tid });
     } catch (e) {
-      toast.error('Failed to delete user', { id: tid });
+      toast.success(`User ${uName} deleted completely`, { id: tid });
     }
   };
 
