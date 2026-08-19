@@ -37,7 +37,11 @@ window.addEventListener('unhandledrejection', (event) => {
     msg.includes('The play() request was interrupted') ||
     msg.includes('Failed to fetch') ||
     msg.includes('Load failed') ||
-    msg.includes('NetworkError')
+    msg.includes('NetworkError') ||
+    msg.includes('Database is closing') ||
+    msg.includes('closing') ||
+    msg.includes('IndexedDB') ||
+    msg.includes('client is offline')
   ) {
     event.preventDefault();
   }
@@ -49,7 +53,11 @@ window.addEventListener('error', (event) => {
     msg.includes('The play() request was interrupted') ||
     msg.includes('Failed to fetch') ||
     msg.includes('Load failed') ||
-    msg.includes('NetworkError')
+    msg.includes('NetworkError') ||
+    msg.includes('Database is closing') ||
+    msg.includes('closing') ||
+    msg.includes('IndexedDB') ||
+    msg.includes('client is offline')
   ) {
     event.preventDefault();
   }

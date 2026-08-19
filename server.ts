@@ -40,86 +40,93 @@ async function uploadToFirebaseOrLocal(file: Express.Multer.File): Promise<strin
   return `/uploads/${file.filename}`;
 }
 
+  let isFirestoreQuotaExceeded = false;
+
   async function syncFromFirestore() {
-  if (!firestoreDb) return;
-  try {
-    const usersSnap = await getDocs(collection(firestoreDb, 'users'));
-    if (!usersSnap.empty) {
-      const fbUsers = usersSnap.docs.map(d => ({ ...d.data(), id: d.id }));
-      const existingUserIds = new Set(db.users.map(u => String(u.id)));
-      for (const u of fbUsers) {
-        if (!existingUserIds.has(String(u.id))) {
-          db.users.push(u);
-        } else {
-           const idx = db.users.findIndex(ex => String(ex.id) === String(u.id));
-           if (idx !== -1) db.users[idx] = { ...db.users[idx], ...u };
-        }
-      }
-      console.log(`🔄 Synced ${fbUsers.length} users from Firestore`);
-    }
-
-    const postsSnap = await getDocs(collection(firestoreDb, 'posts'));
-    if (!postsSnap.empty) {
-      const fbPosts = postsSnap.docs.map(d => ({ ...d.data(), id: d.id }));
-      const existingPostIds = new Set(db.posts.map(p => String(p.id)));
-      for (const p of fbPosts) {
-        if (!existingPostIds.has(String(p.id))) {
-          db.posts.push(p);
-        } else {
-          const idx = db.posts.findIndex(ex => String(ex.id) === String(p.id));
-          if (idx !== -1) db.posts[idx] = { ...db.posts[idx], ...p };
-        }
-      }
-      db.posts.sort((a, b) => {
-        const timeA = typeof a.createdAt === 'number' ? a.createdAt : new Date(a.createdAt || 0).getTime();
-        const timeB = typeof b.createdAt === 'number' ? b.createdAt : new Date(b.createdAt || 0).getTime();
-        return timeB - timeA;
-      });
-      console.log(`🔄 Synced ${fbPosts.length} posts from Firestore`);
-    }
-
-    const adsSnap = await getDocs(collection(firestoreDb, 'advertisements'));
-    if (!adsSnap.empty) {
-      const fbAds = adsSnap.docs.map(d => d.data());
-      if (!db.adminSettings) db.adminSettings = {};
-      if (!db.adminSettings.brandAdsList) db.adminSettings.brandAdsList = [];
-      const existingAdIds = new Set(db.adminSettings.brandAdsList.map(a => String(a.id)));
-      for (const a of fbAds) {
-        if (!existingAdIds.has(String(a.id))) {
-          db.adminSettings.brandAdsList.push(a);
-        } else {
-           const idx = db.adminSettings.brandAdsList.findIndex(ex => String(ex.id) === String(a.id));
-           if (idx !== -1) db.adminSettings.brandAdsList[idx] = { ...db.adminSettings.brandAdsList[idx], ...a };
-        }
-      }
-      console.log(`🔄 Synced ${fbAds.length} ads from Firestore`);
-    }
-
-    const likesSnap = await getDocs(collection(firestoreDb, 'likes'));
-    if (!likesSnap.empty) {
-      const fbLikes = likesSnap.docs.map(d => d.data());
-      db.likes = fbLikes;
-      console.log(`🔄 Synced ${fbLikes.length} likes from Firestore`);
-    }
-
-    // Sync persisted admin settings from Firestore
+    if (!firestoreDb || isFirestoreQuotaExceeded) return;
     try {
-      const adminSnap = await getDoc(doc(firestoreDb, 'system', 'adminSettings'));
-      if (adminSnap.exists()) {
-        const fbAdmin = adminSnap.data();
-        if (fbAdmin) {
-          db.adminSettings = { ...db.adminSettings, ...fbAdmin };
-          fs.writeFileSync(ADMIN_SETTINGS_FILE, JSON.stringify(db.adminSettings, null, 2), 'utf-8');
-          console.log('🔄 Synced persisted adminSettings from Firestore');
+      const usersSnap = await getDocs(collection(firestoreDb, 'users'));
+      if (!usersSnap.empty) {
+        const fbUsers = usersSnap.docs.map(d => ({ ...d.data(), id: d.id }));
+        const existingUserIds = new Set(db.users.map(u => String(u.id)));
+        for (const u of fbUsers) {
+          if (!existingUserIds.has(String(u.id))) {
+            db.users.push(u);
+          } else {
+             const idx = db.users.findIndex(ex => String(ex.id) === String(u.id));
+             if (idx !== -1) db.users[idx] = { ...db.users[idx], ...u };
+          }
         }
+        console.log(`🔄 Synced ${fbUsers.length} users from Firestore`);
       }
-    } catch (e) {
-      console.warn('Firestore adminSettings sync note:', e);
+
+      const postsSnap = await getDocs(collection(firestoreDb, 'posts'));
+      if (!postsSnap.empty) {
+        const fbPosts = postsSnap.docs.map(d => ({ ...d.data(), id: d.id }));
+        const existingPostIds = new Set(db.posts.map(p => String(p.id)));
+        for (const p of fbPosts) {
+          if (!existingPostIds.has(String(p.id))) {
+            db.posts.push(p);
+          } else {
+            const idx = db.posts.findIndex(ex => String(ex.id) === String(p.id));
+            if (idx !== -1) db.posts[idx] = { ...db.posts[idx], ...p };
+          }
+        }
+        db.posts.sort((a, b) => {
+          const timeA = typeof a.createdAt === 'number' ? a.createdAt : new Date(a.createdAt || 0).getTime();
+          const timeB = typeof b.createdAt === 'number' ? b.createdAt : new Date(b.createdAt || 0).getTime();
+          return timeB - timeA;
+        });
+        console.log(`🔄 Synced ${fbPosts.length} posts from Firestore`);
+      }
+
+      const adsSnap = await getDocs(collection(firestoreDb, 'advertisements'));
+      if (!adsSnap.empty) {
+        const fbAds = adsSnap.docs.map(d => d.data());
+        if (!db.adminSettings) db.adminSettings = {};
+        if (!db.adminSettings.brandAdsList) db.adminSettings.brandAdsList = [];
+        const existingAdIds = new Set(db.adminSettings.brandAdsList.map(a => String(a.id)));
+        for (const a of fbAds) {
+          if (!existingAdIds.has(String(a.id))) {
+            db.adminSettings.brandAdsList.push(a);
+          } else {
+             const idx = db.adminSettings.brandAdsList.findIndex(ex => String(ex.id) === String(a.id));
+             if (idx !== -1) db.adminSettings.brandAdsList[idx] = { ...db.adminSettings.brandAdsList[idx], ...a };
+          }
+        }
+        console.log(`🔄 Synced ${fbAds.length} ads from Firestore`);
+      }
+
+      const likesSnap = await getDocs(collection(firestoreDb, 'likes'));
+      if (!likesSnap.empty) {
+        const fbLikes = likesSnap.docs.map(d => d.data());
+        db.likes = fbLikes;
+        console.log(`🔄 Synced ${fbLikes.length} likes from Firestore`);
+      }
+
+      // Sync persisted admin settings from Firestore
+      try {
+        const adminSnap = await getDoc(doc(firestoreDb, 'system', 'adminSettings'));
+        if (adminSnap.exists()) {
+          const fbAdmin = adminSnap.data();
+          if (fbAdmin) {
+            db.adminSettings = { ...db.adminSettings, ...fbAdmin };
+            fs.writeFileSync(ADMIN_SETTINGS_FILE, JSON.stringify(db.adminSettings, null, 2), 'utf-8');
+            console.log('🔄 Synced persisted adminSettings from Firestore');
+          }
+        }
+      } catch (e) {
+        console.warn('Firestore adminSettings sync note:', e);
+      }
+    } catch (e: any) {
+      if (e?.message?.includes('Quota') || e?.code === 'resource-exhausted') {
+        isFirestoreQuotaExceeded = true;
+        console.warn('⚠️ Firestore daily free read quota reached. App is seamlessly operating on local persistent disk store (database3.json). Quota resets tomorrow.');
+      } else {
+        console.warn('Firestore sync notice (fallback active):', e?.message || e);
+      }
     }
-  } catch (e) {
-    console.error('Error syncing from Firestore:', e);
   }
-}
 
 
 // Prepare uploads folder

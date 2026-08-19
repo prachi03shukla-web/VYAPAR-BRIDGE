@@ -21,10 +21,10 @@ import { ALL_INDUSTRIES, ALL_CATEGORY_OPTIONS, matchIndustryOrSubcategory } from
 import { IndustryCommerceHub } from './components/IndustryCommerceHub';
 import { PdfCardViewer } from './components/PdfCardViewer';
 import { BRAND_LOGO_SRC, BRAND_NAME } from './constants/brandLogo';
-import { db as firestoreDb } from './firebase';
+import { auth, db as firestoreDb } from './firebase';
 import { collection, doc, setDoc, getDocs, getDoc, query, where, deleteDoc, orderBy, limit, onSnapshot } from 'firebase/firestore';
 import { DEFAULT_B2B_POSTS } from './data/defaultPosts';
-import { fetchPostsFromFirestore, syncPostToFirestore, subscribeToPostsFromFirestore, subscribeToUsersFromFirestore, subscribeToPaymentsFromFirestore, submitPaymentUTRToFirestore, getAdminSettingsFromFirestore, saveAdminSettingsToFirestore, likePostInFirestore, savePostInFirestore, addCommentToFirestore, fetchCommentsFromFirestore, followUserInFirestore, recordViewInFirestore, recordShareInFirestore, authenticateUserInFirestore, blockUserInFirestore, markPostNotInterestedInFirestore, getUsersBlockedAndNotInterestedFromFirestore, clearDefaultDataFromFirestore, deleteUserFromFirestore, deletePostFromFirestore, syncUserToFirestore, fetchAllUsersFromFirestore, sanitizeForFirestore, updateUserVerificationInFirestore, subscribeToPlatformStatsFromFirestore } from './services/firebaseDataSync';
+import { fetchPostsFromFirestore, syncPostToFirestore, subscribeToPostsFromFirestore, subscribeToUsersFromFirestore, subscribeToPaymentsFromFirestore, submitPaymentUTRToFirestore, getAdminSettingsFromFirestore, saveAdminSettingsToFirestore, subscribeToAdminSettingsFromFirestore, saveBrandAdsToFirestore, subscribeToBrandAdsFromFirestore, likePostInFirestore, savePostInFirestore, addCommentToFirestore, fetchCommentsFromFirestore, followUserInFirestore, recordViewInFirestore, recordShareInFirestore, authenticateUserInFirestore, blockUserInFirestore, markPostNotInterestedInFirestore, getUsersBlockedAndNotInterestedFromFirestore, clearDefaultDataFromFirestore, deleteUserFromFirestore, deletePostFromFirestore, syncUserToFirestore, fetchAllUsersFromFirestore, sanitizeForFirestore, updateUserVerificationInFirestore, subscribeToPlatformStatsFromFirestore } from './services/firebaseDataSync';
 import { suggestHashtagsWithAI } from './services/aiService';
 import { optimizeImageForPersistence, fileToDataURL } from './utils/imageOptimizer';
 import { moderateContentUniversally } from './services/moderationService';
@@ -173,7 +173,7 @@ export async function getMediaFromLocalDisk(key: string): Promise<string | null>
   }
 }
 
-export function AdMediaDisplay({ ad, className }: { ad: any; className?: string }) {
+export function AdMediaDisplay({ ad, className, onMediaEnded }: { ad: any; className?: string; onMediaEnded?: () => void }) {
   const [mediaSrc, setMediaSrc] = useState<string>(ad?.mediaUrl || '');
   const [videoError, setVideoError] = useState<boolean>(false);
 
@@ -216,7 +216,7 @@ export function AdMediaDisplay({ ad, className }: { ad: any; className?: string 
      const ytIdMatch = finalSrc.match(/(?:youtu\.be\/|v=|\/v\/|embed\/|watch\?v=|shorts\/)([^#\&\?]*).*/);
      const ytId = ytIdMatch && ytIdMatch[1];
      if (ytId) {
-        return <iframe className={`w-full h-full aspect-video min-h-[300px] sm:min-h-[400px] object-cover ${className || ''}`} src={`https://www.youtube.com/embed/${ytId}?autoplay=0&mute=0&rel=0&controls=1&modestbranding=1&showinfo=0&iv_load_policy=3`} allow="encrypted-media; autoplay; picture-in-picture" frameBorder="0" allowFullScreen></iframe>;
+        return <iframe className={`w-full h-full aspect-video min-h-[300px] sm:min-h-[400px] object-cover ${className || ''}`} src={`https://www.youtube.com/embed/${ytId}?autoplay=1&mute=1&rel=0&controls=1&modestbranding=1&showinfo=0&iv_load_policy=3&enablejsapi=1`} allow="encrypted-media; autoplay; picture-in-picture" frameBorder="0" allowFullScreen></iframe>;
      }
   }
 
@@ -239,12 +239,15 @@ export function AdMediaDisplay({ ad, className }: { ad: any; className?: string 
           src={finalSrc}
           controls
           muted
-          loop
           playsInline
           preload="auto"
+          onEnded={() => {
+            if (onMediaEnded) onMediaEnded();
+          }}
           ref={(el) => { if (el && el.paused) { const p = el.play(); if (p !== undefined) p.catch(()=>{}); } }}
           onError={() => {
             setVideoError(true);
+            if (onMediaEnded) onMediaEnded();
           }}
           className={className || "w-full max-h-[480px] object-contain bg-black transform-gpu will-change-transform"}
         />
@@ -258,6 +261,7 @@ export function AdMediaDisplay({ ad, className }: { ad: any; className?: string 
       alt={ad?.title || 'Brand Advertisement'}
       onError={() => {
         setVideoError(true);
+        if (onMediaEnded) onMediaEnded();
       }}
       className={className || "w-full max-h-[480px] object-contain bg-black transform-gpu will-change-transform"}
     />
@@ -470,6 +474,21 @@ export function VerifiedPaymentModal({ isOpen, onClose, user, onSuccess }: { isO
   });
 
   useEffect(() => {
+    // Listen to real-time event for immediate instant UI update
+    const handleUpdate = (e: any) => {
+      if (e.detail) {
+        setPaymentSettings((prev: any) => ({ ...prev, ...e.detail }));
+      }
+    };
+    window.addEventListener('vyapar_payment_settings_updated', handleUpdate);
+
+    // Subscribe to Firestore admin settings globally for all users
+    const unsubscribe = subscribeToAdminSettingsFromFirestore((fbData) => {
+      if (fbData && (fbData.upiId || fbData.barcodeImageUrl)) {
+        setPaymentSettings((prev: any) => ({ ...prev, ...fbData }));
+      }
+    });
+
     if (isOpen) {
       setStep('plan');
       setUtr('');
@@ -477,16 +496,11 @@ export function VerifiedPaymentModal({ isOpen, onClose, user, onSuccess }: { isO
       setMembershipType(user?.role === 'customer' ? 'local' : 'company');
       setSelectedPlan('monthly');
       
-      // Check local storage and Firestore for active payment settings & barcode
+      // Check local storage
       const localBarcode = localStorage.getItem('vyapar_barcode_url');
       if (localBarcode) {
         setPaymentSettings((prev: any) => ({ ...prev, barcodeImageUrl: localBarcode }));
       }
-      getAdminSettingsFromFirestore().then(fbData => {
-        if (fbData && (fbData.upiId || fbData.barcodeImageUrl)) {
-          setPaymentSettings((prev: any) => ({ ...prev, ...fbData }));
-        }
-      }).catch(console.warn);
 
       safeFetch('/api/payment-settings')
         .then(data => {
@@ -496,6 +510,11 @@ export function VerifiedPaymentModal({ isOpen, onClose, user, onSuccess }: { isO
         })
         .catch(err => console.error(err));
     }
+
+    return () => {
+      window.removeEventListener('vyapar_payment_settings_updated', handleUpdate);
+      if (unsubscribe) unsubscribe();
+    };
   }, [isOpen, user]);
 
   if (!isOpen) return null;
@@ -3785,6 +3804,14 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
 
     fetchBrandAds();
 
+    const unsubscribeBrandAds = subscribeToBrandAdsFromFirestore((fbAds) => {
+      if (Array.isArray(fbAds) && fbAds.length > 0) {
+        const activeAds = fbAds.filter((a: any) => a.isActive !== false);
+        setBrandAdsList(activeAds);
+        setIsBrandAdDismissed(false);
+      }
+    });
+
     const handleAdsUpdated = () => {
       setIsBrandAdDismissed(false);
       fetchBrandAds();
@@ -3793,6 +3820,7 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
     window.addEventListener('brandAdsUpdated', handleAdsUpdated);
     return () => {
       window.removeEventListener('brandAdsUpdated', handleAdsUpdated);
+      if (typeof unsubscribeBrandAds === 'function') unsubscribeBrandAds();
       if (typeof unsubscribePosts === 'function') unsubscribePosts();
       if (typeof unsubscribeUsers === 'function') unsubscribeUsers();
     };
@@ -3853,6 +3881,39 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
         } catch (e) {}
       });
   };
+
+  // Automatic Slider for Top Brand Showcase Ads & Announcements
+  useEffect(() => {
+    const formattedAnnouncements = (announcements || []).map((ann: any) => ({
+      id: `ann-${ann.id || Math.random()}`,
+      type: ann.type === 'video' ? 'video' : 'image',
+      title: ann.title || 'Official Announcement',
+      companyName: 'Vyapar Bridge Official',
+      mediaUrl: ann.mediaUrl || ann.videoUrl || '',
+      linkUrl: ann.linkUrl || '',
+      description: ann.content || '',
+      isActive: true
+    }));
+
+    const combinedList = [...brandAdsList, ...formattedAnnouncements].filter(a => a.isActive !== false);
+    if (combinedList.length <= 1 || isBrandAdDismissed) return;
+
+    const currentAd = combinedList[currentAdIndex % combinedList.length] || combinedList[0];
+    const isVideo = currentAd?.type === 'video' || /\.(mp4|webm|mov|m4v|avi|mkv)$/i.test(currentAd?.mediaUrl || '');
+    const isYouTube = (currentAd?.mediaUrl || '').includes('youtube.com') || (currentAd?.mediaUrl || '').includes('youtu.be');
+
+    // Interval time:
+    // MP4 Video: 35 seconds safety timeout (or automatically via video onEnded)
+    // YouTube Video: 15 seconds
+    // Image Banner / Text: 6 seconds
+    const slideInterval = isYouTube ? 15000 : (isVideo ? 35000 : 6000);
+
+    const timer = setTimeout(() => {
+      setCurrentAdIndex(prev => (prev + 1) % combinedList.length);
+    }, slideInterval);
+
+    return () => clearTimeout(timer);
+  }, [brandAdsList, announcements, currentAdIndex, isBrandAdDismissed]);
 
   useEffect(() => {
     const syncFollow = () => {
@@ -4235,41 +4296,57 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
         ))}
       </div>
 
-      {/* Sponsored Brand Showcase Carousel / Playlist (Videos & Images) */}
-      {brandAdsList.length > 0 && !isBrandAdDismissed && (() => {
-        const activeAd = brandAdsList[currentAdIndex % brandAdsList.length] || brandAdsList[0];
+      {/* Sponsored Brand Showcase Carousel / Playlist (Videos, Youtube Links & Banners) */}
+      {(() => {
+        // Merge Brand Showcase Ads and Official Broadcast Announcements
+        const formattedAnnouncements = (announcements || []).map((ann: any) => ({
+          id: `ann-${ann.id || Math.random()}`,
+          type: ann.type === 'video' ? 'video' : 'image',
+          title: ann.title || 'Official Announcement',
+          companyName: 'Vyapar Bridge Official',
+          mediaUrl: ann.mediaUrl || ann.videoUrl || '',
+          linkUrl: ann.linkUrl || '',
+          description: ann.content || '',
+          isActive: true
+        }));
+
+        const combinedAdsList = [...brandAdsList, ...formattedAnnouncements].filter(a => a.isActive !== false);
+        if (combinedAdsList.length === 0 || isBrandAdDismissed) return null;
+
+        const activeAd = combinedAdsList[currentAdIndex % combinedAdsList.length] || combinedAdsList[0];
+        
         return (
-          <div className="mb-5 bg-white dark:bg-zinc-900 border-2 border-amber-500/60 rounded-2xl overflow-hidden shadow-xl relative text-zinc-900 dark:text-white transition-all">
+          <div className="mb-5 bg-white dark:bg-zinc-900 border-2 border-amber-500/70 rounded-2xl overflow-hidden shadow-2xl relative text-zinc-900 dark:text-white transition-all">
             {/* Header Badge, Playlist counter, Nav controls & Skip button */}
-            <div className="flex items-center justify-between px-3.5 py-2.5 bg-amber-50 dark:bg-zinc-900/90 border-b border-amber-200 dark:border-amber-500/30 backdrop-blur-md gap-2">
+            <div className="flex items-center justify-between px-3.5 py-2.5 bg-gradient-to-r from-amber-100 via-amber-50 to-orange-100 dark:from-zinc-900 dark:to-zinc-800 border-b border-amber-300 dark:border-amber-500/30 backdrop-blur-md gap-2">
               <div className="flex items-center gap-2 min-w-0">
                 <span className="bg-gradient-to-r from-amber-500 to-amber-600 text-white text-[10px] font-black uppercase px-2 py-0.5 rounded-md tracking-wider flex items-center gap-1 shadow-sm shrink-0">
-                  <Sparkles className="w-3 h-3 fill-white" /> Sponsored Showcase
+                  <Sparkles className="w-3 h-3 fill-white" /> Sponsored Top Brand
                 </span>
-                <span className="text-xs font-black text-amber-900 dark:text-amber-300 truncate">
+                <span className="text-xs font-black text-amber-950 dark:text-amber-300 truncate">
                   {activeAd.companyName || 'Featured Brand'}
                 </span>
-                {brandAdsList.length > 1 && (
-                  <span className="text-[10px] bg-amber-100 dark:bg-amber-500/20 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-500/40 px-2 py-0.5 rounded-full font-bold shrink-0">
-                    {currentAdIndex + 1} / {brandAdsList.length}
+                {combinedAdsList.length > 1 && (
+                  <span className="text-[10px] bg-amber-200/80 dark:bg-amber-500/20 text-amber-900 dark:text-amber-300 border border-amber-400/50 dark:border-amber-500/40 px-2 py-0.5 rounded-full font-bold shrink-0">
+                    {currentAdIndex + 1} / {combinedAdsList.length}
                   </span>
                 )}
               </div>
 
               <div className="flex items-center gap-2 shrink-0">
                 {/* Previous & Next Carousel Buttons */}
-                {brandAdsList.length > 1 && (
-                  <div className="flex items-center gap-1 bg-white/80 dark:bg-black/60 rounded-full p-0.5 border border-slate-200 dark:border-white/10 shadow-sm">
+                {combinedAdsList.length > 1 && (
+                  <div className="flex items-center gap-1 bg-white/90 dark:bg-black/60 rounded-full p-0.5 border border-amber-300 dark:border-white/10 shadow-sm">
                     <button 
-                      onClick={() => setCurrentAdIndex((prev) => (prev - 1 + brandAdsList.length) % brandAdsList.length)}
-                      className="p-1 hover:bg-amber-100 dark:hover:bg-white/20 rounded-full transition-colors cursor-pointer text-amber-700 dark:text-amber-300"
+                      onClick={() => setCurrentAdIndex((prev) => (prev - 1 + combinedAdsList.length) % combinedAdsList.length)}
+                      className="p-1 hover:bg-amber-100 dark:hover:bg-white/20 rounded-full transition-colors cursor-pointer text-amber-800 dark:text-amber-300"
                       title="Previous Ad"
                     >
                       <ChevronLeft className="w-4 h-4" />
                     </button>
                     <button 
-                      onClick={() => setCurrentAdIndex((prev) => (prev + 1) % brandAdsList.length)}
-                      className="p-1 hover:bg-amber-100 dark:hover:bg-white/20 rounded-full transition-colors cursor-pointer text-amber-700 dark:text-amber-300"
+                      onClick={() => setCurrentAdIndex((prev) => (prev + 1) % combinedAdsList.length)}
+                      className="p-1 hover:bg-amber-100 dark:hover:bg-white/20 rounded-full transition-colors cursor-pointer text-amber-800 dark:text-amber-300"
                       title="Next Ad"
                     >
                       <ChevronRight className="w-4 h-4" />
@@ -4277,60 +4354,108 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
                   </div>
                 )}
 
-                {/* Skip / Cut Button */}
+                {/* Highly Visible Skip Ad Button */}
                 <button 
                   onClick={() => {
                     setIsBrandAdDismissed(true);
-                    toast('Ad showcase hidden for this session', { icon: '👁️' });
+                    toast('Ad showcase skipped for this session', { icon: '👁️' });
                   }}
-                  className="flex items-center gap-1 px-2.5 py-1 bg-slate-100 hover:bg-red-500 hover:text-white text-slate-700 dark:bg-black/60 dark:hover:bg-red-600/80 dark:text-white rounded-full text-[11px] font-bold border border-slate-200 dark:border-white/20 transition-all cursor-pointer shadow-sm hover:scale-105"
-                  title="Close / Cut Advertisement"
+                  className="flex items-center gap-1.5 px-3 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded-full text-xs font-black border border-rose-400/50 shadow-md transition-all cursor-pointer hover:scale-105 active:scale-95 shrink-0"
+                  title="Skip / Close Advertisement (विज्ञापन हटाएं)"
                 >
-                  <X className="w-3.5 h-3.5" />
-                  <span>Skip Ad</span>
+                  <X className="w-3.5 h-3.5 stroke-[3]" />
+                  <span>Skip Ad (विज्ञापन हटाएं)</span>
                 </button>
               </div>
             </div>
 
-            {/* Media Canvas - Supports Videos & Images from IndexedDB Local Storage or Server URL */}
+            {/* Media Canvas - Supports Videos, Images & Youtube Embeds */}
             <div className="relative w-full min-h-[240px] max-h-[500px] bg-slate-900 dark:bg-black flex items-center justify-center overflow-hidden">
-              <AdMediaDisplay ad={activeAd} className="w-full max-h-[480px] object-contain bg-slate-900 dark:bg-black" />
+              <AdMediaDisplay 
+                ad={activeAd} 
+                onMediaEnded={() => setCurrentAdIndex((prev) => (prev + 1) % combinedAdsList.length)}
+                className="w-full max-h-[480px] object-contain bg-slate-900 dark:bg-black" 
+              />
             </div>
 
             {/* Ad Details Footer */}
             <div className="p-3.5 bg-slate-50 dark:bg-zinc-900/90 border-t border-slate-200 dark:border-zinc-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-0.5">
+              <div className="flex-1 min-w-0 space-y-1">
+                <div className="flex items-center gap-2">
                   <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded bg-amber-100 text-amber-800 dark:bg-slate-800 dark:text-amber-400">
-                    {activeAd.type === 'image' ? '🖼️ Photo Ad' : '🎥 Video Ad'}
+                    {activeAd.type === 'image' ? '🖼️ Photo Banner' : '🎥 Video Showcase'}
                   </span>
                   <h4 className="font-extrabold text-sm text-slate-900 dark:text-zinc-100 truncate">{activeAd.title || 'Official Brand Showcase'}</h4>
                 </div>
                 {activeAd.description && (
-                  <p className="text-xs text-slate-600 dark:text-zinc-400 line-clamp-2 leading-snug">{activeAd.description}</p>
+                  <p className="text-xs text-slate-700 dark:text-zinc-300 line-clamp-2 leading-relaxed">{activeAd.description}</p>
                 )}
                 <AdRatingComponent ad={activeAd} onRate={(adId, rating, updatedAd) => {
                   setBrandAdsList(prev => prev.map(a => a.id === adId ? updatedAd : a));
                 }} />
               </div>
+
+              {/* WhatsApp Direct Contact CTA Link - Exclusively opens WhatsApp, NEVER opens Vercel or websites */}
+              {(() => {
+                const getWhatsAppHref = (linkStr?: string, companyName?: string) => {
+                  const company = (companyName || 'Business Partner').trim();
+                  if (!linkStr || !linkStr.trim()) {
+                    return `https://api.whatsapp.com/send?text=${encodeURIComponent(`Hello ${company}, I saw your Brand Showcase advertisement on Vyapar Bridge and would like to connect on WhatsApp!`)}`;
+                  }
+                  const clean = linkStr.trim();
+                  
+                  // If user input already contains whatsapp URL
+                  if (clean.includes('wa.me/') || clean.includes('api.whatsapp.com') || clean.includes('whatsapp.com')) {
+                    return clean.startsWith('http') ? clean : `https://${clean}`;
+                  }
+                  
+                  // Extract numbers (10-digit Indian phone or international number)
+                  const digits = clean.replace(/\D/g, '');
+                  if (digits.length >= 10) {
+                    const phoneWithCountry = digits.length === 10 ? `91${digits}` : digits;
+                    return `https://api.whatsapp.com/send?phone=${phoneWithCountry}&text=${encodeURIComponent(`Hello ${company}, I saw your Brand Showcase advertisement on Vyapar Bridge and would like to connect!`)}`;
+                  }
+
+                  // Force WhatsApp text inquiry with the provided details (NEVER open website/Vercel)
+                  return `https://api.whatsapp.com/send?text=${encodeURIComponent(`Hello ${company}, I am interested in your products advertised on Vyapar Bridge (${clean})!`)}`;
+                };
+
+                const whatsappHref = getWhatsAppHref(activeAd.linkUrl, activeAd.companyName);
+
+                return (
+                  <a 
+                    href={whatsappHref} 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                    }}
+                    className="bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-extrabold text-xs px-4 py-2.5 rounded-xl border border-emerald-500/80 shadow-lg shadow-emerald-600/30 transition-all flex items-center gap-2 shrink-0 hover:scale-105 cursor-pointer select-none"
+                    title="Direct WhatsApp Contact (सीधे व्हाट्सएप पर संपर्क करें)"
+                  >
+                    <MessageCircle className="w-4 h-4 fill-white text-emerald-600" />
+                    <span>WhatsApp 💬</span>
+                  </a>
+                );
+              })()}
             </div>
 
             {/* Playlist Indicator Dots / Thumbnails */}
-            {brandAdsList.length > 1 && (
+            {combinedAdsList.length > 1 && (
               <div className="px-3 py-2 bg-slate-100 dark:bg-slate-950/80 border-t border-slate-200 dark:border-zinc-800 flex items-center justify-center gap-2 overflow-x-auto no-scrollbar">
-                {brandAdsList.map((ad, idx) => (
+                {combinedAdsList.map((ad, idx) => (
                   <button
                     key={ad.id || idx}
                     onClick={() => setCurrentAdIndex(idx)}
                     className={clsx(
                       "flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer shrink-0 border shadow-sm",
                       idx === currentAdIndex 
-                        ? "bg-amber-500 text-white border-amber-400 shadow font-black" 
+                        ? "bg-amber-500 text-slate-950 border-amber-400 shadow font-black" 
                         : "bg-white text-slate-700 border-slate-300 hover:bg-amber-50 hover:text-amber-800 dark:bg-slate-900 dark:text-zinc-400 dark:border-slate-800 dark:hover:text-white"
                     )}
                   >
                     <span>{ad.type === 'image' ? '🖼️' : '🎥'}</span>
-                    <span className="truncate max-w-[100px]">{ad.companyName || `Ad ${idx + 1}`}</span>
+                    <span className="truncate max-w-[120px]">{ad.companyName || ad.title || `Ad ${idx + 1}`}</span>
                   </button>
                 ))}
               </div>
@@ -6588,6 +6713,7 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
     try {
       localStorage.setItem('local_brand_ads', JSON.stringify(list));
     } catch (e) {}
+    saveBrandAdsToFirestore(list);
     window.dispatchEvent(new Event('brandAdsUpdated'));
   };
 
@@ -6606,137 +6732,126 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
   const handleSaveBrandAd = async (e: React.FormEvent) => {
     e.preventDefault();
     setSavingAd(true);
-    setAdUploadProgress(0);
+    setAdUploadProgress(10);
+
+    const currentTitle = adTitle;
+    const currentCompany = adCompanyName;
+    const currentLink = adLinkUrl;
+    const currentExternalUrl = adExternalMediaUrl;
+    const currentDesc = adDescription;
+    const currentIsActive = adIsActive;
+    const currentMediaType = adMediaType;
+    const currentVideoFile = adVideoFile;
+
     try {
       let localMediaKey = '';
-      if (adVideoFile) {
+      if (currentVideoFile) {
         localMediaKey = 'media_mirror_' + Date.now();
-        await saveMediaToLocalDisk(localMediaKey, adVideoFile);
+        try {
+          await saveMediaToLocalDisk(localMediaKey, currentVideoFile);
+        } catch (err) {
+          console.warn('Local disk storage warning:', err);
+        }
       }
 
-      const formData = new FormData();
-      formData.append('title', adTitle);
-      formData.append('companyName', adCompanyName);
-            formData.append('linkUrl', adLinkUrl);
-      formData.append('mediaUrl', adExternalMediaUrl);
-      formData.append('description', adDescription);
-      formData.append('isActive', String(adIsActive));
-      formData.append('type', adMediaType);
-      if (localMediaKey) {
-        formData.append('localMediaKey', localMediaKey);
-      }
-      // Only attach binary file to network request if under 15MB to prevent reverse-proxy 503 Gateway Halt
-      if (adVideoFile) {
-        formData.append('mediaFile', adVideoFile);
-      }
+      const newAdId = 'ad-' + Date.now();
+      const newAd = {
+        id: newAdId,
+        type: currentMediaType,
+        title: currentTitle || 'Official Brand Showcase',
+        companyName: currentCompany || 'Vyapar Bridge Partner',
+        mediaUrl: currentExternalUrl || '',
+        linkUrl: currentLink || '',
+        description: currentDesc || '',
+        isActive: currentIsActive,
+        localMediaKey: localMediaKey || null,
+        createdAt: Date.now()
+      };
 
-      await new Promise<void>((resolve) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open('POST', '/api/admin/showcase', true);
-
-        xhr.upload.onprogress = (event) => {
-          if (event.lengthComputable) {
-            const percentComplete = Math.round((event.loaded / event.total) * 100);
-            setAdUploadProgress(percentComplete);
-          }
-        };
-
-        xhr.onload = () => {
-          setAdUploadProgress(100);
-          try {
-            const data = JSON.parse(xhr.responseText);
-            if (xhr.status >= 200 && xhr.status < 300 && data.success) {
-              toast.success(`📢 New Brand Advertisement (${adMediaType.toUpperCase()}) published!`);
-              if (Array.isArray(data.brandAdsList)) {
-                setBrandAdsList(data.brandAdsList);
-                syncBrandAdsLocal(data.brandAdsList);
-              }
-              setAdTitle('');
-              setAdCompanyName('');
-              setAdExternalMediaUrl('');
-              setAdLinkUrl('');
-              setAdDescription('');
-              setAdVideoFile(null);
-              setAdVideoPreview(null);
-            } else {
-              toast.error(data?.error || 'Failed to update brand advertisement');
-            }
-          } catch (err) {
-            // Local device storage fallback if server parsing fails
-            if (localMediaKey) {
-              const fallbackAd = {
-                id: 'ad-' + Date.now(),
-                type: adMediaType,
-                title: adTitle || 'Official Brand Showcase',
-                companyName: adCompanyName || 'Vyapar Bridge Partner',
-                mediaUrl: '',
-                linkUrl: adLinkUrl || '',
-                description: adDescription || '',
-                isActive: true,
-                localMediaKey: localMediaKey,
-                createdAt: Date.now()
-              };
-              setBrandAdsList(prev => {
-                const updated = [fallbackAd, ...prev];
-                syncBrandAdsLocal(updated);
-                return updated;
-              });
-              toast.success('📱 Video stored directly on device storage (IndexedDB mirror)!');
-              setAdTitle('');
-              setAdCompanyName('');
-              setAdExternalMediaUrl('');
-              setAdLinkUrl('');
-              setAdDescription('');
-              setAdVideoFile(null);
-              setAdVideoPreview(null);
-            } else {
-              toast.error('Server error parsing: ' + xhr.responseText.substring(0, 50));
-            }
-          }
-          resolve();
-        };
-
-        xhr.onerror = () => {
-          if (localMediaKey) {
-            const fallbackAd = {
-              id: 'ad-' + Date.now(),
-              type: adMediaType,
-              title: adTitle || 'Official Brand Showcase',
-              companyName: adCompanyName || 'Vyapar Bridge Partner',
-              mediaUrl: '',
-              linkUrl: adLinkUrl || '',
-              description: adDescription || '',
-              isActive: true,
-              localMediaKey: localMediaKey,
-              createdAt: Date.now()
-            };
-            setBrandAdsList(prev => {
-              const updated = [fallbackAd, ...prev];
-              syncBrandAdsLocal(updated);
-              return updated;
-            });
-            toast.success('📱 Video saved to device local disk storage!');
-            setAdTitle('');
-            setAdCompanyName('');
-            setAdExternalMediaUrl('');
-            setAdLinkUrl('');
-            setAdDescription('');
-            setAdVideoFile(null);
-            setAdVideoPreview(null);
-          } else {
-            toast.error('Network error occurred during video upload');
-          }
-          resolve();
-        };
-
-        xhr.send(formData);
+      // 1. INSTANT LOCAL & FIRESTORE GLOBAL PUBLISH (< 1 Second)
+      setBrandAdsList(prev => {
+        const updated = [newAd, ...prev];
+        syncBrandAdsLocal(updated);
+        return updated;
       });
-    } catch (err) {
-      console.error(err);
-      toast.error('Error saving brand advertisement');
-    } finally {
+
+      // Reset form state IMMEDIATELY so admin can continue working on new tasks!
+      setAdTitle('');
+      setAdCompanyName('');
+      setAdExternalMediaUrl('');
+      setAdLinkUrl('');
+      setAdDescription('');
+      setAdVideoFile(null);
+      setAdVideoPreview(null);
       setSavingAd(false);
-      setTimeout(() => setAdUploadProgress(0), 1500);
+      setAdUploadProgress(100);
+
+      toast.success(
+        `🚀 Brand Ad saved & active live globally in 1 sec! ${currentVideoFile ? '(Video uploading in background)' : ''}`,
+        { duration: 5000 }
+      );
+
+      // 2. BACKGROUND ASYNCHRONOUS SERVER UPLOAD (Non-blocking, user can leave tab/drawer)
+      if (currentVideoFile) {
+        (async () => {
+          try {
+            const formData = new FormData();
+            formData.append('title', currentTitle);
+            formData.append('companyName', currentCompany);
+            formData.append('linkUrl', currentLink);
+            formData.append('mediaUrl', currentExternalUrl);
+            formData.append('description', currentDesc);
+            formData.append('isActive', String(currentIsActive));
+            formData.append('type', currentMediaType);
+            if (localMediaKey) {
+              formData.append('localMediaKey', localMediaKey);
+            }
+            formData.append('mediaFile', currentVideoFile);
+
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', '/api/admin/showcase', true);
+
+            xhr.upload.onprogress = (event) => {
+              if (event.lengthComputable) {
+                const percent = Math.round((event.loaded / event.total) * 100);
+                setAdUploadProgress(percent);
+              }
+            };
+
+            xhr.onload = () => {
+              try {
+                if (xhr.status >= 200 && xhr.status < 300) {
+                  const data = JSON.parse(xhr.responseText);
+                  if (data.success && data.newAd?.mediaUrl) {
+                    setBrandAdsList(prev => {
+                      const updated = prev.map(item =>
+                        item.id === newAdId ? { ...item, mediaUrl: data.newAd.mediaUrl } : item
+                      );
+                      syncBrandAdsLocal(updated);
+                      return updated;
+                    });
+                    toast.success('☁️ Background video upload complete & synced to cloud server!');
+                  }
+                }
+              } catch (e) {
+                console.warn('Background upload JSON parse warning:', e);
+              }
+            };
+
+            xhr.onerror = () => {
+              console.warn('Background upload network notice, video remains active via local device mirror.');
+            };
+
+            xhr.send(formData);
+          } catch (err) {
+            console.warn('Background upload execution error:', err);
+          }
+        })();
+      }
+    } catch (err) {
+      console.error('Error saving brand advertisement:', err);
+      toast.error('Failed to save brand advertisement');
+      setSavingAd(false);
     }
   };
 
@@ -6924,47 +7039,59 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
     };
 
     try {
-      // 1. Convert to Base64 Data URL (Guaranteed to work on Vercel without backend server)
-      const base64Url = await readFileAsDataURL(barcodeFile);
+      // 1. Optimize & Convert to Base64 Data URL for instant rendering & Firestore persistence
+      let base64Url = '';
+      try {
+        base64Url = await optimizeImageForPersistence(barcodeFile, 800, 0.82);
+      } catch (optErr) {
+        const reader = new FileReader();
+        base64Url = await new Promise((resolve, reject) => {
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = reject;
+          reader.readAsDataURL(barcodeFile);
+        });
+      }
+
       const secretToken = `SECURE-BC-${Date.now()}-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
 
-      // Update Local State & Backup
+      // 2. Update Local State & Backup INSTANTLY
       setBarcodeImageUrl(base64Url);
       setBarcodeSecretToken(secretToken);
       localStorage.setItem('vyapar_barcode_url', base64Url);
       localStorage.setItem('vyapar_barcode_token', secretToken);
 
-      // 2. Save directly to Firestore Cloud Database
+      // 3. Dispatch global event for instant UI update across all open modals
+      window.dispatchEvent(new CustomEvent('vyapar_payment_settings_updated', {
+        detail: {
+          barcodeImageUrl: base64Url,
+          barcodeSecretToken: secretToken,
+          upiId,
+          accountName,
+          qrCodeUrl
+        }
+      }));
+
+      toast.success('⚡ Payment Barcode QR Code updated instantly!');
+
+      // 4. Save directly to Firestore Cloud Database
       await saveAdminSettingsToFirestore({
         barcodeImageUrl: base64Url,
         barcodeSecretToken: secretToken,
         upiId,
         accountName,
-        bankAccount,
-        ifscCode,
         qrCodeUrl
       });
 
-      // 3. Optional: Try backend API if running with custom Express server
+      // 5. Async sync with backend server if available
       try {
         const formData = new FormData();
         formData.append('barcodeFile', barcodeFile);
-        const res = await fetch('/api/admin/upload-barcode', {
+        fetch('/api/admin/upload-barcode', {
           method: 'POST',
           body: formData
-        });
-        if (res.ok) {
-          const data = await res.json();
-          if (data && data.barcodeImageUrl) {
-            setBarcodeImageUrl(data.barcodeImageUrl);
-            if (data.barcodeSecretToken) setBarcodeSecretToken(data.barcodeSecretToken);
-          }
-        }
-      } catch (backendErr) {
-        console.warn('Backend upload-barcode API skipped (using client cloud Base64 image):', backendErr);
-      }
+        }).catch(() => {});
+      } catch (backendErr) {}
 
-      toast.success('🔒 Real Barcode Image Uploaded & Saved to Firestore!');
       setBarcodeFile(null);
     } catch (err: any) {
       console.error('Barcode upload error:', err);
@@ -7107,8 +7234,6 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
     const pinToSave = developerMasterPin.trim();
     const updatedSettings = {
       upiId,
-      bankAccount,
-      ifscCode,
       accountName,
       qrCodeUrl,
       barcodeImageUrl,
@@ -7120,6 +7245,11 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
     // Save to LocalStorage immediately
     localStorage.setItem('VyaparBridge_admin_pin', pinToSave);
     localStorage.setItem('Vyapar Bridge_custom_master_key', pinToSave);
+
+    // Broadcast globally to all payment option views instantly
+    window.dispatchEvent(new CustomEvent('vyapar_payment_settings_updated', {
+      detail: updatedSettings
+    }));
 
     // Save to Firestore
     try {
@@ -7765,9 +7895,9 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
               {activeTab === 'payment' && (
                 <div className="space-y-4">
                   <div className="bg-blue-950/40 border border-blue-800/60 p-4 rounded-xl text-xs text-blue-800">
-                    <p className="font-bold text-sm text-blue-300 mb-1">💳 Configure B2B Verification Payment Gateway</p>
+                    <p className="font-bold text-sm text-blue-300 mb-1">💳 Configure B2B Payment Gateway QR Code & UPI</p>
                     <p>
-                      Users paying ₹99/mo for B2B Verification Checkmarks will see these exact UPI & Bank Account details during checkout.
+                      Users paying for B2B Verification Checkmarks will see this exact QR Code & UPI details globally during checkout.
                     </p>
                   </div>
 
@@ -7793,30 +7923,6 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
                         value={accountName}
                         onChange={e => setAccountName(e.target.value)}
                         className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs text-black focus:outline-none focus:border-blue-500"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1">
-                        Bank Account Number
-                      </label>
-                      <input 
-                        type="text"
-                        value={bankAccount}
-                        onChange={e => setBankAccount(e.target.value)}
-                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs text-black focus:outline-none focus:border-blue-500"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1">
-                        IFSC Code
-                      </label>
-                      <input 
-                        type="text"
-                        value={ifscCode}
-                        onChange={e => setIfscCode(e.target.value)}
-                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs text-black uppercase focus:outline-none focus:border-blue-500"
                       />
                     </div>
                   </div>
@@ -8277,12 +8383,12 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
                         <button 
                           type="submit" 
                           disabled={savingAd}
-                          className="w-full sm:w-auto px-5 py-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black text-xs rounded-xl shadow-lg shadow-amber-500/20 flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-50"
+                          className="w-full sm:w-auto px-6 py-3 bg-gradient-to-r from-amber-500 via-amber-400 to-amber-500 hover:from-amber-400 hover:to-amber-400 text-slate-950 font-black text-xs rounded-xl shadow-xl shadow-amber-500/30 flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-50 hover:scale-[1.02] active:scale-95 border border-amber-300/50"
                         >
                           {savingAd ? (
                             <>
                               <Loader2 className="w-4 h-4 animate-spin text-slate-950" />
-                              <span>Uploading & Publishing Ad...</span>
+                              <span>Saving Ad & Uploading in Background...</span>
                             </>
                           ) : (
                             `🚀 Add ${adMediaType.toUpperCase()} Ad to Showcase Playlist`
@@ -12272,43 +12378,6 @@ function ProfileSettingsDrawer({
 
         {/* Settings Navigation List */}
         <div className="p-3 flex-1 space-y-2">
-          {/* Install App / Add to Home Screen Button */}
-          <button 
-            onClick={() => {
-              onClose();
-              if (deferredPrompt) {
-                deferredPrompt.prompt();
-                deferredPrompt.userChoice.then((choiceResult: any) => {
-                  if (choiceResult.outcome === 'accepted') {
-                    toast.success('🎉 Installing Vyapar Bridge App with official logo to Home Screen!');
-                  }
-                  if (setDeferredPrompt) setDeferredPrompt(null);
-                });
-              } else {
-                const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
-                if (isIOS) {
-                  window.alert('📱 VYAPAR BRIDGE APP - ADD TO HOME SCREEN (iPhone/Safari):\n\n1. Tap the Share button in Safari (Square with Up Arrow 📤)\n2. Scroll down and tap "Add to Home Screen" (➕)\n3. Tap "Add" in top right corner.\n\nVyapar Bridge App icon will appear directly on your mobile Home Screen!');
-                } else {
-                  window.alert('📱 VYAPAR BRIDGE APP - INSTALL TO MOBILE HOME SCREEN:\n\n1. Tap Chrome / Browser menu (3 dots ⋮ at top right)\n2. Select "Add to Home screen" or "Install app"\n3. Confirm "Install"\n\nVyapar Bridge App with official logo will be saved directly on your mobile home screen!');
-                }
-              }
-            }}
-            className="w-full p-3.5 rounded-xl bg-gradient-to-r from-amber-500 via-amber-600 to-yellow-600 hover:from-amber-600 hover:to-yellow-700 text-black font-black text-sm flex items-center gap-3 transition-all text-left cursor-pointer shadow-md my-1 border border-amber-400/30 active:scale-98"
-          >
-            <div className="w-9 h-9 rounded-xl bg-black/20 flex items-center justify-center shrink-0 border border-black/10 overflow-hidden">
-              <img src={BRAND_LOGO_SRC} alt="Vyapar Bridge Logo" className="w-full h-full object-cover" />
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="font-extrabold text-sm flex items-center gap-1.5 text-black">
-                <span>Add App to Home Screen</span>
-                <span className="text-[9px] bg-black text-amber-400 px-1.5 py-0.2 rounded font-black uppercase">Official Logo</span>
-              </div>
-              <div className="text-[11px] font-medium text-black/80 truncate">Install mobile app with brand logo</div>
-            </div>
-          </button>
-
-          <div className="my-2 border-t border-slate-200 dark:border-zinc-800" />
-
           {/* Vyapar Calculator */}
           <button 
             onClick={() => { onClose(); onOpenCalculator(); }}
@@ -12525,18 +12594,66 @@ function ProfileSettingsDrawer({
 
           {/* Log Out button - Only if logged in */}
           {user && (
-            <button 
-              onClick={() => { onClose(); onLogout(); }}
-              className="w-full p-3.5 rounded-xl bg-red-50 dark:bg-red-950/20 border border-red-200/50 dark:border-red-900/30 hover:bg-red-100 dark:hover:bg-red-900/50 text-red-600 dark:text-red-400 flex items-center gap-3 transition-all text-left font-bold text-sm cursor-pointer group shadow-sm mb-6"
-            >
-              <div className="p-2 rounded-lg bg-red-600 text-black group-hover:scale-110 transition-transform shadow-sm">
-                <LogOut className="w-4 h-4" />
-              </div>
-              <div className="flex-1 text-red-600 dark:text-red-400">
-                <div className="font-bold">Log Out</div>
-                <div className="text-[10px] font-normal opacity-70">Sign out safely from Vyapar Bridge</div>
-              </div>
-            </button>
+            <div className="space-y-2.5 mb-6 pt-1">
+              <button 
+                onClick={() => { onClose(); onLogout(); }}
+                className="w-full p-3.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-zinc-900 dark:hover:bg-zinc-800 border border-slate-200 dark:border-zinc-800 text-black dark:text-zinc-100 flex items-center gap-3 transition-all text-left font-bold text-sm cursor-pointer group shadow-sm"
+              >
+                <div className="p-2 rounded-lg bg-red-600 text-white group-hover:scale-110 transition-transform shadow-sm">
+                  <LogOut className="w-4 h-4" />
+                </div>
+                <div className="flex-1">
+                  <div className="font-bold text-red-600 dark:text-red-400">Log Out</div>
+                  <div className="text-[10px] font-normal opacity-70 text-black/70 dark:text-zinc-400">Sign out safely from Vyapar Bridge</div>
+                </div>
+              </button>
+
+              {/* Delete My ID / Account Button right below Log Out */}
+              <button 
+                onClick={async () => {
+                  const confirmDelete = window.confirm(
+                    `⚠️ DELETE ID CONFIRMATION:\n\nAre you sure you want to permanently delete your Vyapar Bridge ID (${user?.name || 'User'})?\n\nThis will permanently delete your account, posts, profile details, and business listings from the database. This action CANNOT be undone.`
+                  );
+                  if (!confirmDelete) return;
+
+                  try {
+                    const userIdToDelete = user.id || user.uid;
+                    if (userIdToDelete) {
+                      await deleteUserFromFirestore(userIdToDelete);
+                    }
+                    
+                    // Delete Auth User if authenticated via Firebase Auth
+                    if (auth.currentUser) {
+                      try {
+                        await auth.currentUser.delete();
+                      } catch (authErr) {
+                        console.warn('Firebase auth delete notice:', authErr);
+                      }
+                    }
+
+                    localStorage.removeItem('user');
+                    localStorage.removeItem('Vyapar Bridge_user');
+                    localStorage.removeItem('vyapar_user');
+
+                    toast.success('Your Vyapar Bridge ID & Account have been permanently deleted.');
+                    onClose();
+                    onLogout();
+                  } catch (err: any) {
+                    console.error('Failed to delete user ID:', err);
+                    toast.error('Failed to delete ID: ' + (err?.message || 'Server error'));
+                  }
+                }}
+                className="w-full p-3.5 rounded-xl bg-red-50 hover:bg-red-600 hover:text-white dark:bg-red-950/30 dark:hover:bg-red-600 border border-red-200 dark:border-red-900/40 text-red-600 dark:text-red-400 flex items-center gap-3 transition-all text-left font-bold text-sm cursor-pointer group shadow-sm active:scale-98"
+              >
+                <div className="p-2 rounded-lg bg-red-100 text-red-600 dark:bg-red-900/60 dark:text-red-300 group-hover:bg-white group-hover:text-red-600 transition-colors shrink-0">
+                  <Trash2 className="w-4 h-4" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="font-extrabold text-sm tracking-tight group-hover:text-white">Delete My ID</div>
+                  <div className="text-[10px] font-normal opacity-80 truncate group-hover:text-red-100">Permanently delete account & listings</div>
+                </div>
+              </button>
+            </div>
           )}
         </div>
       </div></div>
@@ -14897,36 +15014,6 @@ function AppContent() {
         </nav>
 
         <div className="mt-auto pt-4 space-y-1">
-          <button 
-            onClick={() => {
-              if (deferredPrompt) {
-                deferredPrompt.prompt();
-                deferredPrompt.userChoice.then((choiceResult: any) => {
-                  if (choiceResult.outcome === 'accepted') {
-                    toast.success('🎉 Installing Vyapar Bridge App with official logo!');
-                  }
-                  setDeferredPrompt(null);
-                });
-              } else {
-                const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
-                if (isIOS) {
-                  window.alert('📱 VYAPAR BRIDGE APP - ADD TO HOME SCREEN (iPhone/Safari):\n\n1. Tap Share button in Safari (Square with Up Arrow 📤)\n2. Select "Add to Home Screen" (➕)\n3. Tap "Add"');
-                } else {
-                  window.alert('📱 INSTALL VYAPAR APP TO HOME SCREEN:\n\n1. Tap Chrome menu (3 dots ⋮ at top right)\n2. Select "Add to Home screen" or "Install app"\n3. Confirm "Install"\n\nVyapar Bridge App with official logo will be added to your home screen!');
-                }
-              }
-            }}
-            className="sidebar-nav-item outline-none focus:ring-2 focus:ring-amber-500 flex items-center gap-4 p-3 rounded-lg hover:bg-amber-50 dark:hover:bg-zinc-900 transition-colors w-full group relative text-black dark:text-zinc-50 font-bold"
-          >
-            <div className="w-6 h-6 rounded-md overflow-hidden shrink-0 border border-amber-500/30">
-              <img src={BRAND_LOGO_SRC} alt="Vyapar Logo" className="w-full h-full object-cover" />
-            </div>
-            <span className="hidden lg:block text-[14px] font-extrabold text-amber-800 dark:text-amber-400">Install App</span>
-            <div className="absolute left-14 bg-amber-600 text-black text-xs font-bold px-2 py-1.5 rounded-md opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-700 hidden md:block lg:hidden whitespace-nowrap z-50 pointer-events-none shadow-lg">
-              Install App
-            </div>
-          </button>
-          
           <button 
             onClick={() => setIsCalculatorOpen(true)}
             className="sidebar-nav-item outline-none focus:ring-2 focus:ring-blue-500 flex items-center gap-4 p-3 rounded-lg hover:bg-slate-50 dark:hover:bg-zinc-900 transition-colors w-full group relative text-black/80 dark:text-zinc-400 hover:text-black dark:hover:text-zinc-50"

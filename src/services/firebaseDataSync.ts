@@ -216,9 +216,10 @@ export async function fetchPostsFromFirestore(): Promise<any[]> {
     }
   } catch (e) {}
 
-  // 2. Load latest real-time documents from Firestore
+  // 2. Load latest real-time documents from Firestore with query limit
   try {
-    const snap = await getDocs(collection(db, 'posts'));
+    const postsQuery = query(collection(db, 'posts'), limit(40));
+    const snap = await getDocs(postsQuery);
     snap.forEach((docSnap) => {
       const data = docSnap.data();
       if (data && docSnap.id) {
@@ -237,8 +238,12 @@ export async function fetchPostsFromFirestore(): Promise<any[]> {
         postsMap.set(String(docSnap.id), merged);
       }
     });
-  } catch (error) {
-    console.warn('Firestore fetchPosts note:', error);
+  } catch (error: any) {
+    if (error?.message?.includes('Quota') || error?.code === 'resource-exhausted') {
+      console.warn('Firestore daily read quota note: Using local cached posts.');
+    } else {
+      console.warn('Firestore fetchPosts note:', error);
+    }
   }
 
   const result = Array.from(postsMap.values())
@@ -263,11 +268,11 @@ export async function fetchPostsFromFirestore(): Promise<any[]> {
   return result;
 }
 
-// 2. Real-Time Firestore Subscription Listeners (Instant Multi-Device Sync for Free Vercel Deployments)
+// 2. Real-Time Firestore Subscription Listeners (Instant Multi-Device Sync with Free Tier Optimization)
 export function subscribeToPostsFromFirestore(callback: (posts: any[]) => void): () => void {
   try {
-    const postsRef = collection(db, 'posts');
-    return onSnapshot(postsRef, (snapshot) => {
+    const postsQuery = query(collection(db, 'posts'), limit(40));
+    return onSnapshot(postsQuery, (snapshot) => {
       const postsMap = new Map<string, any>();
 
       // Load baseline from local cache
@@ -321,8 +326,12 @@ export function subscribeToPostsFromFirestore(callback: (posts: any[]) => void):
         try { localStorage.setItem(LOCAL_POSTS_CACHE_KEY, JSON.stringify(result.slice(0, 100))); } catch (e) {}
       }
       callback(result);
-    }, (error) => {
-      console.warn('Firestore real-time posts subscription note:', error);
+    }, (error: any) => {
+      if (error?.message?.includes('Quota') || error?.code === 'resource-exhausted') {
+        console.warn('Firestore real-time posts: Free daily read units limit reached. Local cache active.');
+      } else {
+        console.warn('Firestore real-time posts subscription note:', error);
+      }
     });
   } catch (err) {
     console.warn('Real-time posts listener setup note:', err);
@@ -332,8 +341,8 @@ export function subscribeToPostsFromFirestore(callback: (posts: any[]) => void):
 
 export function subscribeToUsersFromFirestore(callback: (users: any[]) => void): () => void {
   try {
-    const usersRef = collection(db, 'users');
-    return onSnapshot(usersRef, (snapshot) => {
+    const usersQuery = query(collection(db, 'users'), limit(50));
+    return onSnapshot(usersQuery, (snapshot) => {
       const list: any[] = [];
       snapshot.forEach((docSnap) => {
         const data = docSnap.data();
@@ -342,8 +351,12 @@ export function subscribeToUsersFromFirestore(callback: (users: any[]) => void):
         }
       });
       callback(list);
-    }, (error) => {
-      console.warn('Firestore real-time users subscription note:', error);
+    }, (error: any) => {
+      if (error?.message?.includes('Quota') || error?.code === 'resource-exhausted') {
+        console.warn('Firestore real-time users: Free daily read units limit reached. Local cache active.');
+      } else {
+        console.warn('Firestore real-time users subscription note:', error);
+      }
     });
   } catch (err) {
     console.warn('Real-time users listener setup note:', err);
@@ -468,6 +481,66 @@ export async function saveAdminSettingsToFirestore(settingsData: any) {
   } catch (error) {
     console.warn('Firestore saveAdminSettings note:', error);
     return false;
+  }
+}
+
+export function subscribeToAdminSettingsFromFirestore(callback: (data: any) => void) {
+  try {
+    const settingsRef = doc(db, 'system', 'adminSettings');
+    return onSnapshot(settingsRef, (snap) => {
+      if (snap.exists()) {
+        callback(snap.data());
+      }
+    }, (error) => {
+      console.warn('Firestore admin settings snapshot note:', error);
+    });
+  } catch (e) {
+    console.warn('Error subscribing to admin settings:', e);
+    return () => {};
+  }
+}
+
+export async function saveBrandAdsToFirestore(brandAdsList: any[]) {
+  try {
+    const adsRef = doc(db, 'system', 'brandAds');
+    const cleanAds = brandAdsList.map(ad => ({
+      id: ad.id || 'ad-' + Date.now(),
+      type: ad.type || 'image',
+      title: ad.title || '',
+      companyName: ad.companyName || '',
+      mediaUrl: ad.mediaUrl || '',
+      linkUrl: ad.linkUrl || '',
+      description: ad.description || '',
+      isActive: ad.isActive !== false,
+      createdAt: ad.createdAt || Date.now()
+    }));
+    await setDoc(adsRef, {
+      brandAdsList: cleanAds,
+      updatedAt: serverTimestamp()
+    }, { merge: true });
+    return true;
+  } catch (error) {
+    console.warn('Firestore saveBrandAds note:', error);
+    return false;
+  }
+}
+
+export function subscribeToBrandAdsFromFirestore(callback: (ads: any[]) => void) {
+  try {
+    const adsRef = doc(db, 'system', 'brandAds');
+    return onSnapshot(adsRef, (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        if (data && Array.isArray(data.brandAdsList)) {
+          callback(data.brandAdsList);
+        }
+      }
+    }, (error) => {
+      console.warn('Firestore brandAds snapshot note:', error);
+    });
+  } catch (e) {
+    console.warn('Error subscribing to brand ads:', e);
+    return () => {};
   }
 }
 
@@ -895,9 +968,10 @@ export async function fetchAllUsersFromFirestore(): Promise<any[]> {
     }
   } catch (e) {}
 
-  // 2. Fetch all from Firestore 'users' collection
+  // 2. Fetch from Firestore 'users' collection with query limit
   try {
-    const snap = await getDocs(collection(db, 'users'));
+    const usersQuery = query(collection(db, 'users'), limit(50));
+    const snap = await getDocs(usersQuery);
     snap.forEach((docSnap) => {
       const data = docSnap.data();
       if (data && docSnap.id !== 'undefined') {
@@ -906,54 +980,15 @@ export async function fetchAllUsersFromFirestore(): Promise<any[]> {
         usersMap.set(uId, { ...existing, ...data, id: uId });
       }
     });
-  } catch (error) {
-    console.warn('Firestore fetchAllUsers note:', error);
+  } catch (error: any) {
+    if (error?.message?.includes('Quota') || error?.code === 'resource-exhausted') {
+      console.warn('Firestore daily read quota note: Using local cached users.');
+    } else {
+      console.warn('Firestore fetchAllUsers note:', error);
+    }
   }
 
-  // 3. Also extract registered user profiles attached to Firestore posts
-  try {
-    const postSnap = await getDocs(collection(db, 'posts'));
-    postSnap.forEach((docSnap) => {
-      const p = docSnap.data();
-      if (p) {
-        if (p.user && (p.user.id || p.user.name)) {
-          const uId = String(p.user.id || p.userId || p.user.username);
-          if (uId && !usersMap.has(uId)) {
-            usersMap.set(uId, {
-              id: uId,
-              name: p.user.name || p.userName || 'Business Member',
-              username: p.user.username || p.userName?.toLowerCase().replace(/\s+/g, '') || `user_${uId}`,
-              role: p.user.role || p.userRole || 'factory',
-              avatar: p.user.avatar || p.userAvatar || '',
-              avatarUrl: p.user.avatarUrl || p.userAvatar || '',
-              city: p.user.city || p.city || 'Morbi',
-              state: p.user.state || p.state || 'Gujarat',
-              isVerified: Boolean(p.user.isVerified)
-            });
-          }
-        } else if (p.userId && p.userName) {
-          const uId = String(p.userId);
-          if (!usersMap.has(uId)) {
-            usersMap.set(uId, {
-              id: uId,
-              name: p.userName,
-              username: p.userName.toLowerCase().replace(/\s+/g, ''),
-              role: p.userRole || 'factory',
-              avatar: p.userAvatar || '',
-              avatarUrl: p.userAvatar || '',
-              city: p.city || 'Morbi',
-              state: p.state || 'Gujarat',
-              isVerified: false
-            });
-          }
-        }
-      }
-    });
-  } catch (err) {
-    console.warn('Post user extraction note:', err);
-  }
-
-  // 4. Fallback to API if available
+  // 3. Fallback to API if available
   try {
     const res = await fetch('/api/users');
     if (res.ok) {
