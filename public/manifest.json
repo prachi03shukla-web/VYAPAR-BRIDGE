@@ -1,17 +1,30 @@
 {
   "name": "Vyapar Bridge",
   "short_name": "Vyapar Bridge",
-  "description": "#1 B2B Tiles & Sanitaryware Network",
+  "description": "India's #1 B2B Digital Commerce Network",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0f172a",
   "theme_color": "#0f172a",
   "icons": [
     {
+      "src": "/android-chrome-192x192.png",
+      "sizes": "192x192",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/android-chrome-512x512.png",
+      "sizes": "512x512",
+      "purpose": "any maskable"
+    },
+    {
       "src": "/icon.png",
       "sizes": "512x512",
-      "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
+    },
+    {
+      "src": "/brand_logo.png",
+      "sizes": "512x512"
     }
   ],
   "orientation": "portrait"

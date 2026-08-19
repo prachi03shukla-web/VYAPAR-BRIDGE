@@ -88,7 +88,7 @@ export const AIChatbotWidget: React.FC = () => {
       q.includes('logo') ||
       q.includes('catalogue')
     ) {
-      return `👤 **Vyapar Bridge par Profile Setup Guide:**\n\n1. **Register / Login:** Top right par **Login/Register** button dabayein. Apna Phone Number, Password aur Role select karein:\n   - 🏭 **Company / Factory** (Manufacturers & Brands)\n   - 🏪 **Dealer / Distributor** (Wholesalers & Traders)\n   - 🛒 **Local Customer** (Buyers)\n2. **Business Details:** Profile page par jaakar **Edit Profile** par click karein:\n   - Apna **Company Name** aur Address dalein.\n   - **GST Number** add karein (GST Verified Badge ke liye).\n   - Apna **Brand Logo** aur **PDF Catalogue** upload karein.\n3. **Direct Contact:** Apna WhatsApp number dalein taaki buyers aapko direct Call/Message kar sakein!`;
+      return `👤 **Vyapar Bridge Profile Setup & GST Verification Guide:**\n\n1. **Register / Login:** Top right par **Login/Register** button dabayein. Phone Number, Password aur Role select karein:\n   - 🏭 **Company / Factory** (Manufacturers & Brands)\n   - 🏪 **Dealer / Distributor** (Wholesalers & Traders)\n   - 🛒 **Customer** (Buyers)\n2. **Business Details:** Profile page par **Edit Profile** click karein:\n   - Company Name aur Address dalein.\n   - **GST Number** add karein (GST Verified Badge ke liye).\n   - Brand Logo aur **PDF Catalogue** upload karein.\n3. **Direct Contact & Protection:** Customer inquiries ke direct leads unlock karne ke liye Verified Badge zaroor active karein!`;
     }
 
     // 3. How to Post & Upload Content (Text, Image, Video, PDF, Reel)
@@ -102,9 +102,23 @@ export const AIChatbotWidget: React.FC = () => {
       q.includes('pdf') ||
       q.includes('link') ||
       q.includes('hashtag') ||
-      q.includes('tags')
+      q.includes('guardrail')
     ) {
-      return `📢 **Vyapar Bridge par Post aur Reel Kaise Daalein?**\n\n1. **New Post (Feed):**\n   - Top bar par **+ Post** button dabayein.\n   - Photo, Video, PDF Catalogue, ya **keval Business Text & Website Link** dalein.\n   - ✨ **AI Auto-Hashtags:** Auto-Tag button dabayein, Gemini AI aapke business ke hisab se best hashtags auto-generate kar dega!\n2. **Reels Publishing:**\n   - Bottom menu me **Reels** tab par jayein aur Publish Reel dabayein.\n   - Official Background Music / Sound select karein aur volume adjust karke publish karein!`;
+      return `📢 **Vyapar Bridge par Post aur Reel Kaise Daalein?**\n\n1. **New Post (Feed):**\n   - Top bar par **+ Post** button dabayein.\n   - Photo, Video, PDF Catalogue, ya **keval Business Text & Website Link** dalein.\n   - ✨ **AI Auto-Hashtags:** Auto-Tag button dabayein, Gemini AI aapke business ke hisab se best hashtags auto-generate kar dega!\n2. **Background Fast Publishing:**\n   - Publish button dabate hi post background me upload hoti rehti hai. Upload hone par aapko **Bubble Sound** notification aayega!\n3. **🛡️ AI Guardrail Note:**\n   - Vyapar Bridge strictly B2B commercial network hai. Personal selfies ya non-business content allowed nahi hai. Commercial products, machinery aur trade materials post karein.`;
+    }
+
+    // 4. Comments, Lead Contact Protection & Privacy
+    if (
+      q.includes('comment') ||
+      q.includes('contact') ||
+      q.includes('phone') ||
+      q.includes('number') ||
+      q.includes('mask') ||
+      q.includes('deal') ||
+      q.includes('privacy') ||
+      q.includes('lead')
+    ) {
+      return `🔒 **Public Comments & Lead Contact Protection Policy:**\n\n1. **Contact Protection:** Public comments me phone numbers mask ho jaate hain taaki commercial leads leak na hon.\n2. **Customer Inquiries:** Customers directly **Inquire / Trade Connect** button se merchant ke sath verified direct conversation kar sakte hain.\n3. **Monetized Business Safety:** Isse merchants aur buyers dono ke beech genuine verified commercial deals secure hoti hain.`;
     }
 
     // 4. How to Get Post on Top & Reach Maximum Customers

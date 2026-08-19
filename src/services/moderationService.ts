@@ -45,8 +45,8 @@ const ABUSIVE_PATTERNS = [
 ];
 
 const NON_B2B_SELFIE_PATTERNS = [
-  /\b(my selfie|personal photo|cute pic|feeling cute|dating profile|looking for gf|looking for bf|tinder|shadi rishta|single boy|single girl)\b/i,
-  /\b(instagram model|follow for follow|f4f|like4like|subscribe to my personal|lip sync|romantic status)\b/i
+  /\b(my selfie|personal photo|cute pic|feeling cute|dating profile|looking for gf|looking for bf|tinder|shadi rishta|single boy|single girl|dp photo|my photo|good morning|good night|feeling sad|feeling happy|love status|sad status|status video|hero|funny video|comedy video|dance video|song reel|song video|shayari|love story|couple video)\b/i,
+  /\b(instagram model|follow for follow|f4f|like4like|subscribe to my personal|lip sync|romantic status|marriage|wedding|birthday party|party time|enjoying|pic of the day|personal pic)\b/i
 ];
 
 /**

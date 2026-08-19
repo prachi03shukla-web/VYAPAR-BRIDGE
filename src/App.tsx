@@ -28,6 +28,20 @@ import { fetchPostsFromFirestore, syncPostToFirestore, subscribeToPostsFromFires
 import { suggestHashtagsWithAI } from './services/aiService';
 import { optimizeImageForPersistence, fileToDataURL } from './utils/imageOptimizer';
 import { moderateContentUniversally } from './services/moderationService';
+import { playBubblePopSound } from './utils/audioEffects';
+
+export function renderSafeCommentText(content: string, isAuthorOrAdmin = false): { text: string; masked: boolean } {
+  if (!content) return { text: '', masked: false };
+  // Detect phone numbers (10-digit Indian, +91, space-separated digits) or emails
+  const phoneOrContactRegex = /(\+?91[\s\-]?)?[6-9]\d{9}|\b\d{5}[\s\-]?\d{5}\b|[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+
+  if (!isAuthorOrAdmin && phoneOrContactRegex.test(content)) {
+    const maskedText = content.replace(phoneOrContactRegex, '🔒 [Contact Masked - Use "Inquire / Trade Connect" to Connect Directly]');
+    return { text: maskedText, masked: true };
+  }
+
+  return { text: content, masked: false };
+}
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -1820,10 +1834,30 @@ function ReelCard({
                   )}
                 </div>
                 <div className="flex-1">
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-1.5 flex-wrap">
                     <span className="font-semibold text-zinc-200">{c.user?.name || 'Vyapar Bridge Member'}</span>
+                    {c.user?.role === 'customer' && (
+                      <span className="px-1.5 py-0.2 text-[9px] font-bold bg-amber-500/20 text-amber-300 rounded border border-amber-500/30">
+                        Customer Inquiry
+                      </span>
+                    )}
                   </div>
-                  <p className="text-zinc-300 mt-0.5 leading-normal">{c.content}</p>
+                  {(() => {
+                    const { text: safeText, masked } = renderSafeCommentText(
+                      c.content,
+                      currentUser?.id === c.userId || currentUser?.role === 'admin'
+                    );
+                    return (
+                      <>
+                        <p className="text-zinc-300 mt-0.5 leading-normal">{safeText}</p>
+                        {masked && (
+                          <p className="text-[10px] text-amber-400 mt-1 bg-amber-500/10 p-1 rounded border border-amber-500/20 font-medium">
+                            🔒 Phone numbers in public comments are protected.
+                          </p>
+                        )}
+                      </>
+                    );
+                  })()}
                   <button 
                     onClick={() => setCommentText('@' + (c.user?.name?.replace(/\s+/g, '') || 'User') + ' ')} 
                     className="text-[10px] text-zinc-500 font-bold hover:text-zinc-300 mt-1 cursor-pointer"
@@ -3195,10 +3229,15 @@ function PostItem({
                     )}
                   </div>
                   <div className="flex-1 flex flex-col">
-                    <div className="flex items-center gap-1 shrink-0">
+                    <div className="flex items-center gap-1.5 flex-wrap shrink-0">
                       <span className="font-semibold cursor-pointer text-xs">{comment.user?.name}</span>
                       {(comment.user?.isVerified || (currentUser?.id === comment.userId && currentUser?.isVerified)) && (
                         <VerifiedBadge size="sm" />
+                      )}
+                      {comment.user?.role === 'customer' && (
+                        <span className="px-1.5 py-0.2 text-[9px] font-bold bg-amber-500/20 text-amber-600 dark:text-amber-400 rounded border border-amber-500/30">
+                          Customer Inquiry
+                        </span>
                       )}
                     </div>
                     {editingCommentId === comment.id ? (
@@ -3215,7 +3254,22 @@ function PostItem({
                       </div>
                     ) : (
                       <div className="flex flex-col">
-                        <span className="flex-1 text-sm">{comment.content}</span>
+                        {(() => {
+                          const { text: safeContent, masked } = renderSafeCommentText(
+                            comment.content, 
+                            currentUser?.id === comment.userId || currentUser?.role === 'admin'
+                          );
+                          return (
+                            <>
+                              <span className="flex-1 text-sm mt-0.5">{safeContent}</span>
+                              {masked && (
+                                <div className="text-[10px] text-amber-600 dark:text-amber-400 mt-1 flex items-center gap-1 font-medium bg-amber-500/10 p-1.5 rounded-lg border border-amber-500/20">
+                                  🔒 Phone numbers in public comments are protected. Use "Inquire / Trade Connect" to chat directly.
+                                </div>
+                              )}
+                            </>
+                          );
+                        })()}
                         {comment.imageUrl && (
                           <div className="mt-2 rounded-xl overflow-hidden border border-slate-100 dark:border-zinc-800 max-w-[220px] shadow-sm">
                             <img 
@@ -3708,6 +3762,7 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
         const cleanUsers = filterOutHiddenContent(realtimeUsers, user?.id);
         setAllDealersList(cleanUsers.filter((u: any) => u.role === 'dealer' || u.role === 'factory'));
         setVerifiedUsers(cleanUsers.filter((u: any) => u.isVerified).map((u: any) => ({ ...u, isFollowing: isUserFollowed(u.id) })));
+        setSuggestedUsers(cleanUsers.filter((u: any) => String(u.id) !== String(user?.id)).slice(0, 20));
       }
     });
 
@@ -4049,6 +4104,7 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
         };
 
         await syncPostToFirestore(finalReelPost);
+        playBubblePopSound();
         toast.success('🎉 Published successfully!', { id: toastId });
         setPosts(prev => [finalReelPost, ...prev]);
         setActiveStoryIndex(0);
@@ -4787,6 +4843,7 @@ function CreatePost({ user }: { user: any }) {
         toast.info('⏳ Post sent for Admin Review');
         window.alert('⚠️ AAPKI POST ADMIN REVIEW KE LIYE SENT HOGI\n\nHamare AI ne is post ko review ke liye Master Admin console tak bhej diya hai. Admin isko review karke approval denge ya permanently delete kar denge. Approval milte hi yeh live ho jayegi.');
       } else {
+        playBubblePopSound();
         toast.success(`🎉 Post ${visibility === 'scheduled' ? 'scheduled' : 'published'} successfully!`);
       }
       navigate('/');
@@ -10021,25 +10078,45 @@ function RoadmapPage({ user, userLocation }: { user?: any; userLocation?: { lat:
   const [filterRole, setFilterRole] = useState<'all' | 'factory' | 'dealer'>('all');
 
   useEffect(() => {
+    let isMounted = true;
+    const processUsers = (data: any[]) => {
+      if (!Array.isArray(data)) return;
+      const uniqueMap = new Map();
+      data.forEach((u: any) => {
+        if (u && (u.role === 'dealer' || u.role === 'factory' || u.role === 'customer' || u.name)) {
+          const key = (u.gstNumber && u.gstNumber.trim() !== '') ? u.gstNumber.trim().toUpperCase() : (u.id || u.username);
+          if (key && !uniqueMap.has(key)) {
+            uniqueMap.set(key, u);
+          }
+        }
+      });
+      if (isMounted) {
+        setDealers(Array.from(uniqueMap.values()));
+        setLoading(false);
+      }
+    };
+
+    // 1. Initial Firestore fetch
+    fetchAllUsersFromFirestore().then(fbUsers => {
+      if (fbUsers && fbUsers.length > 0) processUsers(fbUsers);
+    }).catch(() => {});
+
+    // 2. Real-time Firestore subscription
+    const unsubscribe = subscribeToUsersFromFirestore((realtimeUsers) => {
+      if (realtimeUsers && realtimeUsers.length > 0) processUsers(realtimeUsers);
+    });
+
+    // 3. Fallback backend API fetch
     safeFetch('/api/users')
       .then(data => {
-        if (Array.isArray(data)) {
-          // De-duplicate by ID to prevent dummy/duplicate profiles
-          const uniqueMap = new Map();
-          data.forEach((u: any) => {
-            // Include factories and dealers, exclude customers
-            if (u.role === 'dealer' || u.role === 'factory') {
-              const key = (u.gstNumber && u.gstNumber.trim() !== '') ? u.gstNumber.trim().toUpperCase() : u.id;
-              if (!uniqueMap.has(key)) {
-                uniqueMap.set(key, u);
-              }
-            }
-          });
-          setDealers(Array.from(uniqueMap.values()));
-        }
-        setLoading(false);
+        if (Array.isArray(data)) processUsers(data);
       })
-      .catch(() => setLoading(false));
+      .catch(() => { if (isMounted) setLoading(false); });
+
+    return () => {
+      isMounted = false;
+      if (typeof unsubscribe === 'function') unsubscribe();
+    };
   }, []);
 
   const filteredDealers = dealers.filter(dealer => {
@@ -10738,6 +10815,7 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
       };
 
       await syncPostToFirestore(finalReel);
+      playBubblePopSound();
       toast.success('🎉 Reel published successfully!', { id: toastId });
       setReels(prev => [finalReel, ...prev]);
       setCurrentIndex(0);
@@ -12099,7 +12177,9 @@ function ProfileSettingsDrawer({
   onOpenCalculator,
   onToggleTheme, 
   isDark,
-  onOpenMasterConsole
+  onOpenMasterConsole,
+  deferredPrompt,
+  setDeferredPrompt
 }: { 
   isOpen: boolean; 
   onClose: () => void; 
@@ -12112,6 +12192,8 @@ function ProfileSettingsDrawer({
   onToggleTheme: () => void; 
   isDark: boolean; 
   onOpenMasterConsole?: () => void;
+  deferredPrompt?: any;
+  setDeferredPrompt?: (p: any) => void;
 }) {
   const navigate = useNavigate();
   if (!isOpen) return null;
@@ -12190,7 +12272,40 @@ function ProfileSettingsDrawer({
 
         {/* Settings Navigation List */}
         <div className="p-3 flex-1 space-y-2">
-          {/* Removed Approval Center from here */}
+          {/* Install App / Add to Home Screen Button */}
+          <button 
+            onClick={() => {
+              onClose();
+              if (deferredPrompt) {
+                deferredPrompt.prompt();
+                deferredPrompt.userChoice.then((choiceResult: any) => {
+                  if (choiceResult.outcome === 'accepted') {
+                    toast.success('🎉 Installing Vyapar Bridge App with official logo to Home Screen!');
+                  }
+                  if (setDeferredPrompt) setDeferredPrompt(null);
+                });
+              } else {
+                const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+                if (isIOS) {
+                  window.alert('📱 VYAPAR BRIDGE APP - ADD TO HOME SCREEN (iPhone/Safari):\n\n1. Tap the Share button in Safari (Square with Up Arrow 📤)\n2. Scroll down and tap "Add to Home Screen" (➕)\n3. Tap "Add" in top right corner.\n\nVyapar Bridge App icon will appear directly on your mobile Home Screen!');
+                } else {
+                  window.alert('📱 VYAPAR BRIDGE APP - INSTALL TO MOBILE HOME SCREEN:\n\n1. Tap Chrome / Browser menu (3 dots ⋮ at top right)\n2. Select "Add to Home screen" or "Install app"\n3. Confirm "Install"\n\nVyapar Bridge App with official logo will be saved directly on your mobile home screen!');
+                }
+              }
+            }}
+            className="w-full p-3.5 rounded-xl bg-gradient-to-r from-amber-500 via-amber-600 to-yellow-600 hover:from-amber-600 hover:to-yellow-700 text-black font-black text-sm flex items-center gap-3 transition-all text-left cursor-pointer shadow-md my-1 border border-amber-400/30 active:scale-98"
+          >
+            <div className="w-9 h-9 rounded-xl bg-black/20 flex items-center justify-center shrink-0 border border-black/10 overflow-hidden">
+              <img src={BRAND_LOGO_SRC} alt="Vyapar Bridge Logo" className="w-full h-full object-cover" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="font-extrabold text-sm flex items-center gap-1.5 text-black">
+                <span>Add App to Home Screen</span>
+                <span className="text-[9px] bg-black text-amber-400 px-1.5 py-0.2 rounded font-black uppercase">Official Logo</span>
+              </div>
+              <div className="text-[11px] font-medium text-black/80 truncate">Install mobile app with brand logo</div>
+            </div>
+          </button>
 
           <div className="my-2 border-t border-slate-200 dark:border-zinc-800" />
 
@@ -12642,6 +12757,7 @@ function ProfilePage({
         toast.info('⏳ Post sent for Admin Review');
         window.alert('⚠️ AAPKI POST ADMIN REVIEW KE LIYE SENT HOGI\n\nHamare AI ne is post ko review ke liye Master Admin console tak bhej diya hai. Admin isko review karke approval denge ya permanently delete kar denge. Approval milte hi yeh live ho jayegi.');
       } else {
+        playBubblePopSound();
         toast.success('🎉 Post published successfully to your wall & feeds!');
       }
         setPostTitle('');
@@ -12831,8 +12947,44 @@ function ProfilePage({
     window.addEventListener('postDeleted', handlePostDeletedOnWall);
     window.addEventListener('reelDeleted', handlePostDeletedOnWall);
 
+    const unsubscribeRealtimeProfile = subscribeToPostsFromFirestore((realtimePosts) => {
+      if (!isCancelled && Array.isArray(realtimePosts)) {
+        const targetLower = String(isOwnProfile ? currentUser?.id : (profileUser?.id || targetIdentifier)).trim().toLowerCase();
+        const currentProfileUser = isOwnProfile ? currentUser : profileUser;
+        const targetUserNameLower = currentProfileUser?.name?.trim().toLowerCase() || '';
+        const targetUsernameLower = currentProfileUser?.username?.trim().toLowerCase() || '';
+        const targetPhoneLower = currentProfileUser?.phone?.trim().toLowerCase() || '';
+        const isTargetAdmin = currentProfileUser?.role === 'admin' || targetLower === '1' || targetLower === 'admin';
+
+        const profileRealtimePosts = realtimePosts.filter(p => {
+          const postUid = String(p.userId || p.user?.id || p.actorId || '').trim().toLowerCase();
+          const postUname = String(p.userName || p.user?.name || '').trim().toLowerCase();
+          const postUsername = String(p.username || p.user?.username || '').trim().toLowerCase();
+          const postPhone = String(p.phone || p.user?.phone || '').trim().toLowerCase();
+          const postRole = String(p.userRole || p.user?.role || '').trim().toLowerCase();
+
+          if (postUid && postUid === targetLower) return true;
+          if (targetUserNameLower && postUname === targetUserNameLower) return true;
+          if (targetUsernameLower && postUsername === targetUsernameLower) return true;
+          if (targetPhoneLower && postPhone === targetPhoneLower) return true;
+          if (isTargetAdmin && (postRole === 'admin' || postUid === '1' || postUid === 'admin' || postUname.includes('admin'))) return true;
+          return false;
+        });
+
+        if (profileRealtimePosts.length > 0) {
+          setUserPosts(prev => {
+            const map = new Map<string, any>();
+            prev.forEach(p => { if (p && p.id) map.set(String(p.id), p); });
+            profileRealtimePosts.forEach(p => { if (p && p.id) map.set(String(p.id), p); });
+            return Array.from(map.values()).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+          });
+        }
+      }
+    });
+
     return () => {
       isCancelled = true;
+      if (typeof unsubscribeRealtimeProfile === 'function') unsubscribeRealtimeProfile();
       window.removeEventListener('postCreated', handlePostCreatedOnWall);
       window.removeEventListener('postDeleted', handlePostDeletedOnWall);
       window.removeEventListener('reelDeleted', handlePostDeletedOnWall);
@@ -14359,6 +14511,17 @@ function AppContent() {
 
 
 
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+
+  useEffect(() => {
+    const handleBeforeInstall = (e: Event) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+    };
+    window.addEventListener('beforeinstallprompt', handleBeforeInstall);
+    return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstall);
+  }, []);
+
   const [isSettingsDrawerOpen, setIsSettingsDrawerOpen] = useState(false);
   const [isGlobalEditModalOpen, setIsGlobalEditModalOpen] = useState(false);
   const [isGlobalVerifyModalOpen, setIsGlobalVerifyModalOpen] = useState(false);
@@ -14734,6 +14897,35 @@ function AppContent() {
         </nav>
 
         <div className="mt-auto pt-4 space-y-1">
+          <button 
+            onClick={() => {
+              if (deferredPrompt) {
+                deferredPrompt.prompt();
+                deferredPrompt.userChoice.then((choiceResult: any) => {
+                  if (choiceResult.outcome === 'accepted') {
+                    toast.success('🎉 Installing Vyapar Bridge App with official logo!');
+                  }
+                  setDeferredPrompt(null);
+                });
+              } else {
+                const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+                if (isIOS) {
+                  window.alert('📱 VYAPAR BRIDGE APP - ADD TO HOME SCREEN (iPhone/Safari):\n\n1. Tap Share button in Safari (Square with Up Arrow 📤)\n2. Select "Add to Home Screen" (➕)\n3. Tap "Add"');
+                } else {
+                  window.alert('📱 INSTALL VYAPAR APP TO HOME SCREEN:\n\n1. Tap Chrome menu (3 dots ⋮ at top right)\n2. Select "Add to Home screen" or "Install app"\n3. Confirm "Install"\n\nVyapar Bridge App with official logo will be added to your home screen!');
+                }
+              }
+            }}
+            className="sidebar-nav-item outline-none focus:ring-2 focus:ring-amber-500 flex items-center gap-4 p-3 rounded-lg hover:bg-amber-50 dark:hover:bg-zinc-900 transition-colors w-full group relative text-black dark:text-zinc-50 font-bold"
+          >
+            <div className="w-6 h-6 rounded-md overflow-hidden shrink-0 border border-amber-500/30">
+              <img src={BRAND_LOGO_SRC} alt="Vyapar Logo" className="w-full h-full object-cover" />
+            </div>
+            <span className="hidden lg:block text-[14px] font-extrabold text-amber-800 dark:text-amber-400">Install App</span>
+            <div className="absolute left-14 bg-amber-600 text-black text-xs font-bold px-2 py-1.5 rounded-md opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-700 hidden md:block lg:hidden whitespace-nowrap z-50 pointer-events-none shadow-lg">
+              Install App
+            </div>
+          </button>
           
           <button 
             onClick={() => setIsCalculatorOpen(true)}
@@ -14867,6 +15059,8 @@ function AppContent() {
         onToggleTheme={toggleDark}
         isDark={isDark}
         onOpenMasterConsole={() => setIsMasterModalOpen(true)}
+        deferredPrompt={deferredPrompt}
+        setDeferredPrompt={setDeferredPrompt}
       />
 
       {/* Global VYAPAR BRIDGE Approval Center Modal */}

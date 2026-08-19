@@ -1,4 +1,5 @@
 import { db, auth } from '../firebase';
+import { optimizeImageForPersistence } from '../utils/imageOptimizer';
 import { 
   collection, 
   doc, 
@@ -86,7 +87,7 @@ export async function syncPostToFirestore(postData: any): Promise<boolean> {
     const postId = postData.id ? String(postData.id) : `post_${Date.now()}`;
     
     // Ensure mediaUrl is a persistent cloud/data URL, not an ephemeral local /uploads link or blob URL
-    let resolvedMediaUrl = postData.mediaUrl || '';
+    let resolvedMediaUrl = postData.mediaUrl || postData.persistentMediaUrl || '';
     if (resolvedMediaUrl.startsWith('/uploads') || resolvedMediaUrl.startsWith('blob:')) {
       resolvedMediaUrl = postData.persistentMediaUrl || postData.fileDataUrl || postData.mediaBase64 || postData.thumbnailUrl || '';
       if (resolvedMediaUrl.startsWith('blob:')) resolvedMediaUrl = '';
@@ -95,14 +96,43 @@ export async function syncPostToFirestore(postData: any): Promise<boolean> {
     let resolvedThumbnailUrl = postData.thumbnailUrl || resolvedMediaUrl || '';
     if (resolvedThumbnailUrl.startsWith('blob:')) resolvedThumbnailUrl = '';
 
-    const cleanData = sanitizeForFirestore({
+    let cleanData = sanitizeForFirestore({
       ...postData,
       id: postId,
       mediaUrl: resolvedMediaUrl,
       thumbnailUrl: resolvedThumbnailUrl,
+      persistentMediaUrl: resolvedMediaUrl,
+      status: postData.status || 'approved',
+      visibility: postData.visibility || 'public',
       updatedAt: Date.now(),
       createdAt: postData.createdAt || Date.now()
     });
+
+    // FIRESTORE SAFEGUARD: Limit document size to < 650 KB (Firestore max limit is 1MB)
+    // If payload is huge (e.g., raw video or ultra high-res image base64), optimize media so setDoc NEVER fails!
+    let jsonStr = JSON.stringify(cleanData);
+    if (jsonStr.length > 650000) {
+      console.warn(`⚠️ Post payload size (${jsonStr.length} bytes) exceeds Firestore safe threshold. Optimizing media for Firestore...`);
+      
+      if (cleanData.mediaUrl && cleanData.mediaUrl.startsWith('data:image')) {
+        cleanData.mediaUrl = await optimizeImageForPersistence(cleanData.mediaUrl, 800, 800, 0.65);
+        cleanData.thumbnailUrl = cleanData.mediaUrl;
+        cleanData.persistentMediaUrl = cleanData.mediaUrl;
+      } else if (cleanData.mediaUrl && cleanData.mediaUrl.startsWith('data:video')) {
+        if (cleanData.thumbnailUrl && cleanData.thumbnailUrl.startsWith('data:image')) {
+          cleanData.thumbnailUrl = await optimizeImageForPersistence(cleanData.thumbnailUrl, 600, 600, 0.6);
+        }
+        // If video base64 itself exceeds 600KB, use the optimized frame thumbnail for cloud sync so post is 100% saved & visible on all devices
+        if (cleanData.mediaUrl.length > 600000 && cleanData.thumbnailUrl && cleanData.thumbnailUrl.length < 300000) {
+          cleanData.mediaUrl = cleanData.thumbnailUrl;
+          cleanData.persistentMediaUrl = cleanData.thumbnailUrl;
+        }
+      }
+
+      delete cleanData.fileDataUrl;
+      delete cleanData.mediaBase64;
+      delete cleanData.rawMedia;
+    }
 
     // 1. Instant Local Storage Backup (survives tab/page refresh immediately)
     try {
@@ -124,9 +154,49 @@ export async function syncPostToFirestore(postData: any): Promise<boolean> {
     
     console.log(`✅ Post synced directly to Firestore: ${postId}`);
     return true;
-  } catch (error) {
-    console.warn('Firestore syncPost error:', error);
-    return false;
+  } catch (error: any) {
+    console.warn('Firestore syncPost primary attempt note:', error);
+
+    // EMERGENCY RECOVERY FOR OVERSIZED FIRESTORE DOCUMENTS
+    // If setDoc failed due to document size or payload limits, retry with compressed thumbnail image so post metadata (title, content, author) is NEVER lost across devices!
+    try {
+      const postId = postData.id ? String(postData.id) : `post_${Date.now()}`;
+      console.log(`🔄 Emergency size recovery: retrying Firestore setDoc for post ${postId}...`);
+      
+      let safeThumb = postData.thumbnailUrl || postData.mediaUrl || '';
+      if (safeThumb.length > 300000 && safeThumb.startsWith('data:image')) {
+        safeThumb = await optimizeImageForPersistence(safeThumb, 500, 500, 0.5);
+      } else if (safeThumb.length > 300000) {
+        safeThumb = '';
+      }
+
+      const emergencyData = sanitizeForFirestore({
+        ...postData,
+        id: postId,
+        mediaUrl: safeThumb,
+        thumbnailUrl: safeThumb,
+        persistentMediaUrl: safeThumb,
+        fileDataUrl: undefined,
+        mediaBase64: undefined,
+        rawMedia: undefined,
+        status: postData.status || 'approved',
+        visibility: postData.visibility || 'public',
+        updatedAt: Date.now(),
+        createdAt: postData.createdAt || Date.now()
+      });
+
+      const postRef = doc(db, 'posts', postId);
+      await setDoc(postRef, {
+        ...emergencyData,
+        serverSyncedAt: serverTimestamp()
+      }, { merge: true });
+      
+      console.log(`✅ Emergency Firestore sync succeeded for: ${postId}`);
+      return true;
+    } catch (retryErr) {
+      console.error('Emergency sync retry failed:', retryErr);
+      return false;
+    }
   }
 }
 
@@ -755,11 +825,22 @@ export async function syncUserToFirestore(userData: any): Promise<boolean> {
   if (!userData || !userData.id) return false;
   try {
     const uId = String(userData.id);
-    const cleanData = sanitizeForFirestore({
+    let cleanData = sanitizeForFirestore({
       ...userData,
       id: uId,
       updatedAt: Date.now()
     });
+
+    // FIRESTORE SAFEGUARD: Keep user document size < 750 KB
+    let jsonStr = JSON.stringify(cleanData);
+    if (jsonStr.length > 750000) {
+      console.warn(`⚠️ User profile payload size (${jsonStr.length} bytes) exceeds safe limit. Compressing avatar...`);
+      const compressedAvatar = await optimizeImageForPersistence(cleanData.avatarUrl || cleanData.avatar || BRAND_LOGO_SRC, 400, 400, 0.7);
+      cleanData.avatar = compressedAvatar;
+      cleanData.avatarUrl = compressedAvatar;
+      delete cleanData.rawCatalogue;
+      delete cleanData.rawPDF;
+    }
 
     // 1. Instant Local Storage Backup
     try {
@@ -779,6 +860,7 @@ export async function syncUserToFirestore(userData: any): Promise<boolean> {
       serverSyncedAt: serverTimestamp()
     }, { merge: true });
 
+    console.log(`✅ User profile synced to Firestore: ${uId}`);
     return true;
   } catch (err) {
     console.warn('Firestore syncUser note:', err);
