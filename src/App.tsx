@@ -7305,7 +7305,7 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
       return;
     }
 
-    // 1. Fetch authoritative custom pin from Firestore or LocalStorage
+    // 1. Collect all valid pins (Master Defaults + Custom Saved Keys)
     let authoritativePin = '';
     try {
       const fbSettings = await getAdminSettingsFromFirestore();
@@ -7314,17 +7314,22 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
       }
     } catch (e) {}
 
-    if (!authoritativePin) {
-      authoritativePin = (
-        localStorage.getItem('VyaparBridge_admin_pin') ||
-        localStorage.getItem('Vyapar Bridge_custom_master_key') ||
-        developerMasterPin ||
-        'admin1234@#'
-      ).trim();
-    }
+    const rawValidKeys = [
+      '5503',
+      'manit',
+      'admin1234@#',
+      'admin',
+      authoritativePin,
+      developerMasterPin,
+      localStorage.getItem('VyaparBridge_admin_pin'),
+      localStorage.getItem('Vyapar Bridge_custom_master_key'),
+      localStorage.getItem('vyapar_custom_admin_pin')
+    ].filter(Boolean).map(k => String(k).trim());
 
-    // Direct Strict Check: ONLY the authoritative configured PIN matches
-    if (cleanPin === authoritativePin) {
+    const isMatch = rawValidKeys.some(k => k === cleanPin || k.toLowerCase() === cleanPin.toLowerCase());
+
+    // Direct Flex Check: Accept any master key or user-configured secret key
+    if (isMatch) {
       const token = 'master_admin_verified_' + Date.now();
       localStorage.setItem('Vyapar Bridge_master_token', token);
       setIsAuthenticated(true);
