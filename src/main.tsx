@@ -30,6 +30,35 @@ import { BRAND_LOGO_SRC } from './constants/brandLogo';
   }
 })();
 
+// Suppress benign Firebase GrpcConnection idle stream warnings
+const originalConsoleError = console.error;
+console.error = (...args: any[]) => {
+  const msg = args.map(a => typeof a === 'string' ? a : (a?.message || '')).join(' ');
+  if (
+    msg.includes('GrpcConnection RPC') ||
+    msg.includes('Disconnecting idle stream') ||
+    msg.includes('CANCELLED: Disconnecting idle stream') ||
+    msg.includes('Timed out waiting for new targets')
+  ) {
+    return;
+  }
+  originalConsoleError(...args);
+};
+
+const originalConsoleWarn = console.warn;
+console.warn = (...args: any[]) => {
+  const msg = args.map(a => typeof a === 'string' ? a : (a?.message || '')).join(' ');
+  if (
+    msg.includes('GrpcConnection RPC') ||
+    msg.includes('Disconnecting idle stream') ||
+    msg.includes('CANCELLED: Disconnecting idle stream') ||
+    msg.includes('Timed out waiting for new targets')
+  ) {
+    return;
+  }
+  originalConsoleWarn(...args);
+};
+
 window.addEventListener('unhandledrejection', (event) => {
   const reason = event.reason;
   const msg = reason?.message || String(reason || '');

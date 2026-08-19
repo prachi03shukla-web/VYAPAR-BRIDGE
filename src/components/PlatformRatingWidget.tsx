@@ -24,7 +24,7 @@ export const PlatformRatingWidget: React.FC<PlatformRatingWidgetProps> = ({ curr
   const [stats, setStats] = useState({
     averageRating: 5.0,
     totalReviews: 24,
-    totalVisitors: 5420,
+    totalVisitors: 0,
     feedbacks: [] as any[]
   });
 
@@ -117,7 +117,7 @@ export const PlatformRatingWidget: React.FC<PlatformRatingWidgetProps> = ({ curr
         injectGoogleSeoSchema(data.averageRating, data.totalReviews, data.totalVisitors);
       }
     } catch (e) {
-      console.error('Error fetching rating stats:', e);
+      // Graceful fallback to Firestore stats
     }
   };
 
@@ -231,12 +231,11 @@ export const PlatformRatingWidget: React.FC<PlatformRatingWidgetProps> = ({ curr
             </div>
           </div>
 
-          <div className="h-8 w-px bg-white/20" />
-
-          <div className="text-center">
+          {/* Hidden Visitor Count - Background tracking active */}
+          <div className="hidden text-center" style={{ display: 'none' }}>
             <div className="text-lg font-black text-emerald-400 leading-none flex items-center gap-1">
               <Users className="w-4 h-4 text-emerald-400" />
-              <span>{stats.totalVisitors.toLocaleString()}</span>
+              <span>{(stats.totalVisitors || 0).toLocaleString()}</span>
             </div>
             <div className="text-[10px] font-bold text-slate-300 uppercase tracking-wider mt-1">
               Total Visitors

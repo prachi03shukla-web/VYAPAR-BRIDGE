@@ -375,9 +375,18 @@ export function subscribeToPaymentsFromFirestore(callback: (payments: any[]) => 
           list.push({ ...data, id: docSnap.id });
         }
       });
+      try { localStorage.setItem('tileance_payments_cache', JSON.stringify(list)); } catch (e) {}
       callback(list);
-    }, (error) => {
-      console.warn('Firestore real-time payments subscription note:', error);
+    }, (error: any) => {
+      try {
+        const cached = localStorage.getItem('tileance_payments_cache');
+        if (cached) callback(JSON.parse(cached));
+      } catch (e) {}
+      if (error?.message?.includes('Quota') || error?.code === 'resource-exhausted') {
+        // Handled silently
+      } else {
+        console.warn('Firestore real-time payments subscription note:', error);
+      }
     });
   } catch (err) {
     console.warn('Real-time payments listener setup note:', err);
@@ -489,10 +498,21 @@ export function subscribeToAdminSettingsFromFirestore(callback: (data: any) => v
     const settingsRef = doc(db, 'system', 'adminSettings');
     return onSnapshot(settingsRef, (snap) => {
       if (snap.exists()) {
-        callback(snap.data());
+        const data = snap.data();
+        try { localStorage.setItem('tileance_admin_settings_cache', JSON.stringify(data)); } catch (e) {}
+        callback(data);
       }
-    }, (error) => {
-      console.warn('Firestore admin settings snapshot note:', error);
+    }, (error: any) => {
+      // Gracefully fallback to localStorage cache on quota limit or network issue
+      try {
+        const cached = localStorage.getItem('tileance_admin_settings_cache');
+        if (cached) callback(JSON.parse(cached));
+      } catch (e) {}
+      if (error?.message?.includes('Quota') || error?.code === 'resource-exhausted') {
+        // Handled silently with cache fallback
+      } else {
+        console.warn('Firestore admin settings snapshot note:', error);
+      }
     });
   } catch (e) {
     console.warn('Error subscribing to admin settings:', e);
@@ -532,11 +552,20 @@ export function subscribeToBrandAdsFromFirestore(callback: (ads: any[]) => void)
       if (snap.exists()) {
         const data = snap.data();
         if (data && Array.isArray(data.brandAdsList)) {
+          try { localStorage.setItem('tileance_brand_ads_cache', JSON.stringify(data.brandAdsList)); } catch (e) {}
           callback(data.brandAdsList);
         }
       }
-    }, (error) => {
-      console.warn('Firestore brandAds snapshot note:', error);
+    }, (error: any) => {
+      try {
+        const cached = localStorage.getItem('tileance_brand_ads_cache');
+        if (cached) callback(JSON.parse(cached));
+      } catch (e) {}
+      if (error?.message?.includes('Quota') || error?.code === 'resource-exhausted') {
+        // Handled silently
+      } else {
+        console.warn('Firestore brandAds snapshot note:', error);
+      }
     });
   } catch (e) {
     console.warn('Error subscribing to brand ads:', e);
@@ -1127,7 +1156,7 @@ export function subscribeToPlatformStatsFromFirestore(
       if (docSnap.exists()) {
         const data = docSnap.data();
         callback({
-          totalVisitors: typeof data.totalVisitors === 'number' ? data.totalVisitors : 5420,
+          totalVisitors: typeof data.totalVisitors === 'number' ? data.totalVisitors : 0,
           totalReviews: typeof data.totalReviews === 'number' ? data.totalReviews : 24,
           averageRating: typeof data.averageRating === 'number' ? data.averageRating : 5.0,
           feedbacks: Array.isArray(data.feedbacks) ? data.feedbacks : []
@@ -1146,14 +1175,14 @@ export async function incrementVisitorCountInFirestore(): Promise<number> {
   try {
     const statsRef = doc(db, 'platform_stats', 'analytics');
     const snap = await getDoc(statsRef);
-    let currentVisitors = 5420;
+    let currentVisitors = 0;
     let feedbacks: any[] = [];
     let totalReviews = 24;
     let averageRating = 5.0;
 
     if (snap.exists()) {
       const data = snap.data();
-      currentVisitors = typeof data.totalVisitors === 'number' ? data.totalVisitors : 5420;
+      currentVisitors = typeof data.totalVisitors === 'number' ? data.totalVisitors : 0;
       feedbacks = Array.isArray(data.feedbacks) ? data.feedbacks : [];
       totalReviews = typeof data.totalReviews === 'number' ? data.totalReviews : 24;
       averageRating = typeof data.averageRating === 'number' ? data.averageRating : 5.0;
@@ -1172,7 +1201,7 @@ export async function incrementVisitorCountInFirestore(): Promise<number> {
     return newVisitorCount;
   } catch (err) {
     console.warn('Firestore incrementVisitorCount note:', err);
-    return 5420;
+    return 0;
   }
 }
 
@@ -1266,6 +1295,157 @@ export async function clearDefaultDataFromFirestore() {
     return false;
   }
 }
+
+// ==========================================
+// 8. REAL-TIME USER PRESENCE & ONLINE STATUS
+// ==========================================
+
+export async function updateUserPresence(userId: string | number, isOnline: boolean): Promise<boolean> {
+  if (!userId) return false;
+  try {
+    const uId = String(userId);
+    const now = Date.now();
+    
+    // Update local cache
+    try {
+      const existingStr = localStorage.getItem(LOCAL_USERS_CACHE_KEY);
+      if (existingStr) {
+        const list: any[] = JSON.parse(existingStr);
+        if (Array.isArray(list)) {
+          const updated = list.map(u => {
+            if (String(u.id) === uId) {
+              return { ...u, isOnline, lastActiveAt: now, lastHeartbeat: now };
+            }
+            return u;
+          });
+          localStorage.setItem(LOCAL_USERS_CACHE_KEY, JSON.stringify(updated));
+        }
+      }
+    } catch (e) {}
+
+    // Sync to Firestore
+    const userRef = doc(db, 'users', uId);
+    await setDoc(userRef, {
+      isOnline,
+      lastActiveAt: now,
+      lastHeartbeat: now
+    }, { merge: true });
+
+    return true;
+  } catch (err) {
+    console.warn('Firestore updateUserPresence note:', err);
+    return false;
+  }
+}
+
+/**
+ * Starts continuous real-time presence heartbeat for the logged in user.
+ * Automatically marks offline on tab close, backgrounding, or leaving app.
+ */
+export function startPresenceHeartbeat(userId: string | number): () => void {
+  if (!userId) return () => {};
+  const uId = String(userId);
+
+  // 1. Send immediate online ping
+  updateUserPresence(uId, true).catch(() => {});
+
+  // 2. Periodic heartbeat every 20 seconds
+  const intervalId = setInterval(() => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+      updateUserPresence(uId, true).catch(() => {});
+    }
+  }, 20000);
+
+  // 3. Tab visibility listener (switched tabs / minimized)
+  const handleVisibilityChange = () => {
+    if (document.visibilityState === 'visible') {
+      updateUserPresence(uId, true).catch(() => {});
+    } else {
+      updateUserPresence(uId, false).catch(() => {});
+    }
+  };
+
+  // 4. Page hide / Unload listener (close tab / browser exit)
+  const handleBeforeUnload = () => {
+    updateUserPresence(uId, false).catch(() => {});
+  };
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pagehide', handleBeforeUnload);
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('blur', () => {
+      // If user focuses outside window for long, keep presence fresh
+      if (document.visibilityState === 'hidden') {
+        updateUserPresence(uId, false).catch(() => {});
+      }
+    });
+    window.addEventListener('focus', () => {
+      updateUserPresence(uId, true).catch(() => {});
+    });
+  }
+
+  // Cleanup handler
+  return () => {
+    clearInterval(intervalId);
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pagehide', handleBeforeUnload);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    }
+    updateUserPresence(uId, false).catch(() => {});
+  };
+}
+
+/**
+ * Returns true if a user is currently online and active within the heartbeat window (65 seconds).
+ */
+export function isUserActiveOnline(userData: any): boolean {
+  if (!userData) return false;
+  if (userData.isOnline !== true) return false;
+  
+  const lastTime = userData.lastActiveAt || userData.lastHeartbeat || userData.updatedAt || 0;
+  const numTime = typeof lastTime === 'number' ? lastTime : new Date(lastTime).getTime();
+  if (isNaN(numTime) || numTime <= 0) return false;
+
+  const diff = Date.now() - numTime;
+  // Consider online if heartbeat was updated within 65 seconds
+  return diff < 65000;
+}
+
+/**
+ * Formats user's last seen time like Instagram / Facebook ("Active now", "Active 5m ago", "Active 2h ago")
+ */
+export function getUserLastActiveFormatted(userData: any): string {
+  if (!userData) return 'Offline';
+  
+  if (isUserActiveOnline(userData)) {
+    return 'Active now';
+  }
+
+  const lastTime = userData.lastActiveAt || userData.lastHeartbeat || userData.updatedAt || 0;
+  const numTime = typeof lastTime === 'number' ? lastTime : new Date(lastTime).getTime();
+  if (isNaN(numTime) || numTime <= 0) return 'Offline';
+
+  const diff = Date.now() - numTime;
+  if (diff < 60000) {
+    return 'Active just now';
+  }
+  if (diff < 3600000) {
+    const mins = Math.floor(diff / 60000);
+    return `Active ${mins}m ago`;
+  }
+  if (diff < 86400000) {
+    const hours = Math.floor(diff / 3600000);
+    return `Active ${hours}h ago`;
+  }
+  if (diff < 604800000) {
+    const days = Math.floor(diff / 86400000);
+    return `Active ${days}d ago`;
+  }
+  return 'Offline';
+}
+
 
 
 

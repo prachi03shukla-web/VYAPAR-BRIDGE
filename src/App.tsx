@@ -24,9 +24,10 @@ import { BRAND_LOGO_SRC, BRAND_NAME } from './constants/brandLogo';
 import { auth, db as firestoreDb } from './firebase';
 import { collection, doc, setDoc, getDocs, getDoc, query, where, deleteDoc, orderBy, limit, onSnapshot } from 'firebase/firestore';
 import { DEFAULT_B2B_POSTS } from './data/defaultPosts';
-import { fetchPostsFromFirestore, syncPostToFirestore, subscribeToPostsFromFirestore, subscribeToUsersFromFirestore, subscribeToPaymentsFromFirestore, submitPaymentUTRToFirestore, getAdminSettingsFromFirestore, saveAdminSettingsToFirestore, subscribeToAdminSettingsFromFirestore, saveBrandAdsToFirestore, subscribeToBrandAdsFromFirestore, likePostInFirestore, savePostInFirestore, addCommentToFirestore, fetchCommentsFromFirestore, followUserInFirestore, recordViewInFirestore, recordShareInFirestore, authenticateUserInFirestore, blockUserInFirestore, markPostNotInterestedInFirestore, getUsersBlockedAndNotInterestedFromFirestore, clearDefaultDataFromFirestore, deleteUserFromFirestore, deletePostFromFirestore, syncUserToFirestore, fetchAllUsersFromFirestore, sanitizeForFirestore, updateUserVerificationInFirestore, subscribeToPlatformStatsFromFirestore } from './services/firebaseDataSync';
+import { fetchPostsFromFirestore, syncPostToFirestore, subscribeToPostsFromFirestore, subscribeToUsersFromFirestore, subscribeToPaymentsFromFirestore, submitPaymentUTRToFirestore, getAdminSettingsFromFirestore, saveAdminSettingsToFirestore, subscribeToAdminSettingsFromFirestore, saveBrandAdsToFirestore, subscribeToBrandAdsFromFirestore, likePostInFirestore, savePostInFirestore, addCommentToFirestore, fetchCommentsFromFirestore, followUserInFirestore, recordViewInFirestore, recordShareInFirestore, authenticateUserInFirestore, blockUserInFirestore, markPostNotInterestedInFirestore, getUsersBlockedAndNotInterestedFromFirestore, clearDefaultDataFromFirestore, deleteUserFromFirestore, deletePostFromFirestore, syncUserToFirestore, fetchAllUsersFromFirestore, sanitizeForFirestore, updateUserVerificationInFirestore, subscribeToPlatformStatsFromFirestore, startPresenceHeartbeat, updateUserPresence, isUserActiveOnline, getUserLastActiveFormatted } from './services/firebaseDataSync';
 import { suggestHashtagsWithAI } from './services/aiService';
 import { optimizeImageForPersistence, fileToDataURL } from './utils/imageOptimizer';
+import { decodeUpiIdFromImageFile, extractUpiIdFromPayload } from './utils/qrUpiDecoder';
 import { moderateContentUniversally } from './services/moderationService';
 import { playBubblePopSound } from './utils/audioEffects';
 
@@ -101,16 +102,15 @@ async function safeFetch(url: string, options?: RequestInit) {
           errorMsg = errData.error || errorMsg;
         }
       } catch (e) {}
-      console.warn(`safeFetch response not ok (${res.status}) for ${url}: ${errorMsg}`);
       return { success: false, items: [], error: errorMsg };
     }
     if (!contentType || !contentType.includes('application/json')) {
       // If received HTML (like on Vercel 404/SPA rewrite fallback)
       return { success: true, message: 'OK', items: [] };
     }
-    return res.json();
+    const data = await res.json();
+    return data;
   } catch (err: any) {
-    console.warn(`safeFetch network notice for ${url}:`, err?.message || err);
     return { success: false, items: [], error: err?.message || 'Network error' };
   }
 }
@@ -466,11 +466,11 @@ export function VerifiedPaymentModal({ isOpen, onClose, user, onSuccess }: { isO
   const [utr, setUtr] = useState('');
   const [loading, setLoading] = useState(false);
   const [paymentSettings, setPaymentSettings] = useState<any>({
-    upiId: 'vyaparbridge@upi',
-    accountName: 'Vyapar Bridge B2B Operations',
+    upiId: 'ashish660@ibl',
+    accountName: 'Ashish Kumar Verma',
     barcodeImageUrl: '',
     barcodeSecretToken: 'SECURE-BARCODE-VERIFY-2026-X89',
-    paymentLink: 'upi://pay?pa=vyaparbridge@upi&pn=Vyapar Bridge%20India&cu=INR'
+    paymentLink: 'upi://pay?pa=ashish660@ibl&pn=Ashish%20Kumar%20Verma&cu=INR'
   });
 
   useEffect(() => {
@@ -508,7 +508,7 @@ export function VerifiedPaymentModal({ isOpen, onClose, user, onSuccess }: { isO
             setPaymentSettings((prev: any) => ({ ...prev, ...data }));
           }
         })
-        .catch(err => console.error(err));
+        .catch(() => {});
     }
 
     return () => {
@@ -528,15 +528,15 @@ export function VerifiedPaymentModal({ isOpen, onClose, user, onSuccess }: { isO
   };
 
   const handleCopyUpi = () => {
-    const cleanUpi = (paymentSettings.upiId || 'vyaparbridge@upi').trim().replace(/\s+/g, '');
+    const cleanUpi = (paymentSettings.upiId || 'ashish660@ibl').trim().replace(/\s+/g, '');
     navigator.clipboard.writeText(cleanUpi);
     toast.success(`📋 UPI ID copied: ${cleanUpi}`);
   };
 
   const handleOpenUpiApp = (appType?: 'gpay' | 'phonepe' | 'paytm' | 'generic') => {
-    const rawUpi = (paymentSettings.upiId || 'vyaparbridge@upi').trim();
+    const rawUpi = (paymentSettings.upiId || 'ashish660@ibl').trim();
     const cleanUpi = rawUpi.replace(/\s+/g, '');
-    const cleanName = 'VyaparBridge';
+    const cleanName = encodeURIComponent(paymentSettings.accountName || 'Ashish Kumar Verma');
     const numAmount = selectedPlan === 'yearly' ? '1188' : '99';
 
     // 1. Copy UPI ID to clipboard as instant backup
@@ -891,7 +891,7 @@ export function VerifiedPaymentModal({ isOpen, onClose, user, onSuccess }: { isO
                   ) : (
                     <div className="inline-block bg-white p-3 rounded-2xl shadow-md border border-slate-200 dark:border-zinc-700">
                       <img 
-                        src={`https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(`upi://pay?pa=${paymentSettings.upiId || 'vyaparbridge@upi'}&pn=VyaparBridge&am=${selectedPlan === 'yearly' ? 1188 : 99}&cu=INR`)}`}
+                        src={`https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(`upi://pay?pa=${paymentSettings.upiId || 'ashish660@ibl'}&pn=${encodeURIComponent(paymentSettings.accountName || 'Ashish Kumar Verma')}&am=${selectedPlan === 'yearly' ? 1188 : 99}&cu=INR`)}`}
                         alt="Dynamic Scannable UPI QR"
                         className="w-48 h-48 mx-auto object-contain rounded-xl"
                       />
@@ -912,7 +912,7 @@ export function VerifiedPaymentModal({ isOpen, onClose, user, onSuccess }: { isO
                       </button>
                     </div>
                     <div className="font-mono font-black text-base text-blue-600 dark:text-blue-400 bg-white dark:bg-zinc-900 p-2.5 rounded-lg border border-slate-200 dark:border-zinc-800 text-center tracking-wide select-all">
-                      {paymentSettings.upiId || 'vyaparbridge@upi'}
+                      {paymentSettings.upiId || 'ashish660@ibl'}
                     </div>
                   </div>
 
@@ -1190,7 +1190,7 @@ function ReelCard({
         body: JSON.stringify({ followerId: currentUser.id })
       });
     } catch (err) {
-      console.error('Failed to sync follow status with backend:', err);
+      // Offline/local fallback
     }
   };
 
@@ -3027,7 +3027,7 @@ function PostItem({
            </div>
         </div>
         <div className="relative">
-          <button onClick={() => setShowOptions(!showOptions)} className="text-black dark:text-zinc-50 hover:text-black/70 dark:hover:text-zinc-400 dark:text-zinc-400 p-1">
+          <button onClick={() => setShowOptions(!showOptions)} className="text-black dark:text-zinc-100 hover:text-black/70 dark:hover:text-zinc-300 p-1">
             <MoreHorizontal className="w-5 h-5" />
           </button>
           {showOptions && (
@@ -3135,11 +3135,11 @@ function PostItem({
       <div className="p-3">
         <div className="flex justify-between items-center mb-3">
           <div className="flex gap-4">
-            <button onClick={handleLike} className="hover:text-black/70 dark:hover:text-zinc-400 dark:text-zinc-400 transition-colors duration-700">
+            <button onClick={handleLike} className="text-black dark:text-zinc-100 hover:text-black/70 dark:hover:text-zinc-300 transition-colors duration-700">
               <Heart className={cn("w-6 h-6 transition-all duration-700 active:scale-95", isLiked ? "text-red-500 fill-red-500" : "")} />
             </button>
-            <button onClick={() => setShowComments(!showComments)} className="hover:text-black/70 dark:hover:text-zinc-400 dark:text-zinc-400 active:scale-95 transition-all duration-700"><MessageCircle className="w-6 h-6" /></button>
-            <button onClick={() => setIsShareModalOpen(true)} className="hover:text-black/70 dark:hover:text-zinc-400 dark:text-zinc-400 active:scale-95 transition-all duration-700">
+            <button onClick={() => setShowComments(!showComments)} className="text-black dark:text-zinc-100 hover:text-black/70 dark:hover:text-zinc-300 active:scale-95 transition-all duration-700"><MessageCircle className="w-6 h-6" /></button>
+            <button onClick={() => setIsShareModalOpen(true)} className="text-black dark:text-zinc-100 hover:text-black/70 dark:hover:text-zinc-300 active:scale-95 transition-all duration-700">
               <svg aria-label="Share Post" className="w-6 h-6" fill="currentColor" height="24" role="img" viewBox="0 0 24 24" width="24"><line fill="none" stroke="currentColor" strokeLinejoin="round" strokeWidth="2" x1="22" x2="9.218" y1="3" y2="10.083"></line><polygon fill="none" points="11.698 20.334 22 3.001 2 3.001 9.218 10.084 11.698 20.334" stroke="currentColor" strokeLinejoin="round" strokeWidth="2"></polygon></svg>
             </button>
             <button 
@@ -3163,7 +3163,7 @@ function PostItem({
 
                 navigate('/chat'); 
               }} 
-              className="text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 active:scale-95 transition-all duration-700 flex items-center gap-1 bg-emerald-50 dark:bg-emerald-950/30 px-2.5 py-0.5 rounded-full border border-emerald-100 dark:border-emerald-800/50"
+              className="text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300 active:scale-95 transition-all duration-700 flex items-center gap-1 bg-emerald-50 dark:bg-emerald-950/60 px-2.5 py-0.5 rounded-full border border-emerald-200 dark:border-emerald-700/60"
             >
               <MessageSquare className="w-4 h-4" />
               <span className="text-[10px] font-black uppercase">Inquiry</span>
@@ -3178,7 +3178,7 @@ function PostItem({
                    }
                    setIsReqModalOpen(true);
                  }}
-                 className="text-amber-600 dark:text-amber-400 hover:text-amber-700 active:scale-95 transition-all duration-700 flex items-center gap-1 bg-amber-50 dark:bg-amber-950/30 px-2.5 py-0.5 rounded-full border border-amber-100 dark:border-amber-800/50"
+                 className="text-amber-600 dark:text-amber-400 hover:text-amber-700 dark:hover:text-amber-300 active:scale-95 transition-all duration-700 flex items-center gap-1 bg-amber-50 dark:bg-amber-950/60 px-2.5 py-0.5 rounded-full border border-amber-200 dark:border-amber-700/60"
                  title="Send Requirements to Company"
               >
                 <ClipboardList className="w-4 h-4" />
@@ -3188,13 +3188,13 @@ function PostItem({
           </div>
           <button 
             onClick={() => setShowStatsModal(true)} 
-            className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 dark:text-blue-400 transition-all text-xs font-bold cursor-pointer border border-blue-500/20 active:scale-95 shadow-xs"
+            className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 dark:text-blue-400 transition-all text-xs font-bold cursor-pointer border border-blue-500/30 active:scale-95 shadow-xs"
             title="View detailed post insights & activity log"
           >
             <BarChart2 className="w-4 h-4 text-blue-500" />
             <span>Insights</span>
           </button>
-          <button onClick={handleSave} className="hover:text-black/70 dark:hover:text-zinc-400 dark:text-zinc-400 transition-colors duration-700">
+          <button onClick={handleSave} className="text-black dark:text-zinc-100 hover:text-black/70 dark:hover:text-zinc-300 transition-colors duration-700">
             <Bookmark className={cn("w-6 h-6 transition-all duration-700 active:scale-95", isSaved ? "text-black dark:text-zinc-50 fill-slate-900 dark:fill-white" : "")} />
           </button>
         </div>
@@ -3244,12 +3244,12 @@ function PostItem({
                     {comment.user?.avatarUrl ? (
                       <img src={comment.user.avatarUrl} alt={comment.user.name} className="w-full h-full object-cover" />
                     ) : (
-                      <span className="text-[10px] font-bold text-black/70">{comment.user?.name?.charAt(0) || 'U'}</span>
+                      <span className="text-[10px] font-bold text-black/80 dark:text-zinc-200">{comment.user?.name?.charAt(0) || 'U'}</span>
                     )}
                   </div>
                   <div className="flex-1 flex flex-col">
                     <div className="flex items-center gap-1.5 flex-wrap shrink-0">
-                      <span className="font-semibold cursor-pointer text-xs">{comment.user?.name}</span>
+                      <span className="font-semibold cursor-pointer text-xs text-black dark:text-zinc-100">{comment.user?.name}</span>
                       {(comment.user?.isVerified || (currentUser?.id === comment.userId && currentUser?.isVerified)) && (
                         <VerifiedBadge size="sm" />
                       )}
@@ -3265,11 +3265,11 @@ function PostItem({
                           type="text" 
                           value={editCommentText}
                           onChange={(e) => setEditCommentText(e.target.value)}
-                          className="flex-1 border-b border-slate-300 dark:border-zinc-700 bg-transparent focus:outline-none text-sm"
+                          className="flex-1 border-b border-slate-300 dark:border-zinc-700 bg-transparent focus:outline-none text-sm text-black dark:text-white"
                           autoFocus
                         />
                         <button onClick={() => handleUpdateComment(comment.id)} className="text-blue-500 font-semibold text-xs">Save</button>
-                        <button onClick={() => setEditingCommentId(null)} className="text-black/70 text-xs">Cancel</button>
+                        <button onClick={() => setEditingCommentId(null)} className="text-black/70 dark:text-zinc-400 text-xs hover:text-black dark:hover:text-zinc-200">Cancel</button>
                       </div>
                     ) : (
                       <div className="flex flex-col">
@@ -3280,7 +3280,7 @@ function PostItem({
                           );
                           return (
                             <>
-                              <span className="flex-1 text-sm mt-0.5">{safeContent}</span>
+                              <span className="flex-1 text-sm mt-0.5 text-black dark:text-zinc-100">{safeContent}</span>
                               {masked && (
                                 <div className="text-[10px] text-amber-600 dark:text-amber-400 mt-1 flex items-center gap-1 font-medium bg-amber-500/10 p-1.5 rounded-lg border border-amber-500/20">
                                   🔒 Phone numbers in public comments are protected. Use "Inquire / Trade Connect" to chat directly.
@@ -3304,14 +3304,14 @@ function PostItem({
                     <div className="flex items-center gap-3 mt-1">
                       <button 
                         onClick={() => setNewComment('@' + (comment.user?.name?.replace(/\s+/g, '') || 'User') + ' ')} 
-                        className="text-[10px] font-bold text-black/70 hover:text-black dark:hover:text-zinc-300 cursor-pointer"
+                        className="text-[10px] font-bold text-black/70 dark:text-zinc-400 hover:text-black dark:hover:text-zinc-200 cursor-pointer"
                       >
                         Reply
                       </button>
                     </div>
                   </div>
-                  {comment.userId === currentUser.id && editingCommentId !== comment.id && (
-                    <div className="opacity-0 group-hover/comment:opacity-100 transition-opacity flex items-center gap-2 text-xs text-black/60 shrink-0 mt-0.5">
+                  {comment.userId === currentUser?.id && editingCommentId !== comment.id && (
+                    <div className="opacity-0 group-hover/comment:opacity-100 transition-opacity flex items-center gap-2 text-xs text-black/60 dark:text-zinc-400 shrink-0 mt-0.5">
                       <button onClick={() => startEditComment(comment)} className="hover:text-blue-500">Edit</button>
                       <button onClick={() => handleDeleteComment(comment.id)} className="hover:text-red-500">Delete</button>
                     </div>
@@ -3319,7 +3319,7 @@ function PostItem({
                 </div>
               </div>
             ))}
-            {comments.length === 0 && <div className="text-sm text-black/70 font-medium text-center py-4">No comments yet. Be the first to comment!</div>}
+            {comments.length === 0 && <div className="text-sm text-black/70 dark:text-zinc-400 font-medium text-center py-4">No comments yet. Be the first to comment!</div>}
           </div>
 
           <div className="mt-4">
@@ -3335,7 +3335,7 @@ function PostItem({
               </div>
             )}
             
-            <form onSubmit={handleAddComment} className="flex items-center pt-4 border-t border-slate-100 dark:border-zinc-900 gap-3 relative">
+            <form onSubmit={handleAddComment} className="flex items-center pt-4 border-t border-slate-100 dark:border-zinc-800 gap-3 relative">
               <input
                 type="file"
                 ref={commentFileInputRef}
@@ -3346,7 +3346,7 @@ function PostItem({
               <button 
                 type="button"
                 onClick={() => commentFileInputRef.current?.click()}
-                className="p-2 text-black/60 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-full transition-all"
+                className="p-2 text-black/70 dark:text-zinc-300 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-full transition-all"
                 title="Add image to comment"
               >
                 <Camera className="w-5 h-5" />
@@ -3356,7 +3356,7 @@ function PostItem({
                 <input
                   type="text"
                   placeholder="Add a comment..."
-                  className="w-full text-sm bg-slate-50 dark:bg-zinc-950/50 border border-slate-100 dark:border-zinc-800 rounded-full px-4 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500/50 placeholder-slate-400"
+                  className="w-full text-sm bg-slate-50 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 text-black dark:text-white rounded-full px-4 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500/50 placeholder-slate-400 dark:placeholder-zinc-500"
                   value={newComment}
                   onChange={(e) => setNewComment(e.target.value)}
                 />
@@ -3616,6 +3616,7 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
   const [reelAspectRatio, setReelAspectRatio] = useState<'9/16' | '16/9' | '1/1'>('9/16');
   const [brandAdsList, setBrandAdsList] = useState<any[]>([]);
   const [currentAdIndex, setCurrentAdIndex] = useState(0);
+  const [adSlideDirection, setAdSlideDirection] = useState<number>(1);
   const [isBrandAdDismissed, setIsBrandAdDismissed] = useState(false);
 
   const fetchPosts = async () => {
@@ -4314,11 +4315,26 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
         if (combinedAdsList.length === 0 || isBrandAdDismissed) return null;
 
         const activeAd = combinedAdsList[currentAdIndex % combinedAdsList.length] || combinedAdsList[0];
+
+        const handleNextAd = (total: number) => {
+          setAdSlideDirection(1);
+          setCurrentAdIndex((prev) => (prev + 1) % total);
+        };
+
+        const handlePrevAd = (total: number) => {
+          setAdSlideDirection(-1);
+          setCurrentAdIndex((prev) => (prev - 1 + total) % total);
+        };
+
+        const handleSelectAdIndex = (idx: number) => {
+          setAdSlideDirection(idx >= currentAdIndex ? 1 : -1);
+          setCurrentAdIndex(idx);
+        };
         
         return (
-          <div className="mb-5 bg-white dark:bg-zinc-900 border-2 border-amber-500/70 rounded-2xl overflow-hidden shadow-2xl relative text-zinc-900 dark:text-white transition-all">
+          <div className="mb-6 bg-white dark:bg-zinc-950 border-2 border-amber-500/80 dark:border-amber-500/60 rounded-2xl overflow-hidden shadow-2xl relative text-zinc-900 dark:text-zinc-100 transition-all duration-300">
             {/* Header Badge, Playlist counter, Nav controls & Skip button */}
-            <div className="flex items-center justify-between px-3.5 py-2.5 bg-gradient-to-r from-amber-100 via-amber-50 to-orange-100 dark:from-zinc-900 dark:to-zinc-800 border-b border-amber-300 dark:border-amber-500/30 backdrop-blur-md gap-2">
+            <div className="flex items-center justify-between px-3.5 py-2.5 bg-gradient-to-r from-amber-100 via-amber-50 to-orange-100 dark:from-zinc-900 dark:via-zinc-900 dark:to-zinc-850 border-b border-amber-300/80 dark:border-zinc-800 backdrop-blur-md gap-2">
               <div className="flex items-center gap-2 min-w-0">
                 <span className="bg-gradient-to-r from-amber-500 to-amber-600 text-white text-[10px] font-black uppercase px-2 py-0.5 rounded-md tracking-wider flex items-center gap-1 shadow-sm shrink-0">
                   <Sparkles className="w-3 h-3 fill-white" /> Sponsored Top Brand
@@ -4327,29 +4343,29 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
                   {activeAd.companyName || 'Featured Brand'}
                 </span>
                 {combinedAdsList.length > 1 && (
-                  <span className="text-[10px] bg-amber-200/80 dark:bg-amber-500/20 text-amber-900 dark:text-amber-300 border border-amber-400/50 dark:border-amber-500/40 px-2 py-0.5 rounded-full font-bold shrink-0">
+                  <span className="text-[10px] bg-amber-200/90 dark:bg-amber-500/20 text-amber-950 dark:text-amber-300 border border-amber-400/60 dark:border-amber-500/40 px-2 py-0.5 rounded-full font-extrabold shrink-0">
                     {currentAdIndex + 1} / {combinedAdsList.length}
                   </span>
                 )}
               </div>
 
               <div className="flex items-center gap-2 shrink-0">
-                {/* Previous & Next Carousel Buttons */}
+                {/* Previous & Next Carousel Buttons in Header */}
                 {combinedAdsList.length > 1 && (
-                  <div className="flex items-center gap-1 bg-white/90 dark:bg-black/60 rounded-full p-0.5 border border-amber-300 dark:border-white/10 shadow-sm">
+                  <div className="flex items-center gap-1 bg-white/95 dark:bg-zinc-800/90 rounded-full p-0.5 border border-amber-300/80 dark:border-zinc-700 shadow-sm">
                     <button 
-                      onClick={() => setCurrentAdIndex((prev) => (prev - 1 + combinedAdsList.length) % combinedAdsList.length)}
-                      className="p-1 hover:bg-amber-100 dark:hover:bg-white/20 rounded-full transition-colors cursor-pointer text-amber-800 dark:text-amber-300"
+                      onClick={() => handlePrevAd(combinedAdsList.length)}
+                      className="p-1 hover:bg-amber-100 dark:hover:bg-zinc-700 rounded-full transition-colors cursor-pointer text-amber-900 dark:text-amber-300"
                       title="Previous Ad"
                     >
-                      <ChevronLeft className="w-4 h-4" />
+                      <ChevronLeft className="w-4 h-4 stroke-[2.5]" />
                     </button>
                     <button 
-                      onClick={() => setCurrentAdIndex((prev) => (prev + 1) % combinedAdsList.length)}
-                      className="p-1 hover:bg-amber-100 dark:hover:bg-white/20 rounded-full transition-colors cursor-pointer text-amber-800 dark:text-amber-300"
+                      onClick={() => handleNextAd(combinedAdsList.length)}
+                      className="p-1 hover:bg-amber-100 dark:hover:bg-zinc-700 rounded-full transition-colors cursor-pointer text-amber-900 dark:text-amber-300"
                       title="Next Ad"
                     >
-                      <ChevronRight className="w-4 h-4" />
+                      <ChevronRight className="w-4 h-4 stroke-[2.5]" />
                     </button>
                   </div>
                 )}
@@ -4369,27 +4385,80 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
               </div>
             </div>
 
-            {/* Media Canvas - Supports Videos, Images & Youtube Embeds */}
-            <div className="relative w-full min-h-[240px] max-h-[500px] bg-slate-900 dark:bg-black flex items-center justify-center overflow-hidden">
-              <AdMediaDisplay 
-                ad={activeAd} 
-                onMediaEnded={() => setCurrentAdIndex((prev) => (prev + 1) % combinedAdsList.length)}
-                className="w-full max-h-[480px] object-contain bg-slate-900 dark:bg-black" 
-              />
+            {/* Media Canvas - Smooth fluid slide transition with rigid height to prevent layout shifts */}
+            <div className="relative w-full h-[280px] sm:h-[340px] md:h-[380px] bg-zinc-950 flex items-center justify-center overflow-hidden select-none">
+              <AnimatePresence initial={false} custom={adSlideDirection}>
+                <motion.div
+                  key={activeAd.id || `ad-slide-${currentAdIndex}`}
+                  custom={adSlideDirection}
+                  initial={{ opacity: 0, x: adSlideDirection > 0 ? '60%' : '-60%' }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: adSlideDirection > 0 ? '-60%' : '60%' }}
+                  transition={{ duration: 0.4, ease: [0.32, 0.72, 0, 1] }}
+                  className="absolute inset-0 w-full h-full flex items-center justify-center bg-zinc-950 will-change-transform"
+                >
+                  <AdMediaDisplay 
+                    ad={activeAd} 
+                    onMediaEnded={() => handleNextAd(combinedAdsList.length)}
+                    className="w-full h-full max-h-full object-contain bg-zinc-950" 
+                  />
+                </motion.div>
+              </AnimatePresence>
+
+              {/* Floating Carousel Next/Previous Arrows over Media */}
+              {combinedAdsList.length > 1 && (
+                <>
+                  <button 
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); handlePrevAd(combinedAdsList.length); }}
+                    className="absolute left-3 top-1/2 -translate-y-1/2 z-20 w-10 h-10 rounded-full bg-black/60 hover:bg-amber-500 hover:text-black text-white backdrop-blur-md border border-white/20 shadow-2xl flex items-center justify-center transition-all cursor-pointer hover:scale-110 active:scale-95"
+                    title="Previous Slide (पिछला)"
+                  >
+                    <ChevronLeft className="w-5 h-5 stroke-[2.5]" />
+                  </button>
+                  <button 
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); handleNextAd(combinedAdsList.length)} }
+                    className="absolute right-3 top-1/2 -translate-y-1/2 z-20 w-10 h-10 rounded-full bg-black/60 hover:bg-amber-500 hover:text-black text-white backdrop-blur-md border border-white/20 shadow-2xl flex items-center justify-center transition-all cursor-pointer hover:scale-110 active:scale-95"
+                    title="Next Slide (अगला)"
+                  >
+                    <ChevronRight className="w-5 h-5 stroke-[2.5]" />
+                  </button>
+                </>
+              )}
+
+              {/* Slide Counter Indicator Dots */}
+              {combinedAdsList.length > 1 && (
+                <div className="absolute bottom-2.5 left-1/2 -translate-x-1/2 z-20 flex items-center gap-1.5 px-3 py-1 bg-black/75 backdrop-blur-md rounded-full border border-white/20 shadow-lg">
+                  {combinedAdsList.map((_, i) => (
+                    <button
+                      key={i} 
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); handleSelectAdIndex(i); }}
+                      className={cn(
+                        "rounded-full transition-all duration-300 cursor-pointer",
+                        i === currentAdIndex 
+                          ? "w-5 h-2 bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.9)]" 
+                          : "w-2 h-2 bg-white/40 hover:bg-white/90"
+                      )} 
+                    />
+                  ))}
+                </div>
+              )}
             </div>
 
-            {/* Ad Details Footer */}
-            <div className="p-3.5 bg-slate-50 dark:bg-zinc-900/90 border-t border-slate-200 dark:border-zinc-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+            {/* Ad Details Footer - Stable rigid layout to prevent height shifts */}
+            <div className="p-3.5 bg-slate-50 dark:bg-zinc-900 border-t border-slate-200 dark:border-zinc-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 min-h-[76px]">
               <div className="flex-1 min-w-0 space-y-1">
-                <div className="flex items-center gap-2">
-                  <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded bg-amber-100 text-amber-800 dark:bg-slate-800 dark:text-amber-400">
+                <div className="flex items-center gap-2 h-5 overflow-hidden">
+                  <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded bg-amber-100 dark:bg-amber-950/70 text-amber-900 dark:text-amber-300 border border-amber-300/60 dark:border-amber-700/60 shrink-0">
                     {activeAd.type === 'image' ? '🖼️ Photo Banner' : '🎥 Video Showcase'}
                   </span>
                   <h4 className="font-extrabold text-sm text-slate-900 dark:text-zinc-100 truncate">{activeAd.title || 'Official Brand Showcase'}</h4>
                 </div>
-                {activeAd.description && (
-                  <p className="text-xs text-slate-700 dark:text-zinc-300 line-clamp-2 leading-relaxed">{activeAd.description}</p>
-                )}
+                <div className="min-h-[1.25rem] overflow-hidden">
+                  <p className="text-xs text-slate-700 dark:text-zinc-300 line-clamp-1 leading-relaxed">{activeAd.description || 'Verified Trade Partner Showcase on Vyapar Bridge'}</p>
+                </div>
                 <AdRatingComponent ad={activeAd} onRate={(adId, rating, updatedAd) => {
                   setBrandAdsList(prev => prev.map(a => a.id === adId ? updatedAd : a));
                 }} />
@@ -4440,18 +4509,18 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
               })()}
             </div>
 
-            {/* Playlist Indicator Dots / Thumbnails */}
+            {/* Playlist Indicator Thumbnails / Buttons */}
             {combinedAdsList.length > 1 && (
-              <div className="px-3 py-2 bg-slate-100 dark:bg-slate-950/80 border-t border-slate-200 dark:border-zinc-800 flex items-center justify-center gap-2 overflow-x-auto no-scrollbar">
+              <div className="px-3 py-2.5 bg-slate-100 dark:bg-zinc-900 border-t border-slate-200 dark:border-zinc-800 flex items-center justify-center gap-2 overflow-x-auto no-scrollbar">
                 {combinedAdsList.map((ad, idx) => (
                   <button
                     key={ad.id || idx}
-                    onClick={() => setCurrentAdIndex(idx)}
+                    onClick={() => handleSelectAdIndex(idx)}
                     className={clsx(
-                      "flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer shrink-0 border shadow-sm",
+                      "flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-bold transition-all cursor-pointer shrink-0 border shadow-sm",
                       idx === currentAdIndex 
-                        ? "bg-amber-500 text-slate-950 border-amber-400 shadow font-black" 
-                        : "bg-white text-slate-700 border-slate-300 hover:bg-amber-50 hover:text-amber-800 dark:bg-slate-900 dark:text-zinc-400 dark:border-slate-800 dark:hover:text-white"
+                        ? "bg-amber-500 text-black border-amber-400 shadow-md font-black ring-2 ring-amber-400/50 scale-105" 
+                        : "bg-white text-slate-800 border-slate-300 hover:bg-amber-50 hover:text-amber-900 dark:bg-zinc-800 dark:text-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-700 dark:hover:text-amber-300"
                     )}
                   >
                     <span>{ad.type === 'image' ? '🖼️' : '🎥'}</span>
@@ -5551,7 +5620,7 @@ function AdminPanel({ user }: { user: any }) {
           onClick={() => setActiveTab('ai_pending')}
           className={cn(
             "py-3 px-5 text-sm font-bold border-b-2 transition-colors cursor-pointer flex items-center gap-2 shrink-0 relative",
-            activeTab === 'ai_pending' ? "border-amber-500 text-amber-600 dark:text-amber-400 font-extrabold" : "border-transparent text-black/60 hover:text-black/80"
+            activeTab === 'ai_pending' ? "border-amber-500 text-amber-600 dark:text-amber-400 font-extrabold" : "border-transparent text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-zinc-100"
           )}
         >
           <Sparkles className="w-4 h-4 text-amber-500 animate-pulse" />
@@ -5567,7 +5636,7 @@ function AdminPanel({ user }: { user: any }) {
           onClick={() => setActiveTab('posts')}
           className={cn(
             "py-3 px-5 text-sm font-bold border-b-2 transition-colors cursor-pointer flex items-center gap-2 shrink-0",
-            activeTab === 'posts' ? "border-blue-600 text-blue-600 dark:text-blue-400" : "border-transparent text-black/60 hover:text-black/80"
+            activeTab === 'posts' ? "border-blue-600 text-blue-600 dark:text-blue-400 font-extrabold" : "border-transparent text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-zinc-100"
           )}
         >
           <Film className="w-4 h-4" />
@@ -5578,7 +5647,7 @@ function AdminPanel({ user }: { user: any }) {
           onClick={() => setActiveTab('reports')}
           className={cn(
             "py-3 px-6 text-sm font-bold border-b-2 transition-colors cursor-pointer flex items-center gap-2",
-            activeTab === 'reports' ? "border-red-600 text-red-600 dark:text-red-400" : "border-transparent text-black/60 hover:text-black/80"
+            activeTab === 'reports' ? "border-red-600 text-red-600 dark:text-red-400 font-extrabold" : "border-transparent text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-zinc-100"
           )}
         >
           <ShieldAlert className="w-4 h-4 text-red-500" />
@@ -5589,7 +5658,7 @@ function AdminPanel({ user }: { user: any }) {
           onClick={() => setActiveTab('music')}
           className={cn(
             "py-3 px-6 text-sm font-bold border-b-2 transition-colors cursor-pointer flex items-center gap-2",
-            activeTab === 'music' ? "border-amber-600 text-amber-600 dark:text-amber-400" : "border-transparent text-black/60 hover:text-black/80"
+            activeTab === 'music' ? "border-amber-600 text-amber-600 dark:text-amber-400 font-extrabold" : "border-transparent text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-zinc-100"
           )}
         >
           <Volume2 className="w-4 h-4" />
@@ -5600,7 +5669,7 @@ function AdminPanel({ user }: { user: any }) {
           onClick={() => setActiveTab('users')}
           className={cn(
             "py-3 px-6 text-sm font-bold border-b-2 transition-colors cursor-pointer flex items-center gap-2",
-            activeTab === 'users' ? "border-indigo-600 text-indigo-600 dark:text-indigo-400" : "border-transparent text-black/60 hover:text-black/80"
+            activeTab === 'users' ? "border-indigo-600 text-indigo-600 dark:text-indigo-400 font-extrabold" : "border-transparent text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-zinc-100"
           )}
         >
           <Users className="w-4 h-4" />
@@ -5611,7 +5680,7 @@ function AdminPanel({ user }: { user: any }) {
           onClick={() => setActiveTab('payments')}
           className={cn(
             "py-3 px-6 text-sm font-bold border-b-2 transition-colors cursor-pointer flex items-center gap-2",
-            activeTab === 'payments' ? "border-emerald-600 text-emerald-600 dark:text-emerald-400" : "border-transparent text-black/60 hover:text-black/80"
+            activeTab === 'payments' ? "border-emerald-600 text-emerald-600 dark:text-emerald-400 font-extrabold" : "border-transparent text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-zinc-100"
           )}
         >
           <CreditCard className="w-4 h-4" />
@@ -5721,21 +5790,21 @@ function AdminPanel({ user }: { user: any }) {
             </h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="flex flex-col gap-1.5">
-                <label className="text-[10px] font-bold text-black/70 uppercase ml-1">Track Title</label>
+                <label className="text-[10px] font-bold text-slate-700 dark:text-zinc-300 uppercase ml-1">Track Title</label>
                 <input 
                   id="musicTitle"
                   type="text" 
                   placeholder="e.g. Morbi Beats" 
-                  className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-xl px-4 py-2.5 text-sm"
+                  className="bg-white dark:bg-zinc-950 border border-slate-200 dark:border-zinc-800 text-black dark:text-zinc-100 placeholder:text-slate-400 dark:placeholder:text-zinc-600 rounded-xl px-4 py-2.5 text-sm"
                 />
               </div>
               <div className="flex flex-col gap-1.5">
-                <label className="text-[10px] font-bold text-black/70 uppercase ml-1">Artist/Style</label>
+                <label className="text-[10px] font-bold text-slate-700 dark:text-zinc-300 uppercase ml-1">Artist/Style</label>
                 <input 
                   id="musicArtist"
                   type="text" 
                   placeholder="e.g. Instrumental" 
-                  className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-xl px-4 py-2.5 text-sm"
+                  className="bg-white dark:bg-zinc-950 border border-slate-200 dark:border-zinc-800 text-black dark:text-zinc-100 placeholder:text-slate-400 dark:placeholder:text-zinc-600 rounded-xl px-4 py-2.5 text-sm"
                 />
               </div>
               <div className="md:col-span-2">
@@ -5771,7 +5840,7 @@ function AdminPanel({ user }: { user: any }) {
                 />
                 <button 
                   onClick={() => document.getElementById('musicFile')?.click()}
-                  className="w-full py-6 border-2 border-dashed border-amber-300 dark:border-amber-900/50 rounded-2xl text-amber-600 dark:text-amber-400 font-bold hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-all flex flex-col items-center gap-2"
+                  className="w-full py-6 border-2 border-dashed border-amber-300 dark:border-amber-900/50 rounded-2xl text-amber-600 dark:text-amber-400 font-bold hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-all flex flex-col items-center gap-2 cursor-pointer"
                 >
                   <Upload className="w-8 h-8" />
                   <span>Choose MP3/MP4 Audio File</span>
@@ -5789,7 +5858,7 @@ function AdminPanel({ user }: { user: any }) {
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="font-bold text-black dark:text-zinc-50 truncate">{track.title}</div>
-                  <div className="text-xs text-black/70">{track.artist}</div>
+                  <div className="text-xs text-slate-600 dark:text-zinc-400">{track.artist}</div>
                 </div>
                 <button 
                   onClick={async () => {
@@ -5797,7 +5866,7 @@ function AdminPanel({ user }: { user: any }) {
                     setMusic(music.filter(m => m.id !== track.id));
                     toast.success('Track removed');
                   }}
-                  className="p-2 hover:bg-red-50 dark:hover:bg-red-900/20 text-black/60 hover:text-red-500 rounded-full transition-colors"
+                  className="p-2 hover:bg-red-50 dark:hover:bg-red-900/20 text-slate-400 dark:text-zinc-400 hover:text-red-500 rounded-full transition-colors cursor-pointer"
                 >
                   <Trash2 className="w-5 h-5" />
                 </button>
@@ -5814,11 +5883,11 @@ function AdminPanel({ user }: { user: any }) {
               <table className="w-full text-left text-xs">
                 <thead className="bg-slate-50 dark:bg-zinc-950 border-b border-slate-200 dark:border-zinc-800">
                   <tr>
-                    <th className="px-4 py-3 font-black uppercase tracking-widest text-black/70">User / Phone</th>
-                    <th className="px-4 py-3 font-black uppercase tracking-widest text-black/70">Plan & Type</th>
-                    <th className="px-4 py-3 font-black uppercase tracking-widest text-black/70">UTR / Amount</th>
-                    <th className="px-4 py-3 font-black uppercase tracking-widest text-black/70">Status</th>
-                    <th className="px-4 py-3 font-black uppercase tracking-widest text-black/70">Actions</th>
+                    <th className="px-4 py-3 font-black uppercase tracking-widest text-slate-600 dark:text-zinc-400">User / Phone</th>
+                    <th className="px-4 py-3 font-black uppercase tracking-widest text-slate-600 dark:text-zinc-400">Plan & Type</th>
+                    <th className="px-4 py-3 font-black uppercase tracking-widest text-slate-600 dark:text-zinc-400">UTR / Amount</th>
+                    <th className="px-4 py-3 font-black uppercase tracking-widest text-slate-600 dark:text-zinc-400">Status</th>
+                    <th className="px-4 py-3 font-black uppercase tracking-widest text-slate-600 dark:text-zinc-400">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-zinc-800">
@@ -5826,16 +5895,16 @@ function AdminPanel({ user }: { user: any }) {
                     <tr key={p.id || `payment-${i}`} className="hover:bg-slate-50 dark:hover:bg-zinc-800/50 transition-colors">
                       <td className="px-4 py-3">
                         <div className="font-bold text-black dark:text-zinc-100">{p.userName}</div>
-                        <div className="text-[10px] text-black/60 font-medium">{p.userPhone}</div>
+                        <div className="text-[10px] text-slate-500 dark:text-zinc-400 font-medium">{p.userPhone}</div>
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex flex-col gap-1">
-                          <span className="inline-flex w-fit px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-widest bg-blue-100 text-blue-700">
+                          <span className="inline-flex w-fit px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-widest bg-blue-100 dark:bg-blue-950/70 text-blue-700 dark:text-blue-300">
                             {p.plan}
                           </span>
                           <span className={cn(
                             "inline-flex w-fit px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-widest",
-                            p.membershipType === 'company' ? "bg-amber-100 text-amber-700" : "bg-zinc-100 text-zinc-700"
+                            p.membershipType === 'company' ? "bg-amber-100 dark:bg-amber-950/70 text-amber-700 dark:text-amber-300" : "bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300"
                           )}>
                             {p.membershipType}
                           </span>
@@ -5843,12 +5912,12 @@ function AdminPanel({ user }: { user: any }) {
                       </td>
                       <td className="px-4 py-3">
                         <div className="font-mono text-[10px] text-black dark:text-zinc-100">{p.utr}</div>
-                        <div className="text-[10px] text-emerald-600 font-bold">₹{p.amount}</div>
+                        <div className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold">₹{p.amount}</div>
                       </td>
                       <td className="px-4 py-3">
                         <span className={cn(
                           "px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-widest",
-                          p.status === 'approved' ? "bg-emerald-100 text-emerald-700" : (p.status === 'rejected' ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700")
+                          p.status === 'approved' ? "bg-emerald-100 dark:bg-emerald-950/70 text-emerald-700 dark:text-emerald-300" : (p.status === 'rejected' ? "bg-red-100 dark:bg-red-950/70 text-red-700 dark:text-red-300" : "bg-amber-100 dark:bg-amber-950/70 text-amber-700 dark:text-amber-300")
                         )}>
                           {p.status}
                         </span>
@@ -5871,7 +5940,7 @@ function AdminPanel({ user }: { user: any }) {
                                   toast.error('Failed to approve', { id: tid });
                                 }
                               }}
-                              className="bg-emerald-500 hover:bg-emerald-600 text-white p-1.5 rounded-lg transition-colors"
+                              className="bg-emerald-500 hover:bg-emerald-600 text-white p-1.5 rounded-lg transition-colors cursor-pointer"
                             >
                               <CheckCircle className="w-4 h-4" />
                             </button>
@@ -5890,7 +5959,7 @@ function AdminPanel({ user }: { user: any }) {
                                   toast.error('Failed to reject', { id: tid });
                                 }
                               }}
-                              className="bg-red-500 hover:bg-red-600 text-white p-1.5 rounded-lg transition-colors"
+                              className="bg-red-500 hover:bg-red-600 text-white p-1.5 rounded-lg transition-colors cursor-pointer"
                             >
                               <X className="w-4 h-4" />
                             </button>
@@ -5901,7 +5970,7 @@ function AdminPanel({ user }: { user: any }) {
                   ))}
                   {payments.length === 0 && (
                     <tr>
-                      <td colSpan={5} className="px-4 py-8 text-center text-black/70 italic">
+                      <td colSpan={5} className="px-4 py-8 text-center text-slate-500 dark:text-zinc-400 italic">
                         No payment submissions found.
                       </td>
                     </tr>
@@ -5920,11 +5989,11 @@ function AdminPanel({ user }: { user: any }) {
               <table className="w-full text-left text-xs">
                 <thead className="bg-slate-50 dark:bg-zinc-950 border-b border-slate-200 dark:border-zinc-800">
                   <tr>
-                    <th className="px-4 py-3 font-black uppercase tracking-widest text-black/70">Member</th>
-                    <th className="px-4 py-3 font-black uppercase tracking-widest text-black/70">Role & Category</th>
-                    <th className="px-4 py-3 font-black uppercase tracking-widest text-black/70">GSTIN / Tax ID</th>
-                    <th className="px-4 py-3 font-black uppercase tracking-widest text-black/70">Location</th>
-                    <th className="px-4 py-3 font-black uppercase tracking-widest text-black/70">Actions</th>
+                    <th className="px-4 py-3 font-black uppercase tracking-widest text-slate-600 dark:text-zinc-400">Member</th>
+                    <th className="px-4 py-3 font-black uppercase tracking-widest text-slate-600 dark:text-zinc-400">Role & Category</th>
+                    <th className="px-4 py-3 font-black uppercase tracking-widest text-slate-600 dark:text-zinc-400">GSTIN / Tax ID</th>
+                    <th className="px-4 py-3 font-black uppercase tracking-widest text-slate-600 dark:text-zinc-400">Location</th>
+                    <th className="px-4 py-3 font-black uppercase tracking-widest text-slate-600 dark:text-zinc-400">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-zinc-800">
@@ -5932,7 +6001,7 @@ function AdminPanel({ user }: { user: any }) {
                     <tr key={u.id || u.username || `user-${i}`} className="hover:bg-slate-50 dark:hover:bg-zinc-800/50 transition-colors">
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
-                          <div className="w-8 h-8 rounded-full bg-slate-100 border border-slate-200 overflow-hidden flex items-center justify-center font-bold text-[10px] shrink-0">
+                          <div className="w-8 h-8 rounded-full bg-slate-100 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 overflow-hidden flex items-center justify-center font-bold text-[10px] shrink-0">
                             {u.avatarUrl || u.avatar ? (
                               <img src={u.avatarUrl || u.avatar} alt="" className="w-full h-full object-cover" />
                             ) : (
@@ -5944,7 +6013,7 @@ function AdminPanel({ user }: { user: any }) {
                               {u.name || u.username || 'Business Member'}
                               {u.isVerified && <VerifiedBadge size="sm" />}
                             </div>
-                            <div className="text-[10px] text-black/60 font-medium">@{u.username || u.id}</div>
+                            <div className="text-[10px] text-slate-500 dark:text-zinc-400 font-medium">@{u.username || u.id}</div>
                           </div>
                         </div>
                       </td>
@@ -5952,17 +6021,17 @@ function AdminPanel({ user }: { user: any }) {
                         <div className="flex flex-col gap-1">
                           <span className={cn(
                             "inline-flex w-fit px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-widest",
-                            u.role === 'admin' ? "bg-purple-100 text-purple-700" : (u.role === 'factory' ? "bg-blue-100 text-blue-700" : "bg-emerald-100 text-emerald-700")
+                            u.role === 'admin' ? "bg-purple-100 dark:bg-purple-950/70 text-purple-700 dark:text-purple-300" : (u.role === 'factory' ? "bg-blue-100 dark:bg-blue-950/70 text-blue-700 dark:text-blue-300" : "bg-emerald-100 dark:bg-emerald-950/70 text-emerald-700 dark:text-emerald-300")
                           )}>
                             {u.role || 'Member'}
                           </span>
-                          <span className="text-[10px] text-black/70 font-bold uppercase">{u.category || 'General'}</span>
+                          <span className="text-[10px] text-slate-700 dark:text-zinc-300 font-bold uppercase">{u.category || 'General'}</span>
                         </div>
                       </td>
-                      <td className="px-4 py-3 font-mono text-[10px] text-black/70">
+                      <td className="px-4 py-3 font-mono text-[10px] text-slate-700 dark:text-zinc-300">
                         {u.gstNumber || '---'}
                       </td>
-                      <td className="px-4 py-3 text-[10px] text-black/70">
+                      <td className="px-4 py-3 text-[10px] text-slate-700 dark:text-zinc-300">
                         {u.city || 'Morbi'}, {u.state || 'Gujarat'}
                       </td>
                       <td className="px-4 py-3 text-right">
@@ -5986,7 +6055,7 @@ function AdminPanel({ user }: { user: any }) {
                 </tbody>
               </table>
               {usersList.length === 0 && (
-                <div className="text-center py-12 text-black/70 text-xs">
+                <div className="text-center py-12 text-slate-500 dark:text-zinc-400 text-xs">
                   No registered members found. Registered users and businesses will appear here.
                 </div>
               )}
@@ -6007,7 +6076,7 @@ function AdminPanel({ user }: { user: any }) {
                     <img src={post.mediaUrl} alt="media" className="w-full h-full object-cover" />
                   )
                 ) : (
-                  <div className="text-black/60 text-xs font-bold">Text Post</div>
+                  <div className="text-slate-500 dark:text-zinc-400 text-xs font-bold">Text Post</div>
                 )}
               </div>
               
@@ -6015,7 +6084,7 @@ function AdminPanel({ user }: { user: any }) {
                 <div className="flex justify-between items-start mb-2">
                   <div>
                     <div className="font-bold text-sm text-black dark:text-zinc-50">{post.user?.name || 'Member'}</div>
-                    <div className="text-xs text-black/70 dark:text-zinc-400">{post.user?.role || 'User'}</div>
+                    <div className="text-xs text-slate-500 dark:text-zinc-400">{post.user?.role || 'User'}</div>
                   </div>
                   <span className={cn(
                     "px-2.5 py-1 text-[10px] font-black rounded-full uppercase tracking-wider",
@@ -6055,7 +6124,7 @@ function AdminPanel({ user }: { user: any }) {
               </div>
             </div>
           ))}
-          {posts.length === 0 && <p className="text-black/70 text-center py-12">No posts found.</p>}
+          {posts.length === 0 && <p className="text-slate-500 dark:text-zinc-400 text-center py-12">No posts found.</p>}
         </div>
       )}
 
@@ -6068,19 +6137,19 @@ function AdminPanel({ user }: { user: any }) {
                   <span className="bg-red-100 dark:bg-red-950 text-red-700 dark:text-red-300 font-extrabold text-[11px] px-2.5 py-0.5 rounded-full uppercase border border-red-300 dark:border-red-800">
                     {report.targetType} REPORTED
                   </span>
-                  <span className="text-xs font-bold text-black/70">
+                  <span className="text-xs font-bold text-slate-600 dark:text-zinc-400">
                     Target ID: {report.targetId}
                   </span>
                 </div>
 
                 <div className="text-sm font-bold text-black dark:text-zinc-100">
-                  Target Name / User: <span className="text-red-600">{report.targetName || report.targetId}</span>
+                  Target Name / User: <span className="text-red-600 dark:text-red-400">{report.targetName || report.targetId}</span>
                 </div>
 
                 <div className="bg-red-50 dark:bg-red-950/30 p-3 rounded-xl text-xs border border-red-100 dark:border-red-900/50 space-y-1">
                   <div className="font-bold text-red-800 dark:text-red-300">Reason: {report.reason}</div>
                   {report.details && <div className="text-black dark:text-zinc-300">Details: "{report.details}"</div>}
-                  <div className="text-[10px] text-black/60 mt-1">Reported by: {report.reporter?.name || report.reporterId}</div>
+                  <div className="text-[10px] text-slate-500 dark:text-zinc-400 mt-1">Reported by: {report.reporter?.name || report.reporterId}</div>
                 </div>
               </div>
 
@@ -6095,7 +6164,7 @@ function AdminPanel({ user }: { user: any }) {
                 )}
                 <button 
                   onClick={() => handleDismissReport(report.id)}
-                  className="bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 dark:hover:bg-zinc-700 text-black dark:text-zinc-300 font-bold py-2 px-3 rounded-xl text-xs transition-colors cursor-pointer text-center"
+                  className="bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 dark:hover:bg-zinc-700 text-slate-800 dark:text-zinc-200 font-bold py-2 px-3 rounded-xl text-xs transition-colors cursor-pointer text-center"
                 >
                   Dismiss / Approve
                 </button>
@@ -6103,10 +6172,10 @@ function AdminPanel({ user }: { user: any }) {
             </div>
           ))}
           {reports.length === 0 && (
-            <div className="text-center py-16 bg-slate-50 dark:bg-zinc-950 rounded-2xl border border-slate-200 dark:border-zinc-800 text-black/70">
+            <div className="text-center py-16 bg-slate-50 dark:bg-zinc-950 rounded-2xl border border-slate-200 dark:border-zinc-800 text-slate-600 dark:text-zinc-400">
               <ShieldCheck className="w-12 h-12 text-emerald-500 mx-auto mb-2 opacity-80" />
               <p className="font-bold text-sm text-black dark:text-zinc-200">No Pending Safety Reports!</p>
-              <p className="text-xs text-black/60 mt-1">Meta-style AI Guardrail is active and protecting all posts, reels, comments, and messages.</p>
+              <p className="text-xs text-slate-500 dark:text-zinc-400 mt-1">Meta-style AI Guardrail is active and protecting all posts, reels, comments, and messages.</p>
             </div>
           )}
         </div>
@@ -6189,13 +6258,30 @@ function Chat({ user, onOpenVerify, userLocation }: { user: any; onOpenVerify?: 
 
   useEffect(() => {
     if (!user?.id) return;
+
+    // Real-time Firestore users subscription for instant online/offline presence tracking
+    const unsub = subscribeToUsersFromFirestore((fbUsers) => {
+      if (Array.isArray(fbUsers) && fbUsers.length > 0) {
+        setContacts(fbUsers.filter((u: any) => String(u.id) !== String(user.id)));
+      }
+    });
+
     safeFetch('/api/users')
       .then(data => {
         if (Array.isArray(data)) {
-          setContacts(data.filter((u: any) => u.id !== user.id));
+          setContacts(prev => {
+            const map = new Map();
+            data.filter((u: any) => String(u.id) !== String(user.id)).forEach(u => map.set(String(u.id), u));
+            prev.forEach(u => map.set(String(u.id), { ...map.get(String(u.id)), ...u }));
+            return Array.from(map.values());
+          });
         }
       })
       .catch(err => console.error('Chat user fetch error:', err));
+
+    return () => {
+      if (typeof unsub === 'function') unsub();
+    };
   }, [user?.id]);
 
   useEffect(() => {
@@ -6211,9 +6297,9 @@ function Chat({ user, onOpenVerify, userLocation }: { user: any; onOpenVerify?: 
 
   if (!user) {
     return (
-      <div className="h-[calc(100vh-60px)] flex flex-col items-center justify-center p-8 bg-slate-50 dark:bg-zinc-950 text-center">
-        <MessageCircle className="w-16 h-16 text-slate-300 dark:text-zinc-700 mb-4" />
-        <h2 className="text-xl font-bold text-black dark:text-zinc-50 mb-2">Login to Chat</h2>
+      <div className="h-[calc(100vh-60px)] flex flex-col items-center justify-center p-8 bg-slate-50 text-center">
+        <MessageCircle className="w-16 h-16 text-slate-300 mb-4" />
+        <h2 className="text-xl font-bold text-black mb-2">Login to Chat</h2>
         <p className="text-black/70 max-w-sm mb-6">You need to be logged in to send and receive messages.</p>
         <Link to="/" onClick={() => window.dispatchEvent(new CustomEvent('openAuthModal'))} className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-6 rounded-full transition-colors">Sign In</Link>
       </div>
@@ -6315,20 +6401,25 @@ function Chat({ user, onOpenVerify, userLocation }: { user: any; onOpenVerify?: 
 
   return (
     <div className="max-w-[935px] mx-auto w-full pt-4 md:pt-8 h-[calc(100vh-60px)] md:h-[calc(100vh-32px)] pb-20 md:pb-8">
-      <div className="bg-[#E6C76C] dark:bg-black border border-slate-200 dark:border-zinc-800 rounded-none md:rounded-lg h-full flex overflow-hidden">
+      <div className="bg-white border border-slate-200 rounded-none md:rounded-2xl shadow-sm h-full flex overflow-hidden">
         {/* Chat List Sidebar */}
-        <div className={`w-full md:w-[350px] border-r border-slate-200 dark:border-zinc-800 flex flex-col ${activeContact ? 'hidden md:flex' : 'flex'}`}>
-          <div className="h-16 flex items-center justify-between px-5 border-b border-slate-200 dark:border-zinc-800">
-            <h2 className="font-bold text-lg">{user?.name}</h2>
-            <button><svg aria-label="New message" className="w-6 h-6" fill="currentColor" height="24" role="img" viewBox="0 0 24 24" width="24"><path d="M12.202 3.203H5.25a3 3 0 0 0-3 3V18.75a3 3 0 0 0 3 3h12.547a3 3 0 0 0 3-3v-6.952" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"></path><path d="M10.002 17.226H6.774v-3.228L18.607 2.165a1.417 1.417 0 0 1 2.004 0l1.224 1.225a1.417 1.417 0 0 1 0 2.004Z" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"></path><line fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" x1="16.848" x2="20.076" y1="3.924" y2="7.153"></line></svg></button>
+        <div className={`w-full md:w-[350px] border-r border-slate-200 flex flex-col ${activeContact ? 'hidden md:flex' : 'flex'}`}>
+          <div className="h-16 flex items-center justify-between px-5 border-b border-slate-200 bg-slate-50/50">
+            <h2 className="font-bold text-lg text-slate-900">{user?.name}</h2>
+            <div className="flex items-center gap-2">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" title="Your Online Status" />
+              <span className="text-[11px] font-bold text-emerald-600">Online</span>
+            </div>
           </div>
           <div className="p-4 overflow-y-auto">
             <div className="flex justify-between items-center mb-4">
-              <span className="font-bold text-base">Messages</span>
+              <span className="font-bold text-base text-slate-900">Messages</span>
             </div>
             {contacts.map(contact => {
               const lastMsg = messages.filter(m => (m.senderId === user.id && m.receiverId === contact.id) || (m.senderId === contact.id && m.receiverId === user.id)).sort((a, b) => b.createdAt - a.createdAt)[0];
               const isLockedForCustomer = user.role === 'customer' && !user.isVerified;
+              const isContactOnline = isUserActiveOnline(contact);
+              const presenceText = getUserLastActiveFormatted(contact);
               
               return (
                 <div 
@@ -6349,13 +6440,16 @@ function Chat({ user, onOpenVerify, userLocation }: { user: any; onOpenVerify?: 
                     }
                     setActiveContact(contact);
                   }}
-                  className={`flex items-center gap-3 mb-2 cursor-pointer hover:bg-slate-50 dark:hover:bg-zinc-900 p-2 -mx-2 rounded-lg transition-colors ${activeContact?.id === contact.id ? 'bg-slate-50 dark:bg-zinc-900' : ''}`}
+                  className={`flex items-center gap-3 mb-2 cursor-pointer hover:bg-slate-100/70 p-2 -mx-2 rounded-xl transition-colors ${activeContact?.id === contact.id ? 'bg-slate-100' : ''}`}
                 >
-                  <div className="w-12 h-12 rounded-full bg-slate-200 dark:bg-zinc-800 flex items-center justify-center font-bold text-black/70 overflow-hidden relative">
+                  <div className="w-12 h-12 rounded-full bg-slate-200 flex items-center justify-center font-bold text-black/70 overflow-hidden relative shrink-0">
                     {contact.avatarUrl ? (
                       <img src={contact.avatarUrl} alt={contact.name} className="w-full h-full object-cover" />
                     ) : (
                       contact.name.charAt(0)
+                    )}
+                    {isContactOnline && (
+                      <span className="absolute bottom-0 right-0 w-3.5 h-3.5 bg-emerald-500 border-2 border-white rounded-full shadow-[0_0_8px_rgba(16,185,129,0.9)] animate-pulse" />
                     )}
                     {isLockedForCustomer && lastMsg?.senderId !== user.id && (
                       <div className="absolute inset-0 bg-blue-500/20 flex items-center justify-center backdrop-blur-[1px]">
@@ -6364,18 +6458,28 @@ function Chat({ user, onOpenVerify, userLocation }: { user: any; onOpenVerify?: 
                     )}
                   </div>
                   <div className="flex-1 overflow-hidden">
-                    <div className="font-semibold text-sm flex items-center justify-between">
+                    <div className="font-semibold text-sm flex items-center justify-between text-slate-900">
                       <span className="truncate">{contact.name}</span>
-                      {lastMsg && <span className="text-[10px] text-black/60 font-normal">
+                      {lastMsg && <span className="text-[10px] text-slate-400 font-normal">
                         {new Date(lastMsg.createdAt).toLocaleDateString()}
                       </span>}
                     </div>
-                    <div className="text-xs text-black/70 dark:text-zinc-400 truncate flex items-center gap-1">
-                      {isLockedForCustomer && lastMsg?.senderId !== user.id ? (
-                        <span className="text-blue-500 font-medium italic">🔒 New Message Hidden</span>
+                    <div className="text-xs text-slate-500 truncate flex items-center gap-1.5 mt-0.5">
+                      {isContactOnline ? (
+                        <span className="text-emerald-600 font-bold text-[11px] flex items-center gap-1 shrink-0">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse inline-block" /> Active now
+                        </span>
                       ) : (
-                        lastMsg?.text || 'No messages yet'
+                        <span className="text-[10px] text-slate-400 shrink-0 font-medium">{presenceText}</span>
                       )}
+                      <span>•</span>
+                      <span className="truncate">
+                        {isLockedForCustomer && lastMsg?.senderId !== user.id ? (
+                          <span className="text-blue-500 font-medium italic">🔒 New Message Hidden</span>
+                        ) : (
+                          lastMsg?.text || 'No messages yet'
+                        )}
+                      </span>
                     </div>
                   </div>
                 </div>
@@ -6387,23 +6491,26 @@ function Chat({ user, onOpenVerify, userLocation }: { user: any; onOpenVerify?: 
         {/* Chat Area */}
         <div className={`flex-1 flex flex-col ${!activeContact ? 'hidden md:flex' : 'flex'}`}>
           {!activeContact ? (
-            <div className="flex-1 flex flex-col items-center justify-center text-center p-6">
-              <div className="w-24 h-24 rounded-full border-2 border-slate-900 dark:border-zinc-50 flex items-center justify-center mb-4">
+            <div className="flex-1 flex flex-col items-center justify-center text-center p-6 bg-slate-50/50">
+              <div className="w-24 h-24 rounded-full border-2 border-slate-300 flex items-center justify-center mb-4 text-slate-400">
                 <MessageCircle className="w-12 h-12" />
               </div>
-              <h3 className="text-xl font-semibold mb-2">Your Messages</h3>
-              <p className="text-black/70 dark:text-zinc-400 mb-6 text-sm max-w-xs">Connect directly with Factory owners and Dealers across India.</p>
+              <h3 className="text-xl font-bold text-slate-800 mb-2">Your Messages</h3>
+              <p className="text-slate-500 mb-6 text-sm max-w-xs">Connect directly with Factory owners and Dealers across India.</p>
             </div>
           ) : user.role === 'customer' && !user.isVerified ? (
             <div className="flex-1 flex flex-col">
-              <div className="h-16 border-b border-slate-200 dark:border-zinc-800 flex items-center px-4 gap-3">
+              <div className="h-16 border-b border-slate-200 flex items-center px-4 gap-3 bg-slate-50/50">
                 <button className="md:hidden" onClick={() => setActiveContact(null)}>
                   <ChevronLeft className="w-6 h-6" />
                 </button>
-                <div className="w-8 h-8 rounded-full bg-slate-200 dark:bg-zinc-800 flex items-center justify-center font-bold text-black/70">
+                <div className="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center font-bold text-black/70 relative">
                   {activeContact.name.charAt(0)}
+                  {isUserActiveOnline(activeContact) && (
+                    <span className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-emerald-500 border border-white rounded-full animate-pulse" />
+                  )}
                 </div>
-                <span className="font-semibold">{activeContact.name}</span>
+                <span className="font-semibold text-slate-900">{activeContact.name}</span>
               </div>
               
               <div className="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-6">
@@ -6417,27 +6524,27 @@ function Chat({ user, onOpenVerify, userLocation }: { user: any; onOpenVerify?: 
                 </div>
                 
                 <div className="space-y-2 max-w-sm">
-                  <h3 className="text-xl font-black text-black dark:text-zinc-50">Private Chat is Locked</h3>
-                  <p className="text-sm text-black/80 dark:text-zinc-400">
-                    You have received a reply from <span className="font-bold text-black dark:text-zinc-100">{activeContact.name}</span>, but unverified customers cannot read private messages.
+                  <h3 className="text-xl font-black text-slate-900">Private Chat is Locked</h3>
+                  <p className="text-sm text-slate-600">
+                    You have received a reply from <span className="font-bold text-slate-800">{activeContact.name}</span>, but unverified customers cannot read private messages.
                   </p>
                 </div>
 
-                <div className="bg-slate-50 dark:bg-zinc-900/50 p-5 rounded-2xl border border-slate-200 dark:border-zinc-800 w-full max-w-sm text-left">
-                  <p className="text-xs font-bold text-black/70 uppercase tracking-wider mb-3 flex items-center gap-2">
+                <div className="bg-slate-50 p-5 rounded-2xl border border-slate-200 w-full max-w-sm text-left">
+                  <p className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-3 flex items-center gap-2">
                     <CheckCircle2 className="w-4 h-4 text-emerald-500" />
                     Verified Benefits:
                   </p>
                   <ul className="space-y-2.5">
-                    <li className="text-xs flex items-start gap-2">
+                    <li className="text-xs flex items-start gap-2 text-slate-600">
                       <span className="text-blue-500 mt-0.5">•</span>
                       <span>Unlock direct private chatting with manufacturers.</span>
                     </li>
-                    <li className="text-xs flex items-start gap-2">
+                    <li className="text-xs flex items-start gap-2 text-slate-600">
                       <span className="text-blue-500 mt-0.5">•</span>
                       <span>View direct mobile numbers of all members.</span>
                     </li>
-                    <li className="text-xs flex items-start gap-2">
+                    <li className="text-xs flex items-start gap-2 text-slate-600">
                       <span className="text-blue-500 mt-0.5">•</span>
                       <span>Get a "Verified" badge on your profile.</span>
                     </li>
@@ -6446,37 +6553,46 @@ function Chat({ user, onOpenVerify, userLocation }: { user: any; onOpenVerify?: 
 
                 <button
                   onClick={() => onOpenVerify?.()}
-                  className="w-full max-w-sm bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-black py-4 px-8 rounded-2xl shadow-xl shadow-blue-500/20 transition-all active:scale-95 flex items-center justify-center gap-3"
+                  className="w-full max-w-sm bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-black py-4 px-8 rounded-2xl shadow-xl shadow-blue-500/20 transition-all active:scale-95 flex items-center justify-center gap-3 cursor-pointer"
                 >
                   <ShieldCheck className="w-6 h-6" />
                   <span>Get Verified (₹99/mo)</span>
                 </button>
                 
-                <p className="text-[10px] text-black/60 font-medium">
+                <p className="text-[10px] text-slate-400 font-medium">
                   Secure Payment Gateway • Instant Activation
                 </p>
               </div>
             </div>
           ) : (
             <>
-              {/* Chat Header */}
-              <div className="h-16 border-b border-slate-200 dark:border-zinc-800 flex items-center px-4 gap-3 bg-[#E6C76C] dark:bg-black/50 backdrop-blur-md">
+              {/* Chat Header with Real-time Presence */}
+              <div className="h-16 border-b border-slate-200 flex items-center px-4 gap-3 bg-white">
                 <button className="md:hidden p-2 -ml-2" onClick={() => setActiveContact(null)}>
                   <ChevronLeft className="w-6 h-6" />
                 </button>
-                <div className="w-9 h-9 rounded-full bg-slate-200 dark:bg-zinc-800 flex items-center justify-center font-bold text-black/70 border border-slate-200 dark:border-zinc-700">
+                <div className="w-9 h-9 rounded-full bg-slate-200 flex items-center justify-center font-bold text-black/70 border border-slate-200 relative shrink-0">
                   {activeContact.avatarUrl ? (
                     <img src={activeContact.avatarUrl} alt={activeContact.name} className="w-full h-full object-cover rounded-full" />
                   ) : (
                     activeContact.name.charAt(0)
                   )}
+                  {isUserActiveOnline(activeContact) && (
+                    <span className="absolute bottom-0 right-0 w-3 h-3 bg-emerald-500 border-2 border-white rounded-full shadow-[0_0_6px_rgba(16,185,129,0.9)] animate-pulse" />
+                  )}
                 </div>
                 <div className="flex-1 min-w-0">
-                  <div className="font-bold text-sm truncate">{activeContact.name}</div>
-                  <div className="text-[10px] text-emerald-500 font-medium flex items-center gap-1">
-                    <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
-                    Active now
-                  </div>
+                  <div className="font-bold text-sm text-slate-900 truncate">{activeContact.name}</div>
+                  {isUserActiveOnline(activeContact) ? (
+                    <div className="text-[10px] text-emerald-600 font-bold flex items-center gap-1">
+                      <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
+                      Active now
+                    </div>
+                  ) : (
+                    <div className="text-[10px] text-slate-400 font-medium">
+                      {getUserLastActiveFormatted(activeContact)}
+                    </div>
+                  )}
                 </div>
               </div>
               
@@ -6528,7 +6644,7 @@ function Chat({ user, onOpenVerify, userLocation }: { user: any; onOpenVerify?: 
               </div>
               
               {/* Chat Input */}
-              <div className="p-4 border-t border-slate-200 dark:border-zinc-800 bg-[#E6C76C] dark:bg-black">
+              <div className="p-4 border-t border-slate-200 bg-white">
                 {pendingImagePreview && (
                   <div className="mb-3 relative inline-block">
                     <img 
@@ -6561,7 +6677,7 @@ function Chat({ user, onOpenVerify, userLocation }: { user: any; onOpenVerify?: 
                       type="button"
                       onClick={() => chatFileInputRef.current?.click()}
                       disabled={uploadingImage}
-                      className="absolute left-3 p-1 text-black/60 hover:text-blue-600 transition-colors z-10"
+                      className="absolute left-3 p-1 text-slate-400 hover:text-blue-600 transition-colors z-10"
                       title="Send Image"
                     >
                       {uploadingImage ? <Loader2 className="w-5 h-5 animate-spin" /> : <Camera className="w-5 h-5" />}
@@ -6571,12 +6687,12 @@ function Chat({ user, onOpenVerify, userLocation }: { user: any; onOpenVerify?: 
                       value={newMessage}
                       onChange={(e) => setNewMessage(e.target.value)}
                       placeholder="Message..."
-                      className="w-full bg-slate-50 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-full pl-11 pr-14 py-2.5 focus:outline-none focus:border-blue-500/50 transition-all text-sm"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-full pl-11 pr-14 py-2.5 focus:outline-none focus:border-blue-500/50 transition-all text-sm text-slate-900 placeholder:text-slate-400"
                     />
                     <button 
                       type="submit" 
                       disabled={!newMessage.trim() && !pendingImage}
-                      className="absolute right-4 font-bold text-blue-600 disabled:opacity-50 text-sm hover:scale-105 transition-transform"
+                      className="absolute right-4 font-bold text-blue-600 disabled:opacity-50 text-sm hover:scale-105 transition-transform cursor-pointer"
                     >
                       Send
                     </button>
@@ -6631,10 +6747,8 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
   const [pendingPayments, setPendingPayments] = useState<any[]>([]);
 
   // Payment Settings State
-  const [upiId, setUpiId] = useState('vyaparbridge@upi');
-  const [bankAccount, setBankAccount] = useState('9988776655443322');
-  const [ifscCode, setIfscCode] = useState('SBIN0001234');
-  const [accountName, setAccountName] = useState('Vyapar Bridge B2B Operations');
+  const [upiId, setUpiId] = useState('ashish660@ibl');
+  const [accountName, setAccountName] = useState('Ashish Kumar Verma');
   const [qrCodeUrl, setQrCodeUrl] = useState('');
   const [barcodeImageUrl, setBarcodeImageUrl] = useState('');
   const [barcodeSecretToken, setBarcodeSecretToken] = useState('SECURE-BARCODE-VERIFY-2026-X89');
@@ -6857,11 +6971,8 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
 
   const handleDeleteBrandAd = async (id: string) => {
     try {
-      const res = await fetch(`/api/admin/showcase/${id}`, { method: 'DELETE' });
-      const ct = res.headers.get('content-type');
-      if (!res.ok || !ct || !ct.includes('application/json')) return;
-      const data = await res.json();
-      if (data.success) {
+      const data = await safeFetch(`/api/admin/showcase/${id}`, { method: 'DELETE' });
+      if (data && data.success) {
         toast.success('Ad removed from showcase list');
         setBrandAdsList(data.brandAdsList || []);
         syncBrandAdsLocal(data.brandAdsList || []);
@@ -6873,11 +6984,8 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
 
   const handleToggleBrandAd = async (id: string) => {
     try {
-      const res = await fetch(`/api/admin/showcase/${id}/toggle`, { method: 'PUT' });
-      const ct = res.headers.get('content-type');
-      if (!res.ok || !ct || !ct.includes('application/json')) return;
-      const data = await res.json();
-      if (data.success) {
+      const data = await safeFetch(`/api/admin/showcase/${id}/toggle`, { method: 'PUT' });
+      if (data && data.success) {
         setBrandAdsList(data.brandAdsList || []);
         syncBrandAdsLocal(data.brandAdsList || []);
       }
@@ -6901,15 +7009,12 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
 
     // 2. Also try backend API
     try {
-      const res = await fetch('/api/admin/payments');
-      const ct = res.headers.get('content-type');
-      if (!res.ok || !ct || !ct.includes('application/json')) return;
-      const data = await res.json();
+      const data = await safeFetch('/api/admin/payments');
       if (Array.isArray(data) && data.length > 0) {
         setPendingPayments(data);
       }
     } catch (e) {
-      console.error(e);
+      console.warn('Payments fetch note:', e);
     }
   };
 
@@ -6975,8 +7080,6 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
       const fbSettings = await getAdminSettingsFromFirestore();
       if (fbSettings) {
         if (fbSettings.upiId) setUpiId(fbSettings.upiId);
-        if (fbSettings.bankAccount) setBankAccount(fbSettings.bankAccount);
-        if (fbSettings.ifscCode) setIfscCode(fbSettings.ifscCode);
         if (fbSettings.accountName) setAccountName(fbSettings.accountName);
         if (fbSettings.qrCodeUrl) setQrCodeUrl(fbSettings.qrCodeUrl);
         if (fbSettings.barcodeImageUrl) setBarcodeImageUrl(fbSettings.barcodeImageUrl);
@@ -6999,10 +7102,8 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
       if (res.ok) {
         const data = await res.json();
         if (data && data.upiId) {
-          setUpiId(data.upiId || 'vyaparbridge@upi');
-          setBankAccount(data.bankAccount || '');
-          setIfscCode(data.ifscCode || '');
-          setAccountName(data.accountName || '');
+          setUpiId(data.upiId || 'ashish660@ibl');
+          setAccountName(data.accountName || 'Ashish Kumar Verma');
           setQrCodeUrl(data.qrCodeUrl || '');
           if (data.barcodeImageUrl) setBarcodeImageUrl(data.barcodeImageUrl);
           if (data.barcodeSecretToken) setBarcodeSecretToken(data.barcodeSecretToken);
@@ -7039,6 +7140,24 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
     };
 
     try {
+      // 0. Auto-extract UPI ID directly from the QR Code image client-side to prevent unnecessary cloud overhead
+      let resolvedUpiId = upiId;
+      let resolvedAccountName = accountName;
+      try {
+        const decodedQr = await decodeUpiIdFromImageFile(barcodeFile);
+        if (decodedQr?.upiId) {
+          resolvedUpiId = decodedQr.upiId;
+          setUpiId(decodedQr.upiId);
+          if (decodedQr.accountName && !resolvedAccountName) {
+            resolvedAccountName = decodedQr.accountName;
+            setAccountName(decodedQr.accountName);
+          }
+          toast.success(`✨ Auto-detected UPI ID: ${decodedQr.upiId}`);
+        }
+      } catch (decodeErr) {
+        console.warn('QR scan note:', decodeErr);
+      }
+
       // 1. Optimize & Convert to Base64 Data URL for instant rendering & Firestore persistence
       let base64Url = '';
       try {
@@ -7065,8 +7184,8 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
         detail: {
           barcodeImageUrl: base64Url,
           barcodeSecretToken: secretToken,
-          upiId,
-          accountName,
+          upiId: resolvedUpiId,
+          accountName: resolvedAccountName,
           qrCodeUrl
         }
       }));
@@ -7077,8 +7196,8 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
       await saveAdminSettingsToFirestore({
         barcodeImageUrl: base64Url,
         barcodeSecretToken: secretToken,
-        upiId,
-        accountName,
+        upiId: resolvedUpiId,
+        accountName: resolvedAccountName,
         qrCodeUrl
       });
 
@@ -7103,24 +7222,24 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
 
   const fetchAiLogs = async () => {
     try {
-      const res = await fetch('/api/admin/ai-logs');
-      const data = await res.json();
-      setAiData(data);
-      if (data && typeof data.guardrailActive === 'boolean') {
-        setGuardrailActive(data.guardrailActive);
+      const data = await safeFetch('/api/admin/ai-logs');
+      if (data && data.success !== false) {
+        setAiData(data);
+        if (typeof data.guardrailActive === 'boolean') {
+          setGuardrailActive(data.guardrailActive);
+        }
       }
     } catch (e) {
-      console.error(e);
+      console.warn('AI logs fetch note:', e);
     }
   };
 
   const fetchAnnouncements = async () => {
     try {
-      const res = await fetch('/api/announcements');
-      const data = await res.json();
+      const data = await safeFetch('/api/announcements');
       if (Array.isArray(data)) setAnnouncements(data);
     } catch (e) {
-      console.error(e);
+      console.warn('Announcements fetch note:', e);
     }
   };
 
@@ -7149,16 +7268,10 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
     }
 
     try {
-      const rRes = await fetch('/api/reports');
-      if (rRes.ok) {
-        const ct = rRes.headers.get('content-type');
-        if (ct && ct.includes('application/json')) {
-          const rData = await rRes.json();
-          if (Array.isArray(rData)) setReportsList(rData);
-        }
-      }
+      const rData = await safeFetch('/api/reports');
+      if (Array.isArray(rData)) setReportsList(rData);
     } catch (e) {
-      console.error(e);
+      console.warn('Reports fetch note:', e);
     }
   };
 
@@ -7894,41 +8007,46 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
               {/* TAB 1: PAYMENT & VERIFICATION SETUP */}
               {activeTab === 'payment' && (
                 <div className="space-y-4">
-                  <div className="bg-blue-950/40 border border-blue-800/60 p-4 rounded-xl text-xs text-blue-800">
-                    <p className="font-bold text-sm text-blue-300 mb-1">💳 Configure B2B Payment Gateway QR Code & UPI</p>
-                    <p>
+                  <div className="bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800/60 p-4 rounded-xl text-xs text-blue-900 dark:text-blue-200">
+                    <p className="font-bold text-sm text-blue-700 dark:text-blue-300 mb-1 flex items-center gap-2">
+                      <CreditCard className="w-4 h-4 text-blue-600" />
+                      Configure B2B Payment Gateway QR Code & UPI
+                    </p>
+                    <p className="text-slate-600 dark:text-zinc-400">
                       Users paying for B2B Verification Checkmarks will see this exact QR Code & UPI details globally during checkout.
                     </p>
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1">
+                      <label className="block text-xs font-bold text-slate-700 dark:text-zinc-300 mb-1">
                         Primary UPI ID
                       </label>
                       <input 
                         type="text"
                         value={upiId}
                         onChange={e => setUpiId(e.target.value)}
-                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs text-black focus:outline-none focus:border-blue-500"
+                        placeholder="e.g. ashish660@ibl"
+                        className="w-full bg-slate-50 dark:bg-zinc-950 border border-slate-200 dark:border-zinc-800 rounded-xl px-3.5 py-2.5 text-xs text-black dark:text-zinc-100 placeholder:text-slate-400 dark:placeholder:text-zinc-600 focus:outline-none focus:border-blue-500"
                       />
                     </div>
 
                     <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1">
+                      <label className="block text-xs font-bold text-slate-700 dark:text-zinc-300 mb-1">
                         Account Holder Name
                       </label>
                       <input 
                         type="text"
                         value={accountName}
                         onChange={e => setAccountName(e.target.value)}
-                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs text-black focus:outline-none focus:border-blue-500"
+                        placeholder="e.g. Ashish Kumar Verma"
+                        className="w-full bg-slate-50 dark:bg-zinc-950 border border-slate-200 dark:border-zinc-800 rounded-xl px-3.5 py-2.5 text-xs text-black dark:text-zinc-100 placeholder:text-slate-400 dark:placeholder:text-zinc-600 focus:outline-none focus:border-blue-500"
                       />
                     </div>
                   </div>
 
                   <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">
+                    <label className="block text-xs font-bold text-slate-700 dark:text-zinc-300 mb-1">
                       UPI QR Code Image URL (Optional)
                     </label>
                     <input 
@@ -7936,41 +8054,36 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
                       placeholder="https://example.com/my-qr.png"
                       value={qrCodeUrl}
                       onChange={e => setQrCodeUrl(e.target.value)}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs text-black focus:outline-none focus:border-blue-500"
+                      className="w-full bg-slate-50 dark:bg-zinc-950 border border-slate-200 dark:border-zinc-800 rounded-xl px-3.5 py-2.5 text-xs text-black dark:text-zinc-100 placeholder:text-slate-400 dark:placeholder:text-zinc-600 focus:outline-none focus:border-blue-500"
                     />
                   </div>
 
                   {/* Real Barcode Image Upload & Token Generation Box */}
-                  <div className="bg-white border border-blue-800/80 p-4 rounded-xl space-y-3">
+                  <div className="bg-white dark:bg-zinc-900 border border-blue-200 dark:border-blue-800/80 p-4 rounded-xl space-y-3">
                     <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2 text-xs font-bold text-blue-300">
+                      <div className="flex items-center gap-2 text-xs font-bold text-blue-700 dark:text-blue-300">
                         <QrCode className="w-4 h-4 text-blue-600" />
-                        <span>Real Barcode Image Upload & Secure Secret Link Generator</span>
+                        <span>Real Barcode QR Image Auto-Decoder & Cloud Storage</span>
                       </div>
-                      {/* {barcodeSecretToken && (
-                        <span className="text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded border border-emerald-500/30">
-                          Token: {barcodeSecretToken}
-                        </span>
-                      )} */}
                     </div>
 
-                    <p className="text-[11px] text-black/70">
-                      Upload your real GPay/PhonePe/Paytm Barcode QR image. The system stores it securely in backend storage, generates an encrypted secret verification token, and shows both the Barcode & Payment Link to users requesting Verified Badges!
+                    <p className="text-[11px] text-slate-600 dark:text-zinc-400 leading-relaxed">
+                      Upload your real GPay / PhonePe / Paytm / BHIM Barcode QR image. The system will <strong>automatically scan & decode the UPI ID directly on your device</strong>, populate the input box, and synchronize with Firebase Cloud storage.
                     </p>
 
                     {barcodeImageUrl && (
-                      <div className="flex items-center gap-4 bg-slate-50 p-3 rounded-lg border border-slate-200">
+                      <div className="flex items-center gap-4 bg-slate-50 dark:bg-zinc-950 p-3 rounded-lg border border-slate-200 dark:border-zinc-800">
                         <img 
                           src={barcodeImageUrl} 
                           alt="Current Uploaded Barcode" 
                           className="w-20 h-20 object-contain rounded bg-white p-1" 
                         />
                         <div className="text-xs space-y-1">
-                          <span className="text-emerald-400 font-bold flex items-center gap-1">
+                          <span className="text-emerald-600 dark:text-emerald-400 font-bold flex items-center gap-1">
                             ✓ Real Barcode Active on Checkout
                           </span>
-                          <div className="text-[10px] text-black/60 font-mono truncate max-w-xs">
-                            Path: {barcodeImageUrl}
+                          <div className="text-[10px] text-slate-500 dark:text-zinc-400 font-mono truncate max-w-xs">
+                            Active UPI: {upiId || 'Not set'}
                           </div>
                         </div>
                       </div>
@@ -7980,13 +8093,33 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
                       <input 
                         type="file" 
                         accept="image/*"
-                        onChange={e => setBarcodeFile(e.target.files?.[0] || null)}
-                        className="text-xs text-slate-700 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-blue-600 file:text-black hover:file:bg-blue-500 cursor-pointer"
+                        onChange={async (e) => {
+                          const file = e.target.files?.[0] || null;
+                          setBarcodeFile(file);
+                          if (file) {
+                            const decodingToast = toast.loading('🔍 Scanning QR Code for UPI ID...');
+                            try {
+                              const decodedResult = await decodeUpiIdFromImageFile(file);
+                              if (decodedResult?.upiId) {
+                                setUpiId(decodedResult.upiId);
+                                if (decodedResult.accountName && !accountName) {
+                                  setAccountName(decodedResult.accountName);
+                                }
+                                toast.success(`✨ Auto-extracted UPI ID: ${decodedResult.upiId}`, { id: decodingToast });
+                              } else {
+                                toast.dismiss(decodingToast);
+                              }
+                            } catch (err) {
+                              toast.dismiss(decodingToast);
+                            }
+                          }
+                        }}
+                        className="text-xs text-slate-700 dark:text-zinc-300 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-blue-600 file:text-white hover:file:bg-blue-500 cursor-pointer"
                       />
                       <button 
                         type="submit"
                         disabled={uploadingBarcode || !barcodeFile}
-                        className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-black font-bold px-4 py-2 rounded-xl text-xs transition-all disabled:opacity-50 cursor-pointer shrink-0 flex items-center justify-center gap-1.5"
+                        className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold px-4 py-2 rounded-xl text-xs transition-all disabled:opacity-50 cursor-pointer shrink-0 flex items-center justify-center gap-1.5"
                       >
                         {uploadingBarcode ? 'Uploading & Encrypting...' : 'Upload Real Barcode Image 🚀'}
                       </button>
@@ -8478,7 +8611,7 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
               {activeTab === 'ratings' && (
                 <div className="space-y-6">
                   {/* Header & Stats Cards */}
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div className="bg-slate-50 p-4 rounded-2xl border border-amber-500/30">
                       <div className="text-xs text-black/60 font-bold uppercase tracking-wider">Average Star Rating</div>
                       <div className="text-3xl font-black text-amber-400 flex items-center gap-2 mt-1">
@@ -8502,10 +8635,11 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
                       </div>
                     </div>
 
-                    <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200">
+                    {/* Total Website Visitors Card - Hidden from UI as requested, background tracking active */}
+                    <div className="hidden bg-slate-50 p-4 rounded-2xl border border-slate-200" style={{ display: 'none' }}>
                       <div className="text-xs text-black/60 font-bold uppercase tracking-wider">Total Website Visitors</div>
                       <div className="text-3xl font-black text-emerald-400 mt-1">
-                        {(ratingsData?.totalVisitors || 5420).toLocaleString()}
+                        {(ratingsData?.totalVisitors || 0).toLocaleString()}
                       </div>
                       <div className="text-[11px] text-black/70 mt-1">Live tracking on Vyapar Bridge Platform</div>
                     </div>
@@ -11242,11 +11376,11 @@ function NotificationsPage({ user }: { user: any }) {
                   body: JSON.stringify({ userId: user.id })
                 }).then(() => {
                   window.dispatchEvent(new Event('notificationsRead'));
-                });
+                }).catch(() => {});
               }
             }
           })
-          .catch(console.error);
+          .catch(() => {});
       };
       fetchNotifs();
       const interval = setInterval(fetchNotifs, 10000);
@@ -11263,7 +11397,7 @@ function NotificationsPage({ user }: { user: any }) {
           setNotifications(notifications.filter(n => n.id !== id));
           setActiveMenuId(null);
         })
-        .catch(console.error);
+        .catch(() => {});
     }
   };
 
@@ -12935,7 +13069,6 @@ function ProfilePage({
           
           setSavedPosts(combined);
         } catch (err) {
-          console.error('Error fetching saved items:', err);
           setSavedPosts([]);
         }
       };
@@ -12951,7 +13084,7 @@ function ProfilePage({
             setIsCatalogueSaved(data.some(c => c.user?.id === userToDisplay.id));
           }
         })
-        .catch(err => console.error('Error checking saved catalogue:', err));
+        .catch(() => {});
     }
   }, [currentUser?.id, userToDisplay?.id]);
 
@@ -13461,11 +13594,24 @@ function ProfilePage({
                   </h2>
                   {userToDisplay.isVerified && <VerifiedBadge size="lg" />}
                 </div>
-                <p className="text-sm font-medium text-black/70 dark:text-zinc-400 flex items-center gap-2">
-                  <MapPin className="w-3.5 h-3.5 text-blue-500" />
-                  {userToDisplay.city || 'India'}
-                  {userToDisplay.role !== 'customer' && ` • ${userToDisplay.role || 'Member'}`}
-                </p>
+                <div className="flex flex-wrap items-center gap-2.5 mt-0.5">
+                  <p className="text-sm font-medium text-slate-600 flex items-center gap-1.5">
+                    <MapPin className="w-3.5 h-3.5 text-blue-500" />
+                    {userToDisplay.city || 'India'}
+                    {userToDisplay.role !== 'customer' && ` • ${userToDisplay.role || 'Member'}`}
+                  </p>
+                  <span className="text-slate-300">•</span>
+                  {isUserActiveOnline(userToDisplay) ? (
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-xs font-bold shadow-xs">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                      Active now
+                    </span>
+                  ) : (
+                    <span className="text-xs text-slate-400 font-medium">
+                      {getUserLastActiveFormatted(userToDisplay)}
+                    </span>
+                  )}
+                </div>
               </div>
 
               {/* Action Buttons for Profile */}
@@ -13488,7 +13634,7 @@ function ProfilePage({
                               body: JSON.stringify({ followerId: currentUser.id })
                             });
                           } catch (err) {
-                            console.error('Failed to sync follow status with backend:', err);
+                            // Offline/local fallback
                           }
                         }
                       }}
@@ -14613,6 +14759,16 @@ function AppContent() {
   // Stealth Lockout State (Triggers on 2 failed admin PIN attempts, locks for 15 minutes)
   const [isLockedOut, setIsLockedOut] = useState(() => isAppLockedOut());
 
+  // Real-time Active Presence Heartbeat (online/offline tracking like Instagram/Facebook)
+  useEffect(() => {
+    if (user?.id) {
+      const cleanup = startPresenceHeartbeat(user.id);
+      return () => {
+        if (typeof cleanup === 'function') cleanup();
+      };
+    }
+  }, [user?.id]);
+
   useEffect(() => {
     const syncLockoutState = () => {
       setIsLockedOut(isAppLockedOut());
@@ -14654,7 +14810,7 @@ function AppContent() {
               setUnreadNotifs(data.filter((n: any) => !n.read).length);
             }
           })
-          .catch(console.error);
+          .catch(() => {});
       };
       fetchUnread();
       const interval = setInterval(fetchUnread, 10000);
@@ -14665,6 +14821,14 @@ function AppContent() {
         window.removeEventListener('notificationsRead', onRead);
       };
     }
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (!user?.id) return;
+    const cleanupHeartbeat = startPresenceHeartbeat(user.id);
+    return () => {
+      cleanupHeartbeat();
+    };
   }, [user?.id]);
 
   useEffect(() => {
@@ -14752,7 +14916,9 @@ function AppContent() {
             window.dispatchEvent(new Event('followedUsersUpdated'));
           }
         })
-        .catch(err => console.error('Failed to sync relationships:', err));
+        .catch(() => {
+          // Graceful fallback for offline / serverless
+        });
     }
   }, [user?.id]);
 
@@ -15244,27 +15410,33 @@ function AppContent() {
 
 export default function App() {
   const [isDark, setIsDark] = useState(() => {
-    return localStorage.getItem('theme') === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    try {
+      return localStorage.getItem('theme') === 'dark';
+    } catch {
+      return false;
+    }
   });
 
   useEffect(() => {
-    if (isDark) {
-      document.documentElement.classList.add('dark');
-      localStorage.setItem('theme', 'dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-      localStorage.setItem('theme', 'light');
-    }
+    try {
+      if (isDark) {
+        document.documentElement.classList.add('dark');
+        localStorage.setItem('theme', 'dark');
+      } else {
+        document.documentElement.classList.remove('dark');
+        localStorage.setItem('theme', 'light');
+      }
+    } catch (e) {}
   }, [isDark]);
 
-
-
-  const toggleDark = () => setIsDark(!isDark);
+  const toggleDark = () => {
+    setIsDark(prev => !prev);
+  };
 
   return (
     <ThemeContext.Provider value={{ isDark, toggleDark }}>
       <BrowserRouter>
-        <div className="min-h-screen bg-[#E6C76C] dark:bg-black text-black dark:text-zinc-50 transition-colors duration-700 w-full max-w-full overflow-x-hidden">
+        <div className="min-h-screen bg-[#FAFAFA] dark:bg-black text-zinc-900 dark:text-zinc-100 transition-colors duration-300 w-full max-w-full overflow-x-hidden">
           <AppContent />
         </div>
       </BrowserRouter>

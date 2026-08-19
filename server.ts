@@ -192,10 +192,8 @@ const db = {
   announcements: [],
   music: [],
   adminSettings: {
-    upiId: 'vyaparbridge@upi',
-    bankAccount: '9988776655443322',
-    ifscCode: 'SBIN0001234',
-    accountName: 'Vyapar Bridge B2B Operations',
+    upiId: 'ashish660@ibl',
+    accountName: 'Ashish Kumar Verma',
     qrCodeUrl: '',
     barcodeImageUrl: '',
     barcodeSecretToken: 'SECURE-BARCODE-VERIFY-2026-X89',
@@ -206,7 +204,7 @@ const db = {
     brandAdsList: []
   },
   aiLogs: [],
-  totalVisitors: 5420,
+  totalVisitors: 0,
   platformFeedbacks: [
     {
       id: 'fb-1',
@@ -2217,7 +2215,7 @@ Assistant:`;
 
   // GET Platform Feedback & Aggregate Ratings
   app.get('/api/platform/feedback', (req, res) => {
-    db.totalVisitors = (db.totalVisitors || 5420) + 1;
+    db.totalVisitors = (db.totalVisitors || 0) + 1;
     const feedbacks = db.platformFeedbacks || [];
     const totalReviews = feedbacks.length;
     
@@ -2367,7 +2365,7 @@ Sitemap: ${baseUrl}/sitemap.xml`;
     const averageRating = totalReviews > 0 ? Number((sum / totalReviews).toFixed(1)) : 5.0;
 
     res.json({
-      totalVisitors: db.totalVisitors || 5420,
+      totalVisitors: db.totalVisitors || 0,
       totalReviews,
       averageRating,
       starCounts,

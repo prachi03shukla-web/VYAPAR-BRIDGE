@@ -1,6 +1,13 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+import { initializeFirestore, getFirestore, setLogLevel } from 'firebase/firestore';
+
+// Suppress internal Firestore gRPC/WebChannel idle stream disconnect messages
+try {
+  setLogLevel('silent');
+} catch {
+  // Ignore if not supported in environment
+}
 
 // AI Studio provisioned config
 import defaultConfig from '../firebase-applet-config.json';
@@ -17,5 +24,16 @@ const firebaseConfig = {
 
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 export const auth = getAuth(app);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+
+let firestoreInstance: any;
+try {
+  firestoreInstance = initializeFirestore(app, {
+    experimentalAutoDetectLongPolling: true
+  }, firebaseConfig.firestoreDatabaseId);
+} catch {
+  firestoreInstance = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+}
+
+export const db = firestoreInstance;
+
 

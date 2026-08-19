@@ -19,6 +19,7 @@
     "firebase": "^12.17.1",
     "firebase-admin": "^14.2.0",
     "glob": "^13.0.6",
+    "jsqr": "^1.4.0",
     "lucide-react": "^0.344.0",
     "motion": "^13.0.0",
     "multer": "^2.2.0",

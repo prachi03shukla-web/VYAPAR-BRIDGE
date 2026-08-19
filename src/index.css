@@ -8,8 +8,8 @@ html, body {
   width: 100%;
   max-width: 100vw;
   overflow-x: hidden !important;
-  background-color: #000000;
-  color: #ffffff;
+  background-color: #FAFAFA;
+  color: #18181b;
 }
 
 #root {
@@ -17,7 +17,7 @@ html, body {
   max-width: 100vw;
   overflow-x: hidden !important;
   min-height: 100vh;
-  background-color: #000000;
+  background-color: #FAFAFA;
 }
 
 @keyframes tirangaShineLeftToRight {
