@@ -33,7 +33,7 @@ import { BRAND_LOGO_SRC } from './constants/brandLogo';
 // Suppress benign Firebase GrpcConnection idle stream warnings
 const originalConsoleError = console.error;
 console.error = (...args: any[]) => {
-  const msg = args.map(a => typeof a === 'string' ? a : (a?.message || '')).join(' ');
+  const msg = args.map(a => typeof a === 'string' ? a : (a instanceof Error ? a.message : String(a))).join(' ');
   if (
     msg.includes('GrpcConnection RPC') ||
     msg.includes('Disconnecting idle stream') ||
@@ -47,7 +47,7 @@ console.error = (...args: any[]) => {
 
 const originalConsoleWarn = console.warn;
 console.warn = (...args: any[]) => {
-  const msg = args.map(a => typeof a === 'string' ? a : (a?.message || '')).join(' ');
+  const msg = args.map(a => typeof a === 'string' ? a : (a instanceof Error ? a.message : String(a))).join(' ');
   if (
     msg.includes('GrpcConnection RPC') ||
     msg.includes('Disconnecting idle stream') ||
@@ -70,7 +70,7 @@ window.addEventListener('unhandledrejection', (event) => {
     msg.includes('Database is closing') ||
     msg.includes('closing') ||
     msg.includes('IndexedDB') ||
-    msg.includes('client is offline')
+    msg.includes('client is offline') || msg.includes('GrpcConnection RPC') || msg.includes('Disconnecting idle stream')
   ) {
     event.preventDefault();
   }
@@ -86,7 +86,7 @@ window.addEventListener('error', (event) => {
     msg.includes('Database is closing') ||
     msg.includes('closing') ||
     msg.includes('IndexedDB') ||
-    msg.includes('client is offline')
+    msg.includes('client is offline') || msg.includes('GrpcConnection RPC') || msg.includes('Disconnecting idle stream')
   ) {
     event.preventDefault();
   }

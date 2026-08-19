@@ -186,7 +186,7 @@ export const AIChatbotWidget: React.FC = () => {
     }
 
     // 8. General Intelligent Fallback
-    return `🤝 **Vyapar Bridge AI Support Assistant:**\n\nAapka sawal: *"${userQuery}"*\n\nMain aapki help kar sakta hoon:\n- 👤 **Profile kaise banayein aur setup karein**\n- 📢 **Post aur Video Reels kaise daalein**\n- 🔝 **Post top par kaise laayein aur customers paayein**\n- 💳 **Verified Badge aur Payment UTR kaise submit karein**\n- 🤝 **Direct Dealers aur Manufacturers se connect karein**\n\nBataiye aapko isme se kis cheez ki detail chahiye?`;
+    return `⚠️ **Gemini AI Connection Error:**\n\nAgar aap Vercel par hain, to kripya Vercel ke Environment Variables me \`GEMINI_API_KEY\` set karein. Jab tak API key set nahi hogi, main sirf app ki basic jankari de sakta hoon.\n\nMain aapki help kar sakta hoon:\n- 👤 **Profile kaise banayein**\n- 📢 **Post kaise daalein**\n- 💳 **Payment & Badge**\n\n(Aapka sawal: "${userQuery}")`;
   };
 
   const handleSend = async (textToSend?: string) => {

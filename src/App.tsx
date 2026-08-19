@@ -9579,29 +9579,26 @@ function AuthPage({ onLogin }: { onLogin: (user: any) => void }) {
     };
 
     if (!isLogin) {
-      // REGISTRATION FLOW: Save to Firestore & Local Storage immediately with automatic sanitization
-      try {
-        await syncUserToFirestore(userProfile);
-      } catch (fErr) {
-        console.warn('Direct Firestore save note:', fErr);
-      }
-
-      // Also try sync with server if available
-      try {
-        await safeFetch('/api/auth/register', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(userProfile)
-        });
-      } catch (apiErr) {
-        // Safe to ignore on static Vercel
-      }
-
+      // INSTANT REGISTRATION FLOW: Save to local storage & log in immediately (0ms UI lag)
       localStorage.setItem('user', JSON.stringify(userProfile));
       localStorage.setItem('Vyapar Bridge_user', JSON.stringify(userProfile));
       toast.success(`🎉 Registered successfully as ${selectedRole === 'factory' ? 'Company / Factory' : (selectedRole === 'customer' ? 'Local Customer' : 'Dealer / Distributor')}!`);
       onLogin(userProfile);
       setLoading(false);
+
+      // Asynchronous background sync to Firestore & Express Server (non-blocking)
+      syncUserToFirestore(userProfile).catch((fErr) => {
+        console.warn('Background Firestore user sync note:', fErr);
+      });
+
+      safeFetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(userProfile)
+      }).catch((apiErr) => {
+        // Safe to ignore on static Vercel / offline
+      });
+
       return;
     }
 
