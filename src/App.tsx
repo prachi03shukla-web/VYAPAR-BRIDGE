@@ -4071,14 +4071,12 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
     try {
       if (!isVideoFile) {
         persistentMediaUrl = await optimizeImageForPersistence(pendingReelFile);
-      } else {
-        persistentMediaUrl = reelPreviewUrl && !reelPreviewUrl.startsWith('blob:') ? reelPreviewUrl : '';
       }
     } catch (e) {
       console.warn('Reel file conversion note:', e);
     }
 
-    const resolvedMediaUrl = persistentMediaUrl || (reelPreviewUrl && !reelPreviewUrl.startsWith('blob:') ? reelPreviewUrl : '');
+    const localMediaUrl = persistentMediaUrl || reelPreviewUrl || (pendingReelFile ? URL.createObjectURL(pendingReelFile) : '');
 
     const authorName = user?.name || currentUser?.name || localStorage.getItem('vyapar_user_name') || 'Vyapar Member';
     const authorAvatar = user?.avatarUrl || user?.avatar || currentUser?.avatarUrl || currentUser?.avatar || BRAND_LOGO_SRC;
@@ -4118,20 +4116,26 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
       let isBlocked = false;
 
       try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 6000);
+
         const response = await fetch('/api/posts', {
           method: 'POST',
           body: formData,
+          signal: controller.signal
         });
+        clearTimeout(timeoutId);
+
         const data = await response.json();
 
-        if (data.blocked) {
+        if (data && data.blocked) {
           isBlocked = true;
           toast.error(data.error || '⛔ AI Safety Guardrail: Content blocked.', { id: toastId });
           window.alert("⚠️ UPLOAD FAILED\n\nYour content was blocked by our AI Guardrail.\n\nVyapar Bridge is strictly a B2B network. You can ONLY upload business-related content like products, professional services, machinery, and trade materials.\n\nPersonal selfies, human portraits, and casual videos are NOT allowed.");
           return;
         }
 
-        if (response.ok && data.success && data.post) {
+        if (response.ok && data && data.success && data.post) {
           publishedPost = data.post;
         }
       } catch (e) {
@@ -4146,12 +4150,16 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
           audioUrl: selectedMusic.audioUrl || selectedMusic.musicUrl || selectedMusic.url
         } : null;
 
+        const resolvedUrl = (publishedPost?.mediaUrl && !publishedPost.mediaUrl.startsWith('blob:')) 
+          ? publishedPost.mediaUrl 
+          : localMediaUrl;
+
         const finalReelPost = publishedPost ? {
           ...publishedPost,
           type: publishedPost.type || mediaType,
-          mediaUrl: (publishedPost.mediaUrl && !publishedPost.mediaUrl.startsWith('blob:') ? publishedPost.mediaUrl : (resolvedMediaUrl || '')),
-          thumbnailUrl: (publishedPost.thumbnailUrl && !publishedPost.thumbnailUrl.startsWith('blob:') ? publishedPost.thumbnailUrl : (publishedPost.mediaUrl || resolvedMediaUrl || '')),
-          persistentMediaUrl: publishedPost.mediaUrl || resolvedMediaUrl,
+          mediaUrl: resolvedUrl,
+          thumbnailUrl: publishedPost.thumbnailUrl || resolvedUrl,
+          persistentMediaUrl: resolvedUrl,
           user: publishedPost.user && publishedPost.user.name ? publishedPost.user : authorUser,
           userAvatar: authorUser.avatarUrl,
           music: publishedPost.music || musicObj
@@ -4165,9 +4173,9 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
           content: 'Uploaded from Home Reels',
           hashtags: '#reel #b2b #tiles #products',
           type: mediaType,
-          mediaUrl: resolvedMediaUrl,
-          thumbnailUrl: resolvedMediaUrl,
-          persistentMediaUrl: resolvedMediaUrl,
+          mediaUrl: resolvedUrl,
+          thumbnailUrl: resolvedUrl,
+          persistentMediaUrl: resolvedUrl,
           category: 'Commercial Wholesale',
           visibility: 'public',
           status: 'approved',
@@ -4178,11 +4186,17 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
           user: authorUser
         };
 
-        await syncPostToFirestore(finalReelPost);
+        // Instant local state update
+        setPosts(prev => [finalReelPost, ...prev]);
+        setReels(prev => [finalReelPost, ...prev]);
+        setActiveStoryIndex(0);
+        window.dispatchEvent(new CustomEvent('postCreated', { detail: finalReelPost }));
+
+        // Non-blocking background sync
+        syncPostToFirestore(finalReelPost).catch(bgErr => console.warn('Background sync note:', bgErr));
+
         playBubblePopSound();
         toast.success('🎉 Published successfully!', { id: toastId });
-        setPosts(prev => [finalReelPost, ...prev]);
-        setActiveStoryIndex(0);
 
         setPendingReelFile(null);
         setReelPreviewUrl(null);
@@ -11099,7 +11113,7 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
       console.warn('Reel file conversion note:', e);
     }
 
-    const resolvedMediaUrl = persistentMediaUrl || (previewUrl && !previewUrl.startsWith('blob:') ? previewUrl : '');
+    const localMediaUrl = persistentMediaUrl || previewUrl || (pendingFile ? URL.createObjectURL(pendingFile) : '');
 
     const authorName = currentUser?.name || currentUser?.companyName || currentUser?.username || localStorage.getItem('vyapar_user_name') || 'Vyapar Member';
     const authorAvatar = currentUser?.avatarUrl || currentUser?.avatar || localStorage.getItem('vyapar_user_avatar') || BRAND_LOGO_SRC;
@@ -11136,63 +11150,96 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
       formData.append('originalVolume', String(originalVolume));
 
       let publishedReel: any = null;
+      let isBlocked = false;
+
       try {
-        const data = await safeFetch('/api/posts', { method: 'POST', body: formData });
-        if (data && data.success && data.post) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 6000);
+
+        const response = await fetch('/api/posts', {
+          method: 'POST',
+          body: formData,
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+
+        const data = await response.json();
+
+        if (data && data.blocked) {
+          isBlocked = true;
+          toast.error(data.error || '⛔ AI Safety Guardrail: Content blocked.', { id: toastId });
+          window.alert("⚠️ UPLOAD FAILED\n\nYour content was blocked by our AI Guardrail.");
+          return;
+        }
+
+        if (response.ok && data && data.success && data.post) {
           publishedReel = data.post;
         }
       } catch (e) {
         console.warn('Backend API note, publishing directly to Firestore:', e);
       }
 
-      const musicObj = selectedMusic ? {
-        id: selectedMusic.id,
-        title: selectedMusic.title || 'Selected Music',
-        artist: selectedMusic.artist || 'Vyapar Bridge',
-        audioUrl: selectedMusic.audioUrl || selectedMusic.musicUrl || selectedMusic.url
-      } : null;
+      if (!isBlocked) {
+        const musicObj = selectedMusic ? {
+          id: selectedMusic.id,
+          title: selectedMusic.title || 'Selected Music',
+          artist: selectedMusic.artist || 'Vyapar Bridge',
+          audioUrl: selectedMusic.audioUrl || selectedMusic.musicUrl || selectedMusic.url
+        } : null;
 
-      const finalReel = publishedReel ? {
-        ...publishedReel,
-        type: publishedReel.type || mediaType,
-        mediaUrl: (publishedReel.mediaUrl && !publishedReel.mediaUrl.startsWith('blob:') ? publishedReel.mediaUrl : (resolvedMediaUrl || '')),
-        thumbnailUrl: (publishedReel.thumbnailUrl && !publishedReel.thumbnailUrl.startsWith('blob:') ? publishedReel.thumbnailUrl : (publishedReel.mediaUrl || resolvedMediaUrl || '')),
-        persistentMediaUrl: publishedReel.mediaUrl || resolvedMediaUrl,
-        user: publishedReel.user && publishedReel.user.name ? publishedReel.user : authorUser,
-        userAvatar: authorUser.avatarUrl,
-        music: publishedReel.music || musicObj
-      } : {
-        id: generatedReelId,
-        userId: String(currentUser.id),
-        userName: authorUser.name,
-        userRole: authorUser.role,
-        userAvatar: authorUser.avatarUrl,
-        title: 'New B2B Reel',
-        content: 'Uploaded from Reels',
-        hashtags: '#reel #b2b #tiles #products',
-        type: mediaType,
-        mediaUrl: resolvedMediaUrl,
-        thumbnailUrl: resolvedMediaUrl,
-        persistentMediaUrl: resolvedMediaUrl,
-        category: 'Commercial Wholesale',
-        visibility: 'public',
-        status: 'approved',
-        likesCount: 0,
-        viewsCount: 1,
-        createdAt: Date.now(),
-        music: musicObj,
-        user: authorUser
-      };
+        const resolvedUrl = (publishedReel?.mediaUrl && !publishedReel.mediaUrl.startsWith('blob:'))
+          ? publishedReel.mediaUrl
+          : localMediaUrl;
 
-      await syncPostToFirestore(finalReel);
-      playBubblePopSound();
-      toast.success('🎉 Reel published successfully!', { id: toastId });
-      setReels(prev => [finalReel, ...prev]);
-      setCurrentIndex(0);
-      setIsPreviewModalOpen(false);
-      setPendingFile(null);
-      setPreviewUrl(null);
-      setSelectedMusic(null);
+        const finalReel = publishedReel ? {
+          ...publishedReel,
+          type: publishedReel.type || mediaType,
+          mediaUrl: resolvedUrl,
+          thumbnailUrl: publishedReel.thumbnailUrl || resolvedUrl,
+          persistentMediaUrl: resolvedUrl,
+          user: publishedReel.user && publishedReel.user.name ? publishedReel.user : authorUser,
+          userAvatar: authorUser.avatarUrl,
+          music: publishedReel.music || musicObj
+        } : {
+          id: generatedReelId,
+          userId: String(currentUser.id),
+          userName: authorUser.name,
+          userRole: authorUser.role,
+          userAvatar: authorUser.avatarUrl,
+          title: 'New B2B Reel',
+          content: 'Uploaded from Reels',
+          hashtags: '#reel #b2b #tiles #products',
+          type: mediaType,
+          mediaUrl: resolvedUrl,
+          thumbnailUrl: resolvedUrl,
+          persistentMediaUrl: resolvedUrl,
+          category: 'Commercial Wholesale',
+          visibility: 'public',
+          status: 'approved',
+          likesCount: 0,
+          viewsCount: 1,
+          createdAt: Date.now(),
+          music: musicObj,
+          user: authorUser
+        };
+
+        // Update state & dispatch event immediately
+        setReels(prev => [finalReel, ...prev]);
+        setPosts(prev => [finalReel, ...prev]);
+        setCurrentIndex(0);
+        window.dispatchEvent(new CustomEvent('postCreated', { detail: finalReel }));
+
+        // Non-blocking background sync
+        syncPostToFirestore(finalReel).catch(bgErr => console.warn('Background sync note:', bgErr));
+
+        playBubblePopSound();
+        toast.success('🎉 Reel published successfully!', { id: toastId });
+
+        setIsPreviewModalOpen(false);
+        setPendingFile(null);
+        setPreviewUrl(null);
+        setSelectedMusic(null);
+      }
     } catch (err) {
       console.error('Reel upload error:', err);
       toast.error('Failed to upload reel', { id: toastId });
@@ -15143,7 +15190,23 @@ function AppContent() {
   return (
     <div className="min-h-screen bg-[#E6C76C] dark:bg-black text-black dark:text-zinc-50 flex flex-col md:flex-row font-sans selection:bg-blue-100 dark:selection:bg-blue-900/30 w-full max-w-full overflow-x-hidden">
       <WelcomeSplash />
-      <Toaster position="bottom-center" />
+      <Toaster 
+        position="top-center" 
+        containerStyle={{ top: 75 }}
+        toastOptions={{
+          duration: 3500,
+          style: {
+            borderRadius: '16px',
+            background: '#18181b',
+            color: '#ffffff',
+            fontSize: '13px',
+            fontWeight: '600',
+            padding: '10px 18px',
+            boxShadow: '0 10px 30px -5px rgba(0,0,0,0.4)',
+            border: '1px solid rgba(255,255,255,0.1)'
+          }
+        }} 
+      />
       <AIChatbotWidget />
 
       {/* Auth Modal for Guest Users trying to interact */}
