@@ -4072,7 +4072,7 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
       if (!isVideoFile) {
         persistentMediaUrl = await optimizeImageForPersistence(pendingReelFile);
       } else {
-        persistentMediaUrl = await fileToDataURL(pendingReelFile);
+        persistentMediaUrl = reelPreviewUrl && !reelPreviewUrl.startsWith('blob:') ? reelPreviewUrl : '';
       }
     } catch (e) {
       console.warn('Reel file conversion note:', e);
@@ -4149,9 +4149,9 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
         const finalReelPost = publishedPost ? {
           ...publishedPost,
           type: publishedPost.type || mediaType,
-          mediaUrl: resolvedMediaUrl || (publishedPost.mediaUrl && !publishedPost.mediaUrl.startsWith('blob:') ? publishedPost.mediaUrl : ''),
-          thumbnailUrl: resolvedMediaUrl || publishedPost.thumbnailUrl || '',
-          persistentMediaUrl: resolvedMediaUrl,
+          mediaUrl: (publishedPost.mediaUrl && !publishedPost.mediaUrl.startsWith('blob:') ? publishedPost.mediaUrl : (resolvedMediaUrl || '')),
+          thumbnailUrl: (publishedPost.thumbnailUrl && !publishedPost.thumbnailUrl.startsWith('blob:') ? publishedPost.thumbnailUrl : (publishedPost.mediaUrl || resolvedMediaUrl || '')),
+          persistentMediaUrl: publishedPost.mediaUrl || resolvedMediaUrl,
           user: publishedPost.user && publishedPost.user.name ? publishedPost.user : authorUser,
           userAvatar: authorUser.avatarUrl,
           music: publishedPost.music || musicObj
@@ -4971,7 +4971,7 @@ function CreatePost({ user }: { user: any }) {
               persistentMediaUrl = await optimizeImageForPersistence(file);
               persistentThumbnailUrl = persistentMediaUrl;
             } else {
-              persistentMediaUrl = await fileToDataURL(file);
+              persistentMediaUrl = filePreview && !filePreview.startsWith('blob:') ? filePreview : '';
             }
           } catch (e) {
             console.warn('Media persistence conversion note:', e);
@@ -5045,8 +5045,8 @@ function CreatePost({ user }: { user: any }) {
           ...savedPost,
           userName: savedPost.userName || authorName,
           userRole: savedPost.userRole || authorRole,
-          mediaUrl: (persistentMediaUrl || (savedPost.mediaUrl && !savedPost.mediaUrl.startsWith('blob:') && !savedPost.mediaUrl.startsWith('/uploads') ? savedPost.mediaUrl : '') || finalMedia),
-          thumbnailUrl: (persistentThumbnailUrl || persistentMediaUrl || (savedPost.thumbnailUrl && !savedPost.thumbnailUrl.startsWith('blob:') && !savedPost.thumbnailUrl.startsWith('/uploads') ? savedPost.thumbnailUrl : '') || finalThumb),
+          mediaUrl: (savedPost.mediaUrl && !savedPost.mediaUrl.startsWith('blob:') ? savedPost.mediaUrl : (persistentMediaUrl || finalMedia)),
+          thumbnailUrl: (savedPost.thumbnailUrl && !savedPost.thumbnailUrl.startsWith('blob:') ? savedPost.thumbnailUrl : (persistentThumbnailUrl || persistentMediaUrl || finalThumb)),
           status: isPendingApproval ? 'pending' : (savedPost.status || 'approved'),
           pending_admin_approval: isPendingApproval,
           aiFlagReason: aiFlagReason || null
@@ -5537,9 +5537,51 @@ function AdminPanel({ user }: { user: any }) {
   };
 
   useEffect(() => {
-    safeFetch('/api/posts?admin=true')
-      .then(data => Array.isArray(data) && setPosts(data));
-      
+    let isCancelled = false;
+    const fetchAdminPosts = async () => {
+      let apiPosts: any[] = [];
+      try {
+        const data = await safeFetch('/api/posts?admin=true');
+        if (Array.isArray(data)) apiPosts = data;
+      } catch (e) {}
+
+      let fbPosts: any[] = [];
+      try {
+        fbPosts = await fetchPostsFromFirestore();
+      } catch (e) {}
+
+      const postMap = new Map<string, any>();
+      apiPosts.forEach(p => { if (p && p.id) postMap.set(String(p.id), p); });
+      fbPosts.forEach(p => {
+        if (p && p.id) {
+          const existing = postMap.get(String(p.id)) || {};
+          postMap.set(String(p.id), { ...existing, ...p });
+        }
+      });
+
+      if (!isCancelled) {
+        setPosts(Array.from(postMap.values()));
+      }
+    };
+
+    fetchAdminPosts();
+
+    const unsubscribeAdminPosts = subscribeToPostsFromFirestore((realtimePosts) => {
+      if (!isCancelled && Array.isArray(realtimePosts)) {
+        setPosts(prev => {
+          const pMap = new Map<string, any>();
+          prev.forEach(p => { if (p && p.id) pMap.set(String(p.id), p); });
+          realtimePosts.forEach(p => {
+            if (p && p.id) {
+              const existing = pMap.get(String(p.id)) || {};
+              pMap.set(String(p.id), { ...existing, ...p });
+            }
+          });
+          return Array.from(pMap.values());
+        });
+      }
+    });
+
     safeFetch('/api/reports')
       .then(data => Array.isArray(data) && setReports(data));
 
@@ -5550,6 +5592,11 @@ function AdminPanel({ user }: { user: any }) {
 
     safeFetch('/api/admin/payments')
       .then(data => Array.isArray(data) && setPayments(data));
+
+    return () => {
+      isCancelled = true;
+      unsubscribeAdminPosts();
+    };
   }, []);
 
   const handleConfirmDeleteUser = async () => {
@@ -10595,17 +10642,53 @@ function CommunityPage({ user }: { user?: any }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const query = user?.id ? `?currentUserId=${user.id}` : '';
-    safeFetch(`/api/posts${query}`)
-      .then(data => {
-        if (Array.isArray(data)) {
-          const cleanData = filterOutHiddenContent(data, user?.id);
-          const imagePosts = cleanData.filter((p: any) => p.type === 'image' || (!p.type && p.mediaUrl && !p.mediaUrl.match(/\.(mp4|webm|mov|m4v)$/i)));
-          setPosts(imagePosts);
+    let isCancelled = false;
+    const loadCommunityPosts = async () => {
+      let backendPosts: any[] = [];
+      try {
+        const query = user?.id ? `?currentUserId=${user.id}` : '';
+        const data = await safeFetch(`/api/posts${query}`);
+        if (Array.isArray(data)) backendPosts = data;
+      } catch (e) {}
+
+      let fbPosts: any[] = [];
+      try {
+        fbPosts = await fetchPostsFromFirestore();
+      } catch (e) {}
+
+      const postMap = new Map<string, any>();
+      backendPosts.forEach(p => { if (p && p.id) postMap.set(String(p.id), p); });
+      fbPosts.forEach(p => {
+        if (p && p.id) {
+          const existing = postMap.get(String(p.id)) || {};
+          postMap.set(String(p.id), { ...existing, ...p });
         }
+      });
+
+      const allCombined = Array.from(postMap.values());
+      const cleanData = filterOutHiddenContent(allCombined, user?.id);
+      const imagePosts = cleanData.filter((p: any) => p.type === 'image' || (!p.type && p.mediaUrl && !p.mediaUrl.match(/\.(mp4|webm|mov|m4v)(\?.*)?$/i)));
+      if (!isCancelled) {
+        setPosts(imagePosts);
         setLoading(false);
-      })
-      .catch(() => setLoading(false));
+      }
+    };
+
+    loadCommunityPosts();
+
+    const unsubscribe = subscribeToPostsFromFirestore((realtimePosts) => {
+      if (!isCancelled && Array.isArray(realtimePosts)) {
+        const cleanRealtime = filterOutHiddenContent(realtimePosts, user?.id);
+        const imagePosts = cleanRealtime.filter((p: any) => p.type === 'image' || (!p.type && p.mediaUrl && !p.mediaUrl.match(/\.(mp4|webm|mov|m4v)(\?.*)?$/i)));
+        setPosts(imagePosts);
+        setLoading(false);
+      }
+    });
+
+    return () => {
+      isCancelled = true;
+      unsubscribe();
+    };
   }, [user?.id]);
 
   return (
@@ -10678,15 +10761,49 @@ function ExplorePage({ user, userLocation }: { user?: any, userLocation?: {lat: 
   }, []);
 
   useEffect(() => {
-    const query = user?.id ? `?currentUserId=${user.id}` : '';
-    safeFetch(`/api/posts${query}`)
-      .then(data => {
-        if (Array.isArray(data)) {
-          const cleanData = filterOutHiddenContent(data, user?.id);
-          setPosts(cleanData);
+    let isCancelled = false;
+    const loadExplorePosts = async () => {
+      let backendPosts: any[] = [];
+      try {
+        const query = user?.id ? `?currentUserId=${user.id}` : '';
+        const data = await safeFetch(`/api/posts${query}`);
+        if (Array.isArray(data)) backendPosts = data;
+      } catch (e) {}
+
+      let fbPosts: any[] = [];
+      try {
+        fbPosts = await fetchPostsFromFirestore();
+      } catch (e) {}
+
+      const postMap = new Map<string, any>();
+      backendPosts.forEach(p => { if (p && p.id) postMap.set(String(p.id), p); });
+      fbPosts.forEach(p => {
+        if (p && p.id) {
+          const existing = postMap.get(String(p.id)) || {};
+          postMap.set(String(p.id), { ...existing, ...p });
         }
-      })
-      .catch(err => console.error('Explore page fetch error:', err));
+      });
+
+      const allCombined = Array.from(postMap.values());
+      const cleanData = filterOutHiddenContent(allCombined, user?.id);
+      if (!isCancelled) {
+        setPosts(cleanData);
+      }
+    };
+
+    loadExplorePosts();
+
+    const unsubscribe = subscribeToPostsFromFirestore((realtimePosts) => {
+      if (!isCancelled && Array.isArray(realtimePosts)) {
+        const cleanRealtime = filterOutHiddenContent(realtimePosts, user?.id);
+        setPosts(cleanRealtime);
+      }
+    });
+
+    return () => {
+      isCancelled = true;
+      unsubscribe();
+    };
   }, [user?.id]);
 
   return (
@@ -10976,7 +11093,7 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
       if (!isVideoFile) {
         persistentMediaUrl = await optimizeImageForPersistence(pendingFile);
       } else {
-        persistentMediaUrl = await fileToDataURL(pendingFile);
+        persistentMediaUrl = previewUrl && !previewUrl.startsWith('blob:') ? previewUrl : '';
       }
     } catch (e) {
       console.warn('Reel file conversion note:', e);
@@ -11038,9 +11155,9 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
       const finalReel = publishedReel ? {
         ...publishedReel,
         type: publishedReel.type || mediaType,
-        mediaUrl: resolvedMediaUrl || (publishedReel.mediaUrl && !publishedReel.mediaUrl.startsWith('blob:') ? publishedReel.mediaUrl : ''),
-        thumbnailUrl: resolvedMediaUrl || publishedReel.thumbnailUrl || '',
-        persistentMediaUrl: resolvedMediaUrl,
+        mediaUrl: (publishedReel.mediaUrl && !publishedReel.mediaUrl.startsWith('blob:') ? publishedReel.mediaUrl : (resolvedMediaUrl || '')),
+        thumbnailUrl: (publishedReel.thumbnailUrl && !publishedReel.thumbnailUrl.startsWith('blob:') ? publishedReel.thumbnailUrl : (publishedReel.mediaUrl || resolvedMediaUrl || '')),
+        persistentMediaUrl: publishedReel.mediaUrl || resolvedMediaUrl,
         user: publishedReel.user && publishedReel.user.name ? publishedReel.user : authorUser,
         userAvatar: authorUser.avatarUrl,
         music: publishedReel.music || musicObj
@@ -12955,7 +13072,7 @@ function ProfilePage({
             if (!isVideo && !isPdf) {
               fileDataUrl = await optimizeImageForPersistence(postFile);
             } else {
-              fileDataUrl = await fileToDataURL(postFile);
+              fileDataUrl = postFilePreview && !postFilePreview.startsWith('blob:') ? postFilePreview : '';
             }
           } catch (e) {
             console.warn('Profile post file conversion note:', e);
@@ -13020,8 +13137,8 @@ function ProfilePage({
           ...savedPost,
           userName: savedPost.userName || profileAuthorName,
           userRole: savedPost.userRole || profileAuthorRole,
-          mediaUrl: (resolvedProfileMedia || (savedPost.mediaUrl && !savedPost.mediaUrl.startsWith('blob:') && !savedPost.mediaUrl.startsWith('/uploads') ? savedPost.mediaUrl : '') || initialMedia),
-          thumbnailUrl: (resolvedProfileMedia || (savedPost.thumbnailUrl && !savedPost.thumbnailUrl.startsWith('blob:') && !savedPost.thumbnailUrl.startsWith('/uploads') ? savedPost.thumbnailUrl : '') || initialMedia),
+          mediaUrl: (savedPost.mediaUrl && !savedPost.mediaUrl.startsWith('blob:') ? savedPost.mediaUrl : (resolvedProfileMedia || initialMedia)),
+          thumbnailUrl: (savedPost.thumbnailUrl && !savedPost.thumbnailUrl.startsWith('blob:') ? savedPost.thumbnailUrl : (resolvedProfileMedia || initialMedia)),
           status: isPendingApproval ? 'pending' : (savedPost.status || 'approved'),
           pending_admin_approval: isPendingApproval,
           aiFlagReason: aiFlagReason || null
@@ -13036,6 +13153,7 @@ function ProfilePage({
         };
 
         await syncPostToFirestore(finalProfilePost);
+        window.dispatchEvent(new CustomEvent('postCreated', { detail: finalProfilePost }));
 
         if (isPendingApproval) {
           toast.info('⏳ Post sent for Admin Review');

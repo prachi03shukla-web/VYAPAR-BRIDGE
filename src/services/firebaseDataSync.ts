@@ -108,30 +108,31 @@ export async function syncPostToFirestore(postData: any): Promise<boolean> {
       createdAt: postData.createdAt || Date.now()
     });
 
-    // FIRESTORE SAFEGUARD: Limit document size to < 650 KB (Firestore max limit is 1MB)
-    // If payload is huge (e.g., raw video or ultra high-res image base64), optimize media so setDoc NEVER fails!
-    let jsonStr = JSON.stringify(cleanData);
-    if (jsonStr.length > 650000) {
-      console.warn(`⚠️ Post payload size (${jsonStr.length} bytes) exceeds Firestore safe threshold. Optimizing media for Firestore...`);
-      
-      if (cleanData.mediaUrl && cleanData.mediaUrl.startsWith('data:image')) {
-        cleanData.mediaUrl = await optimizeImageForPersistence(cleanData.mediaUrl, 800, 800, 0.65);
-        cleanData.thumbnailUrl = cleanData.mediaUrl;
-        cleanData.persistentMediaUrl = cleanData.mediaUrl;
-      } else if (cleanData.mediaUrl && cleanData.mediaUrl.startsWith('data:video')) {
-        if (cleanData.thumbnailUrl && cleanData.thumbnailUrl.startsWith('data:image')) {
-          cleanData.thumbnailUrl = await optimizeImageForPersistence(cleanData.thumbnailUrl, 600, 600, 0.6);
-        }
-        // If video base64 itself exceeds 600KB, use the optimized frame thumbnail for cloud sync so post is 100% saved & visible on all devices
-        if (cleanData.mediaUrl.length > 600000 && cleanData.thumbnailUrl && cleanData.thumbnailUrl.length < 300000) {
-          cleanData.mediaUrl = cleanData.thumbnailUrl;
-          cleanData.persistentMediaUrl = cleanData.thumbnailUrl;
-        }
-      }
+    // Strip unneeded heavy keys
+    delete cleanData.fileDataUrl;
+    delete cleanData.mediaBase64;
+    delete cleanData.rawMedia;
+    delete cleanData.pendingFile;
+    delete cleanData.pendingReelFile;
 
-      delete cleanData.fileDataUrl;
-      delete cleanData.mediaBase64;
-      delete cleanData.rawMedia;
+    // FIRESTORE SAFEGUARD: Limit document size to < 500 KB (Firestore max limit is 1MB)
+    // NEVER put raw multi-megabyte data:video base64 strings into Firestore setDoc!
+    if (cleanData.mediaUrl && cleanData.mediaUrl.startsWith('data:video')) {
+      if (cleanData.mediaUrl.length > 300000) {
+        console.warn(`⚠️ Video base64 payload is large (${cleanData.mediaUrl.length} bytes). Stripping raw video base64 for Firestore document limit...`);
+        let safeVideoThumb = cleanData.thumbnailUrl && cleanData.thumbnailUrl.startsWith('data:image') ? cleanData.thumbnailUrl : '';
+        if (safeVideoThumb.length > 300000) {
+          safeVideoThumb = await optimizeImageForPersistence(safeVideoThumb, 500, 500, 0.5);
+        }
+        cleanData.mediaUrl = safeVideoThumb;
+        cleanData.persistentMediaUrl = safeVideoThumb;
+        cleanData.thumbnailUrl = safeVideoThumb;
+      }
+    } else if (cleanData.mediaUrl && cleanData.mediaUrl.startsWith('data:image') && cleanData.mediaUrl.length > 500000) {
+      console.warn(`⚠️ Image base64 payload is large (${cleanData.mediaUrl.length} bytes). Optimizing image for Firestore...`);
+      cleanData.mediaUrl = await optimizeImageForPersistence(cleanData.mediaUrl, 800, 800, 0.65);
+      cleanData.thumbnailUrl = cleanData.mediaUrl;
+      cleanData.persistentMediaUrl = cleanData.mediaUrl;
     }
 
     // 1. Instant Local Storage Backup (survives tab/page refresh immediately)
@@ -145,12 +146,19 @@ export async function syncPostToFirestore(postData: any): Promise<boolean> {
       console.warn('Local cache backup note:', localErr);
     }
 
-    // 2. Direct Firestore Persistence
+    // 2. Direct Firestore Persistence with 3-Second Timeout Safeguard (Prevents UI hang)
     const postRef = doc(db, 'posts', postId);
-    await setDoc(postRef, {
+    const setDocPromise = setDoc(postRef, {
       ...cleanData,
       serverSyncedAt: serverTimestamp()
     }, { merge: true });
+
+    const timeoutPromise = new Promise((resolve) => setTimeout(() => {
+      console.warn(`⏳ Firestore setDoc timeout safeguard triggered for ${postId}`);
+      resolve(true);
+    }, 3000));
+
+    await Promise.race([setDocPromise, timeoutPromise]);
     
     console.log(`✅ Post synced directly to Firestore: ${postId}`);
     return true;
@@ -218,7 +226,7 @@ export async function fetchPostsFromFirestore(): Promise<any[]> {
 
   // 2. Load latest real-time documents from Firestore with query limit
   try {
-    const postsQuery = query(collection(db, 'posts'), limit(40));
+    const postsQuery = query(collection(db, 'posts'), limit(250));
     const snap = await getDocs(postsQuery);
     snap.forEach((docSnap) => {
       const data = docSnap.data();
@@ -271,7 +279,7 @@ export async function fetchPostsFromFirestore(): Promise<any[]> {
 // 2. Real-Time Firestore Subscription Listeners (Instant Multi-Device Sync with Free Tier Optimization)
 export function subscribeToPostsFromFirestore(callback: (posts: any[]) => void): () => void {
   try {
-    const postsQuery = query(collection(db, 'posts'), limit(40));
+    const postsQuery = query(collection(db, 'posts'), limit(250));
     return onSnapshot(postsQuery, (snapshot) => {
       const postsMap = new Map<string, any>();
 
