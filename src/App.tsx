@@ -28,7 +28,7 @@ import { BRAND_LOGO_SRC, BRAND_NAME } from './constants/brandLogo';
 import { auth, db as firestoreDb } from './firebase';
 import { collection, doc, setDoc, getDocs, getDoc, query, where, deleteDoc, orderBy, limit, onSnapshot } from 'firebase/firestore';
 import { DEFAULT_B2B_POSTS } from './data/defaultPosts';
-import { fetchPostsFromFirestore, syncPostToFirestore, subscribeToPostsFromFirestore, subscribeToUsersFromFirestore, subscribeToPaymentsFromFirestore, submitPaymentUTRToFirestore, getAdminSettingsFromFirestore, saveAdminSettingsToFirestore, subscribeToAdminSettingsFromFirestore, saveBrandAdsToFirestore, subscribeToBrandAdsFromFirestore, likePostInFirestore, savePostInFirestore, addCommentToFirestore, fetchCommentsFromFirestore, followUserInFirestore, recordViewInFirestore, recordShareInFirestore, authenticateUserInFirestore, blockUserInFirestore, markPostNotInterestedInFirestore, getUsersBlockedAndNotInterestedFromFirestore, clearDefaultDataFromFirestore, deleteUserFromFirestore, deletePostFromFirestore, syncUserToFirestore, fetchAllUsersFromFirestore, sanitizeForFirestore, updateUserVerificationInFirestore, subscribeToPlatformStatsFromFirestore, startPresenceHeartbeat, updateUserPresence, isUserActiveOnline, getUserLastActiveFormatted } from './services/firebaseDataSync';
+import { fetchPostsFromFirestore, syncPostToFirestore, subscribeToPostsFromFirestore, subscribeToUsersFromFirestore, subscribeToPaymentsFromFirestore, submitPaymentUTRToFirestore, getAdminSettingsFromFirestore, saveAdminSettingsToFirestore, subscribeToAdminSettingsFromFirestore, saveBrandAdsToFirestore, subscribeToBrandAdsFromFirestore, likePostInFirestore, savePostInFirestore, addCommentToFirestore, fetchCommentsFromFirestore, subscribeToCommentsFromFirestore, followUserInFirestore, recordViewInFirestore, recordShareInFirestore, authenticateUserInFirestore, blockUserInFirestore, markPostNotInterestedInFirestore, getUsersBlockedAndNotInterestedFromFirestore, clearDefaultDataFromFirestore, deleteUserFromFirestore, deletePostFromFirestore, syncUserToFirestore, fetchAllUsersFromFirestore, sanitizeForFirestore, updateUserVerificationInFirestore, subscribeToPlatformStatsFromFirestore, startPresenceHeartbeat, updateUserPresence, isUserActiveOnline, getUserLastActiveFormatted } from './services/firebaseDataSync';
 import { ConnectUserModal } from './components/ConnectUserModal';
 import { suggestHashtagsWithAI } from './services/aiService';
 import { optimizeImageForPersistence, fileToDataURL, generateVideoThumbnail } from './utils/imageOptimizer';
@@ -1451,86 +1451,88 @@ function ReelCard({
     setSharesCount(prev => prev + 1);
   };
 
+  useEffect(() => {
+    if (showCommentsDrawer && reel?.id) {
+      const unsubscribe = subscribeToCommentsFromFirestore(reel.id, (liveComments) => {
+        if (Array.isArray(liveComments)) {
+          setComments(liveComments);
+          setCommentsCount(liveComments.length);
+        }
+      });
+      return () => {
+        if (typeof unsubscribe === 'function') unsubscribe();
+      };
+    }
+  }, [showCommentsDrawer, reel?.id]);
+
   const handleAddComment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!commentText.trim()) return;
 
-    setIsSubmittingComment(true);
-    const content = commentText;
-
-    // Universal Guardrail Check
-    const moderation = await moderateContentUniversally({
-      content,
-      userId: currentUser?.id,
-      userRole: currentUser?.role
-    });
-
-    if (!moderation.approved) {
-      toast.error(moderation.reason || '⛔ Comment blocked by AI Guardrail.');
-      setIsSubmittingComment(false);
-      return;
-    }
-
+    const content = commentText.trim();
     setCommentText('');
+    setIsSubmittingComment(false);
 
-    const newCommentObj = {
+    try { playBubblePopSound(); } catch (e) {}
+
+    // 1. Instant optimistic comment display (0ms)
+    const tempId = 'cmt_opt_' + Date.now();
+    const optimisticComment = {
+      id: tempId,
       content,
       userId: currentUser?.id || '1',
-      userName: currentUser?.name || 'User',
-      userAvatar: currentUser?.avatarUrl || '',
-      createdAt: new Date().toISOString()
+      userName: currentUser?.name || 'You',
+      userAvatar: currentUser?.avatarUrl || localStorage.getItem('vyapar_user_avatar') || BRAND_LOGO_SRC,
+      createdAt: new Date().toISOString(),
+      user: currentUser || { name: 'You', avatarUrl: BRAND_LOGO_SRC }
     };
 
-    // Direct Firestore Sync (Works on Vercel)
-    const fsComment = await addCommentToFirestore(reel?.id || '101', newCommentObj);
-    if (fsComment) {
-      setComments(prev => [...prev, fsComment]);
-      setCommentsCount(prev => prev + 1);
-      toast.success('Comment posted!');
-      setIsSubmittingComment(false);
-      return;
-    }
+    setComments(prev => [...prev, optimisticComment]);
+    setCommentsCount(prev => prev + 1);
+    toast.success('Comment sent in real time!');
 
-    try {
-      const res = await fetch(`/api/posts/${reel?.id || '101'}/comments`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+    // 2. Background non-blocking sync to Firestore & server
+    (async () => {
+      try {
+        const moderation = await moderateContentUniversally({
           content,
-          userId: currentUser?.id || '1'
-        })
-      });
-      if (res.ok && res.headers.get('content-type')?.includes('application/json')) {
-        const data = await res.json();
-        if (data.success && data.comment) {
-          setComments(prev => [...prev, data.comment]);
-          setCommentsCount(prev => prev + 1);
-          toast.success('Comment posted!');
+          userId: currentUser?.id,
+          userRole: currentUser?.role
+        });
+
+        if (!moderation.approved) {
+          toast.error(moderation.reason || '⛔ Comment removed by AI Guardrail.');
+          setComments(prev => prev.filter(c => c.id !== tempId));
+          setCommentsCount(prev => Math.max(0, prev - 1));
+          return;
         }
-      } else {
-        const localComment = {
-          id: 'c' + Date.now(),
+
+        const newCommentObj = {
           content,
-          createdAt: Date.now(),
-          user: currentUser || { name: 'You' }
+          userId: currentUser?.id || '1',
+          userName: currentUser?.name || 'User',
+          userAvatar: currentUser?.avatarUrl || '',
+          createdAt: new Date().toISOString()
         };
-        setComments(prev => [...prev, localComment]);
-        setCommentsCount(prev => prev + 1);
-        toast.success('Comment posted!');
+
+        const fsComment = await addCommentToFirestore(reel?.id || '101', newCommentObj);
+        if (fsComment && fsComment.id) {
+          setComments(prev => prev.map(c => c.id === tempId ? { ...c, id: fsComment.id } : c));
+          return;
+        }
+
+        await fetch(`/api/posts/${reel?.id || '101'}/comments`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            content,
+            userId: currentUser?.id || '1'
+          })
+        });
+      } catch (err) {
+        console.warn('Background reel comment sync notice:', err);
       }
-    } catch (e) {
-      const localComment = {
-        id: 'c' + Date.now(),
-        content,
-        createdAt: Date.now(),
-        user: currentUser || { name: 'You' }
-      };
-      setComments(prev => [...prev, localComment]);
-      setCommentsCount(prev => prev + 1);
-      toast.success('Comment posted!');
-    } finally {
-      setIsSubmittingComment(false);
-    }
+    })();
   };
 
   useEffect(() => {
@@ -1769,15 +1771,15 @@ function ReelCard({
             {comments.map((c, i) => (
               <div key={c.id || i} className="flex items-start gap-2.5 text-xs text-white">
                 <div className="w-7 h-7 rounded-full bg-zinc-800 flex items-center justify-center font-bold text-[11px] text-zinc-300 shrink-0 overflow-hidden">
-                  {c.user?.avatarUrl ? (
-                    <img src={c.user.avatarUrl} alt={c.user.name} className="w-full h-full object-cover" />
+                  {(c.user?.avatarUrl || c.userAvatar) ? (
+                    <img src={c.user?.avatarUrl || c.userAvatar} alt={c.user?.name || c.userName || 'User'} className="w-full h-full object-cover" />
                   ) : (
-                    c.user?.name?.charAt(0) || 'U'
+                    (c.user?.name || c.userName || 'U').charAt(0).toUpperCase()
                   )}
                 </div>
                 <div className="flex-1">
                   <div className="flex items-center gap-1.5 flex-wrap">
-                    <span className="font-semibold text-zinc-200">{c.user?.name || 'Vyapar Bridge Member'}</span>
+                    <span className="font-semibold text-zinc-200">{c.user?.name || c.userName || 'Vyapar Bridge Member'}</span>
                     {c.user?.role === 'customer' && (
                       <span className="px-1.5 py-0.2 text-[9px] font-bold bg-amber-500/20 text-amber-300 rounded border border-amber-500/30">
                         Customer Inquiry
@@ -1791,7 +1793,9 @@ function ReelCard({
                     );
                     return (
                       <>
-                        <p className="text-zinc-300 mt-0.5 leading-normal">{safeText}</p>
+                        {safeText && (
+                          <p className="text-zinc-300 mt-0.5 leading-normal">{safeText}</p>
+                        )}
                         {masked && (
                           <p className="text-[10px] text-amber-400 mt-1 bg-amber-500/10 p-1 rounded border border-amber-500/20 font-medium">
                             🔒 Phone numbers in public comments are protected.
@@ -1800,8 +1804,17 @@ function ReelCard({
                       </>
                     );
                   })()}
+                  {(() => {
+                    const img = c.commentImage || c.imageUrl || c.image || c.mediaUrl;
+                    if (!img) return null;
+                    return (
+                      <div className="mt-1.5 rounded-lg overflow-hidden border border-zinc-700 max-w-[200px]">
+                        <img src={img} alt="Attachment" className="w-full h-auto max-h-48 object-cover cursor-pointer hover:opacity-95" onClick={() => window.open(img, '_blank')} />
+                      </div>
+                    );
+                  })()}
                   <button 
-                    onClick={() => setCommentText('@' + (c.user?.name?.replace(/\s+/g, '') || 'User') + ' ')} 
+                    onClick={() => setCommentText('@' + (c.user?.name || c.userName || 'User').replace(/\s+/g, '') + ' ')} 
                     className="text-[10px] text-zinc-500 font-bold hover:text-zinc-300 mt-1 cursor-pointer"
                   >
                     Reply
@@ -2694,25 +2707,18 @@ function PostItem({
     }
   };
 
-  const fetchComments = async () => {
-    try {
-      const fsComments = await fetchCommentsFromFirestore(post.id);
-      if (Array.isArray(fsComments) && fsComments.length > 0) {
-        setComments(fsComments);
-        return;
-      }
-      const data = await safeFetch(`/api/posts/${post.id}/comments`);
-      if (Array.isArray(data)) setComments(data);
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
   useEffect(() => {
-    if (showComments) {
-      fetchComments();
+    if (showComments && post?.id) {
+      const unsubscribe = subscribeToCommentsFromFirestore(post.id, (liveComments) => {
+        if (Array.isArray(liveComments)) {
+          setComments(liveComments);
+        }
+      });
+      return () => {
+        if (typeof unsubscribe === 'function') unsubscribe();
+      };
     }
-  }, [showComments]);
+  }, [showComments, post?.id]);
 
   useEffect(() => {
     // Unique view tracking on post mount (Runs once per session)
@@ -2953,101 +2959,131 @@ function PostItem({
 
   const handleAddComment = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newComment.trim() && !commentImage) return;
+    if (!newComment.trim() && !commentImage && !commentImagePreview) return;
 
-    setIsSubmittingComment(true);
-    const textContent = newComment;
+    const textContent = newComment.trim();
+    const attachedImage = commentImagePreview || '';
 
-    // Universal Guardrail Check
-    const moderation = await moderateContentUniversally({
-      content: textContent,
-      userId: currentUser?.id,
-      userRole: currentUser?.role
-    });
+    // Play instant sound feedback
+    try { playBubblePopSound(); } catch (e) {}
 
-    if (!moderation.approved) {
-      toast.error(moderation.reason || '⛔ Comment blocked by AI Guardrail.');
-      setIsSubmittingComment(false);
-      return;
-    }
+    const myAvatar = currentUser?.avatarUrl || localStorage.getItem('vyapar_user_avatar') || BRAND_LOGO_SRC;
+    const myName = currentUser?.name || localStorage.getItem('vyapar_user_name') || 'You';
 
-    // Direct Firestore Sync
-    const newCommentObj = {
+    // 1. OPTIMISTIC 0MS REAL-TIME LOCAL DISPLAY
+    const tempId = 'cmt_opt_' + Date.now();
+    const optimisticComment = {
+      id: tempId,
       content: textContent,
       userId: currentUser?.id || '1',
-      userName: currentUser?.name || 'User',
-      userAvatar: currentUser?.avatarUrl || '',
-      commentImage: commentImagePreview || '',
-      createdAt: new Date().toISOString()
+      userName: myName,
+      userAvatar: myAvatar,
+      commentImage: attachedImage,
+      imageUrl: attachedImage,
+      image: attachedImage,
+      createdAt: new Date().toISOString(),
+      user: {
+        id: currentUser?.id || '1',
+        name: myName,
+        avatarUrl: myAvatar,
+        role: currentUser?.role || 'wholesaler',
+        isVerified: currentUser?.isVerified || false
+      }
     };
 
-    const fsComment = await addCommentToFirestore(post.id, newCommentObj);
-    if (fsComment) {
-      setComments(prev => [...prev, fsComment]);
-      setNewComment('');
-      setCommentImage(null);
-      setCommentImagePreview(null);
-      toast.success('Comment posted!');
-      setIsSubmittingComment(false);
-      return;
+    setComments(prev => [...prev, optimisticComment]);
+    setNewComment('');
+    setCommentImage(null);
+    setCommentImagePreview(null);
+    if (commentFileInputRef.current) {
+      commentFileInputRef.current.value = '';
     }
+    setIsSubmittingComment(false);
+    toast.success('Comment sent in real time!');
 
-    try {
-      const formData = new FormData();
-      formData.append('content', textContent);
-      formData.append('userId', currentUser?.id || '1');
-      if (commentImage) {
-        formData.append('image', commentImage);
-      }
+    // 2. BACKGROUND NON-BLOCKING ASYNC SYNC TO FIRESTORE & SERVER
+    (async () => {
+      try {
+        if (textContent) {
+          const moderation = await moderateContentUniversally({
+            content: textContent,
+            userId: currentUser?.id,
+            userRole: currentUser?.role
+          });
 
-      const res = await fetch(`/api/posts/${post.id}/comments`, {
-        method: 'POST',
-        body: formData
-      });
-      if (res.ok && res.headers.get('content-type')?.includes('application/json')) {
-        const data = await res.json();
-        if (data.success) {
-          setComments(prev => [...prev, data.comment]);
-          setNewComment('');
-          setCommentImage(null);
-          setCommentImagePreview(null);
-          toast.success('Comment posted!');
+          if (!moderation.approved) {
+            toast.error(moderation.reason || '⛔ Comment removed by AI Guardrail.');
+            setComments(prev => prev.filter(c => c.id !== tempId));
+            return;
+          }
         }
-      } else {
-        const localComment = {
-          id: 'c' + Date.now(),
+
+        const newCommentObj = {
           content: textContent,
-          createdAt: Date.now(),
-          user: currentUser || { name: 'You' }
+          userId: currentUser?.id || '1',
+          userName: myName,
+          userAvatar: myAvatar,
+          commentImage: attachedImage,
+          imageUrl: attachedImage,
+          image: attachedImage,
+          createdAt: new Date().toISOString(),
+          user: {
+            id: currentUser?.id || '1',
+            name: myName,
+            avatarUrl: myAvatar,
+            role: currentUser?.role || 'wholesaler',
+            isVerified: currentUser?.isVerified || false
+          }
         };
-        setComments(prev => [...prev, localComment]);
-        setNewComment('');
-        setCommentImage(null);
-        setCommentImagePreview(null);
-        toast.success('Comment posted!');
+
+        const fsComment = await addCommentToFirestore(post.id, newCommentObj);
+        if (fsComment && fsComment.id) {
+          setComments(prev => prev.map(c => c.id === tempId ? { ...c, id: fsComment.id } : c));
+          return;
+        }
+
+        // Fallback to Express backend if needed
+        const formData = new FormData();
+        formData.append('content', textContent);
+        formData.append('userId', currentUser?.id || '1');
+        if (attachedImage) {
+          formData.append('commentImage', attachedImage);
+          formData.append('imageUrl', attachedImage);
+        }
+
+        await fetch(`/api/posts/${post.id}/comments`, {
+          method: 'POST',
+          body: formData
+        });
+      } catch (err) {
+        console.warn('Background comment sync notice:', err);
       }
-    } catch (e) {
-      const localComment = {
-        id: 'c' + Date.now(),
-        content: textContent,
-        createdAt: Date.now(),
-        user: currentUser || { name: 'You' }
-      };
-      setComments(prev => [...prev, localComment]);
-      setNewComment('');
-      setCommentImage(null);
-      setCommentImagePreview(null);
-      toast.success('Comment posted!');
-    } finally {
-      setIsSubmittingComment(false);
-    }
+    })();
   };
 
-  const handleCommentImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleCommentImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       setCommentImage(file);
-      setCommentImagePreview(URL.createObjectURL(file));
+      
+      // 1. Instant Data URL read for 100% reliable preview & persistence
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        if (event.target?.result) {
+          setCommentImagePreview(event.target.result as string);
+        }
+      };
+      reader.readAsDataURL(file);
+
+      // 2. Mobile pre-compression (<50KB) for instant Firestore sync
+      try {
+        const compressed = await optimizeImageForPersistence(file, 640, 640, 0.72);
+        if (compressed) {
+          setCommentImagePreview(compressed);
+        }
+      } catch (err) {
+        console.warn('Image optimization notice:', err);
+      }
     }
   };
 
@@ -3419,15 +3455,15 @@ function PostItem({
               <div key={comment.id} className="text-sm flex flex-col mb-1">
                 <div className="flex items-start gap-2 group/comment">
                   <div className="w-6 h-6 rounded-full bg-slate-200 dark:bg-zinc-800 flex items-center justify-center overflow-hidden shrink-0 mt-0.5">
-                    {comment.user?.avatarUrl ? (
-                      <img src={comment.user.avatarUrl} alt={comment.user.name} className="w-full h-full object-cover" />
+                    {(comment.user?.avatarUrl || comment.userAvatar) ? (
+                      <img src={comment.user?.avatarUrl || comment.userAvatar} alt={comment.user?.name || comment.userName || 'User'} className="w-full h-full object-cover" />
                     ) : (
-                      <span className="text-[10px] font-bold text-black/80 dark:text-zinc-200">{comment.user?.name?.charAt(0) || 'U'}</span>
+                      <span className="text-[10px] font-bold text-black/80 dark:text-zinc-200">{(comment.user?.name || comment.userName || 'U').charAt(0).toUpperCase()}</span>
                     )}
                   </div>
                   <div className="flex-1 flex flex-col">
                     <div className="flex items-center gap-1.5 flex-wrap shrink-0">
-                      <span className="font-semibold cursor-pointer text-xs text-black dark:text-zinc-100">{comment.user?.name}</span>
+                      <span className="font-semibold cursor-pointer text-xs text-black dark:text-zinc-100">{comment.user?.name || comment.userName || 'Vyapar Member'}</span>
                       {(comment.user?.isVerified || (currentUser?.id === comment.userId && currentUser?.isVerified)) && (
                         <VerifiedBadge size="sm" />
                       )}
@@ -3458,7 +3494,9 @@ function PostItem({
                           );
                           return (
                             <>
-                              <span className="flex-1 text-sm mt-0.5 text-black dark:text-zinc-100">{safeContent}</span>
+                              {safeContent && (
+                                <span className="flex-1 text-sm mt-0.5 text-black dark:text-zinc-100">{safeContent}</span>
+                              )}
                               {masked && (
                                 <div className="text-[10px] text-amber-600 dark:text-amber-400 mt-1 flex items-center gap-1 font-medium bg-amber-500/10 p-1.5 rounded-lg border border-amber-500/20">
                                   🔒 Phone numbers in public comments are protected. Use "Inquire / Trade Connect" to chat directly.
@@ -3467,16 +3505,20 @@ function PostItem({
                             </>
                           );
                         })()}
-                        {comment.imageUrl && (
-                          <div className="mt-2 rounded-xl overflow-hidden border border-slate-100 dark:border-zinc-800 max-w-[220px] shadow-sm">
-                            <img 
-                              src={comment.imageUrl} 
-                              alt="Comment attachment" 
-                              className="w-full h-auto cursor-pointer hover:opacity-90 transition-opacity"
-                              onClick={() => window.open(comment.imageUrl, '_blank')}
-                            />
-                          </div>
-                        )}
+                        {(() => {
+                          const commentImg = comment.commentImage || comment.imageUrl || comment.image || comment.mediaUrl;
+                          if (!commentImg) return null;
+                          return (
+                            <div className="mt-2 rounded-xl overflow-hidden border border-slate-200 dark:border-zinc-700 max-w-[240px] shadow-sm">
+                              <img 
+                                src={commentImg} 
+                                alt="Comment attachment" 
+                                className="w-full h-auto max-h-64 object-cover cursor-pointer hover:opacity-95 transition-opacity rounded-lg"
+                                onClick={() => window.open(commentImg, '_blank')}
+                              />
+                            </div>
+                          );
+                        })()}
                       </div>
                     )}
                     <div className="flex items-center gap-3 mt-1">
@@ -3542,10 +3584,18 @@ function PostItem({
 
               <button 
                 type="submit" 
-                disabled={(!newComment.trim() && !commentImage) || isSubmittingComment}
-                className="text-blue-600 dark:text-blue-400 font-bold text-sm px-3 disabled:opacity-30 transition-all hover:scale-105 active:scale-95"
+                disabled={(!newComment.trim() && !commentImage && !commentImagePreview) || isSubmittingComment}
+                className="bg-blue-600 hover:bg-blue-700 active:scale-95 text-white font-bold text-xs px-3.5 py-2 rounded-full disabled:opacity-40 transition-all flex items-center gap-1.5 shadow-sm cursor-pointer"
+                title="Send comment"
               >
-                {isSubmittingComment ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Post'}
+                {isSubmittingComment ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <>
+                    <Send className="w-3.5 h-3.5" />
+                    <span>Send</span>
+                  </>
+                )}
               </button>
             </form>
           </div>
@@ -16144,8 +16194,6 @@ function AppContent() {
       <nav className="md:hidden fixed bottom-0 left-0 right-0 w-full bg-[#E6C76C] dark:bg-black border-t border-slate-200 dark:border-zinc-800 h-14 flex items-center justify-around z-50 px-2 max-w-full">
         <Link to="/"><Home className={cn("w-6 h-6", location.pathname === '/' && "stroke-[2.5px]")} /></Link>
         <Link to="/community"><Users className={cn("w-6 h-6", location.pathname === '/community' && "stroke-[2.5px]")} /></Link>
-        {user?.role !== 'customer' && <Link to="/create"><PlusSquare className={cn("w-6 h-6", location.pathname === '/create' && "stroke-[2.5px]")} /></Link>}
-        <Link to="/reels"><Film className={cn("w-6 h-6", location.pathname === '/reels' && "stroke-[2.5px]")} /></Link>
         <Link to="/roadmap"><MapIcon className={cn("w-6 h-6", location.pathname === '/roadmap' && "stroke-[2.5px]")} /></Link>
         {user ? (
           <Link to="/profile">

@@ -1637,8 +1637,9 @@ Return ONLY a valid raw JSON object (NO markdown, NO \`\`\`json backticks, NO ex
 
   // Add comment with AI Moderation & Image Support
   app.post('/api/posts/:id/comments', upload.single('image'), async (req, res) => {
-    const { content, userId } = req.body;
-    if (!content && !req.file) return res.status(400).json({ error: 'Comment must have content or an image' });
+    const { content, userId, commentImage, imageUrl } = req.body;
+    const finalImageUrl = req.file ? await uploadToFirebaseOrLocal(req.file) : (commentImage || imageUrl || null);
+    if (!content && !finalImageUrl) return res.status(400).json({ error: 'Comment must have content or an image' });
     if (!userId) return res.status(400).json({ error: 'Missing userId' });
     
     const user = db.users.find(u => u.id === userId);
@@ -1669,7 +1670,7 @@ Return ONLY a valid raw JSON object (NO markdown, NO \`\`\`json backticks, NO ex
       postId: req.params.id,
       userId,
       content: content || '',
-      imageUrl: req.file ? await uploadToFirebaseOrLocal(req.file) : null,
+      imageUrl: finalImageUrl,
       createdAt: Date.now()
     };
     db.comments.push(newComment);

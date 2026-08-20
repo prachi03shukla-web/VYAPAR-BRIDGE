@@ -74,15 +74,21 @@
     <script>
       (function() {
         const suppress = function(msg) {
-          const str = String(msg?.message || msg || '');
-          return str.includes('GrpcConnection RPC') ||
-                 str.includes('Disconnecting idle stream') ||
-                 str.includes('Timed out waiting for new targets') ||
-                 str.includes('CANCELLED: Disconnecting idle stream') ||
-                 str.includes('RESOURCE_EXHAUSTED') ||
-                 str.includes('resource-exhausted') ||
-                 str.includes('Quota limit exceeded') ||
-                 str.includes('Free daily write units per project');
+          try {
+            const str = typeof msg === 'string' ? msg : (msg?.message || msg?.stack || JSON.stringify(msg) || String(msg || ''));
+            return str.includes('GrpcConnection RPC') ||
+                   str.includes('Disconnecting idle stream') ||
+                   str.includes('Timed out waiting for new targets') ||
+                   str.includes('CANCELLED: Disconnecting idle stream') ||
+                   str.includes('CANCELLED') ||
+                   str.includes('@firebase/firestore') ||
+                   str.includes('RESOURCE_EXHAUSTED') ||
+                   str.includes('resource-exhausted') ||
+                   str.includes('Quota limit exceeded') ||
+                   str.includes('Free daily write units per project');
+          } catch {
+            return false;
+          }
         };
         const origErr = console.error;
         console.error = function() {
@@ -98,6 +104,27 @@
           }
           origWarn.apply(console, arguments);
         };
+        const origLog = console.log;
+        console.log = function() {
+          for (let i = 0; i < arguments.length; i++) {
+            if (suppress(arguments[i])) return;
+          }
+          origLog.apply(console, arguments);
+        };
+
+        window.addEventListener('error', function(e) {
+          if (suppress(e.message) || suppress(e.error)) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+          }
+        }, true);
+
+        window.addEventListener('unhandledrejection', function(e) {
+          if (suppress(e.reason)) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+          }
+        }, true);
       })();
     </script>
   </head>

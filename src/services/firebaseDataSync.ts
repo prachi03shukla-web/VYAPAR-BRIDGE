@@ -873,9 +873,12 @@ export async function savePostInFirestore(postId: string | number, userId: strin
 }
 
 export async function addCommentToFirestore(postId: string | number, commentData: any) {
+  const finalImage = commentData.commentImage || commentData.imageUrl || commentData.image || '';
   const newComment = {
     ...commentData,
     id: 'cmt_' + Date.now(),
+    imageUrl: finalImage,
+    commentImage: finalImage,
     createdAt: new Date().toISOString()
   };
 
@@ -888,6 +891,8 @@ export async function addCommentToFirestore(postId: string | number, commentData
     const commentsRef = collection(db, 'posts', String(postId), 'comments');
     const firestoreComment = {
       ...commentData,
+      imageUrl: finalImage,
+      commentImage: finalImage,
       createdAt: new Date().toISOString(),
       timestamp: serverTimestamp()
     };
@@ -917,7 +922,19 @@ export async function fetchCommentsFromFirestore(postId: string | number) {
     const snap = await getDocs(q);
     const comments: any[] = [];
     snap.forEach((docSnap) => {
-      comments.push({ id: docSnap.id, ...docSnap.data() });
+      const data = docSnap.data();
+      const img = data.commentImage || data.imageUrl || data.image || data.mediaUrl || null;
+      comments.push({ 
+        id: docSnap.id, 
+        ...data,
+        imageUrl: img,
+        commentImage: img,
+        user: data.user || {
+          id: data.userId || '1',
+          name: data.userName || 'Member',
+          avatarUrl: data.userAvatar || ''
+        }
+      });
     });
     if (comments.length > 0) {
       localStorage.setItem(localCommentsKey, JSON.stringify(comments));
@@ -931,6 +948,56 @@ export async function fetchCommentsFromFirestore(postId: string | number) {
     if (cached) return JSON.parse(cached);
   } catch (e) {}
   return [];
+}
+
+export function subscribeToCommentsFromFirestore(postId: string | number, callback: (comments: any[]) => void) {
+  const localCommentsKey = 'vyapar_comments_' + String(postId);
+  
+  // Instant emit from local cache for 0ms render
+  try {
+    const cached = localStorage.getItem(localCommentsKey);
+    if (cached) {
+      const parsed = JSON.parse(cached);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        callback(parsed);
+      }
+    }
+  } catch (e) {}
+
+  try {
+    const commentsRef = collection(db, 'posts', String(postId), 'comments');
+    const q = query(commentsRef, orderBy('createdAt', 'asc'), limit(100));
+    
+    return onSnapshot(q, (snap) => {
+      const liveComments: any[] = [];
+      snap.forEach((docSnap) => {
+        const data = docSnap.data();
+        const img = data.commentImage || data.imageUrl || data.image || data.mediaUrl || null;
+        liveComments.push({ 
+          id: docSnap.id, 
+          ...data,
+          imageUrl: img,
+          commentImage: img,
+          user: data.user || {
+            id: data.userId || '1',
+            name: data.userName || 'Member',
+            avatarUrl: data.userAvatar || ''
+          }
+        });
+      });
+      if (liveComments.length > 0) {
+        try {
+          localStorage.setItem(localCommentsKey, JSON.stringify(liveComments));
+        } catch (e) {}
+        callback(liveComments);
+      }
+    }, (err) => {
+      console.warn('Firestore comments snapshot notice:', err?.message || err);
+    });
+  } catch (err) {
+    console.warn('Error setting up comments listener:', err);
+    return () => {};
+  }
 }
 
 export async function followUserInFirestore(targetUserId: string | number, followerId: string | number) {
