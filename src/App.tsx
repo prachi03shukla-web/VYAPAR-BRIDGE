@@ -9748,39 +9748,38 @@ function AuthPage({ onLogin }: { onLogin: (user: any) => void }) {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-100 via-slate-50 to-slate-200 dark:from-zinc-950 dark:via-zinc-900 dark:to-black flex items-center justify-center p-3 sm:p-6 font-sans">
-      <div className="max-w-md w-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col">
-        {/* Header App Brand */}
-        <div className="bg-white text-black p-6 text-center relative overflow-hidden flex flex-col items-center">
-          <div className="absolute top-0 right-0 p-8 bg-blue-600/20 rounded-full blur-2xl"></div>
-          <div className="tiranga-border-circle mb-2.5 shadow-2xl transition-transform hover:scale-105">
-            <img 
-              src={BRAND_LOGO_SRC} 
-              alt="Vyapar Bridge Logo" 
-              className="w-16 h-16 object-cover rounded-full bg-slate-50 p-1"
-              onError={(e) => {
-                const parent = (e.target as HTMLElement).parentElement;
-                if (parent) parent.style.display = 'none';
-              }}
-            />
-          </div>
-          <h1 
-            className="text-3xl sm:text-4xl font-black italic tracking-wider tiranga-shimmer-text flex items-center justify-center gap-2 drop-shadow-md py-0.5"
-            style={{ fontFamily: "'Playfair Display', 'Dancing Script', serif", fontWeight: 900 }}
-          >VYAPAR BRIDGE</h1>
-          <p className="text-xs sm:text-[13px] text-amber-200 font-bold leading-relaxed max-w-xs mx-auto text-balance mt-2 drop-shadow-sm uppercase tracking-wider">
-            Open Network for Digital Commerce (ONDC)
-          </p>
-          <p 
-            className="text-sm sm:text-base font-black italic tracking-[0.25em] mt-1 uppercase text-center w-full bg-gradient-to-r from-amber-300 via-orange-300 to-amber-200 bg-clip-text text-transparent drop-shadow-md"
-            style={{ fontFamily: "'Playfair Display', 'Cinzel', 'Georgia', serif" }}
-          >
-            ✨ VOCAL FOR LOCAL ✨
-          </p>
-          <div className="mt-2.5 inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-50/80 border border-amber-400/40 text-[11px] font-black tracking-widest text-amber-300 uppercase shadow-md">
-            <span>🇮🇳 DIGITAL INDIA NETWORK</span>
-          </div>
+    <div className="w-full bg-white dark:bg-zinc-900 flex flex-col font-sans">
+      {/* Header App Brand */}
+      <div className="bg-white text-black p-4 sm:p-5 text-center relative overflow-hidden flex flex-col items-center border-b border-slate-100 dark:border-zinc-800">
+        <div className="absolute top-0 right-0 p-8 bg-blue-600/10 rounded-full blur-2xl"></div>
+        <div className="tiranga-border-circle mb-2 shadow-xl transition-transform hover:scale-105">
+          <img 
+            src={BRAND_LOGO_SRC} 
+            alt="Vyapar Bridge Logo" 
+            className="w-12 h-12 sm:w-14 sm:h-14 object-cover rounded-full bg-slate-50 p-1"
+            onError={(e) => {
+              const parent = (e.target as HTMLElement).parentElement;
+              if (parent) parent.style.display = 'none';
+            }}
+          />
         </div>
+        <h1 
+          className="text-2xl sm:text-3xl font-black italic tracking-wider tiranga-shimmer-text flex items-center justify-center gap-2 drop-shadow-md py-0.5"
+          style={{ fontFamily: "'Playfair Display', 'Dancing Script', serif", fontWeight: 900 }}
+        >VYAPAR BRIDGE</h1>
+        <p className="text-[11px] sm:text-xs text-amber-200 font-bold leading-relaxed max-w-xs mx-auto text-balance mt-1 drop-shadow-sm uppercase tracking-wider">
+          Open Network for Digital Commerce (ONDC)
+        </p>
+        <p 
+          className="text-xs sm:text-sm font-black italic tracking-[0.2em] mt-0.5 uppercase text-center w-full bg-gradient-to-r from-amber-300 via-orange-300 to-amber-200 bg-clip-text text-transparent drop-shadow-md"
+          style={{ fontFamily: "'Playfair Display', 'Cinzel', 'Georgia', serif" }}
+        >
+          ✨ VOCAL FOR LOCAL ✨
+        </p>
+        <div className="mt-2 inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-slate-50/80 border border-amber-400/40 text-[10px] font-black tracking-widest text-amber-300 uppercase shadow-sm">
+          <span>🇮🇳 DIGITAL INDIA NETWORK</span>
+        </div>
+      </div>
 
         {/* 3 MAIN ROLE TABS AT TOP (Merchants, Dealers & Customer) */}
         <div className="p-3 bg-slate-100 dark:bg-zinc-950 border-b border-slate-200 dark:border-zinc-800">
@@ -9884,7 +9883,7 @@ function AuthPage({ onLogin }: { onLogin: (user: any) => void }) {
         </div>
 
         {/* Form Container */}
-        <form className="px-6 py-4 flex flex-col gap-3.5 overflow-y-auto max-h-[60vh] scrollbar-thin" onSubmit={handleSubmit}>
+        <form className="p-4 sm:p-6 flex flex-col gap-3.5" onSubmit={handleSubmit}>
           {!isLogin && (
             <>
               {selectedRole === 'customer' ? (
@@ -10270,8 +10269,7 @@ function AuthPage({ onLogin }: { onLogin: (user: any) => void }) {
             )}
           </button>
         </form>
-
-      </div></div>
+    </div>
   );
 }
 
@@ -15292,21 +15290,27 @@ function AppContent() {
 
       {/* Auth Modal for Guest Users trying to interact */}
       {isAuthModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-zinc-900 w-full max-w-md rounded-3xl shadow-2xl overflow-hidden border border-slate-200 dark:border-zinc-800 relative animate-in fade-in zoom-in-95 duration-200">
-            <div className="p-4 border-b border-slate-100 dark:border-zinc-800 flex items-center justify-between">
+        <div 
+          className="fixed inset-0 z-[250] bg-black/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 overflow-y-auto animate-in fade-in duration-150"
+          onClick={() => setIsAuthModalOpen(false)}
+        >
+          <div 
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white dark:bg-zinc-900 w-full max-w-md rounded-2xl sm:rounded-3xl shadow-2xl overflow-hidden border border-slate-200 dark:border-zinc-800 relative flex flex-col my-auto max-h-[88vh] animate-in zoom-in-95 duration-200"
+          >
+            <div className="px-4 py-3 border-b border-slate-100 dark:border-zinc-800 flex items-center justify-between shrink-0 bg-slate-50/50 dark:bg-zinc-900/50">
               <div className="flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full bg-blue-600 animate-pulse"></span>
-                <h3 className="font-bold text-sm text-black dark:text-zinc-50 uppercase tracking-wider">Vyapar Bridge Portal Login / Register</h3>
+                <h3 className="font-bold text-xs sm:text-sm text-black dark:text-zinc-50 uppercase tracking-wider">Vyapar Bridge Portal Login / Register</h3>
               </div>
               <button 
                 onClick={() => setIsAuthModalOpen(false)}
-                className="w-8 h-8 rounded-full bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 dark:hover:bg-zinc-700 flex items-center justify-center text-black/70 font-bold cursor-pointer"
+                className="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 dark:hover:bg-zinc-700 flex items-center justify-center text-black/70 dark:text-zinc-300 font-bold cursor-pointer transition-colors text-xs sm:text-sm"
               >
                 ✕
               </button>
             </div>
-            <div className="max-h-[80vh] overflow-y-auto">
+            <div className="overflow-y-auto flex-1 scrollbar-thin">
               <AuthPage onLogin={(u: any) => {
                 setUser(u);
                 localStorage.setItem('user', JSON.stringify(u));
