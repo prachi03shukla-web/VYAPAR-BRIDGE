@@ -79,9 +79,7 @@ export function filterOutHiddenContent(items: any[], userId?: string | number) {
     if (!item) return false;
     const itemId = String(item.id || '');
     const itemUserId = String(item.userId || item.user?.id || item.actorId || '');
-    const media = String(item.mediaUrl || item.thumbnailUrl || '');
 
-    if (media.startsWith('blob:')) return false;
     if (item.description === 'My tree' || item.title === 'Tree' || itemId === 'post_admin_1787027595927' || itemId === 'post_admin_1787027350660') return false;
 
     if (itemId && notInterestedSet.has(itemId)) return false;
@@ -1024,6 +1022,14 @@ function ReelCard({
   onClose?: () => void;
   userLocation?: {lat: number, lng: number} | null;
 }) {
+  if (!reel) {
+    return (
+      <div className="relative w-full max-w-[420px] h-[85vh] bg-zinc-950 rounded-2xl border border-zinc-800 flex flex-col items-center justify-center p-6 text-center">
+        <p className="text-zinc-400 font-medium text-sm">Reel content unavailable</p>
+      </div>
+    );
+  }
+
   const navigate = useNavigate();
   const authorIdentifier = reel?.userId || reel?.user?.id || reel?.user?.name || reel?.name || '';
   const [isLiked, setIsLiked] = useState(reel?.isLiked || false);
@@ -1325,7 +1331,8 @@ function ReelCard({
   );
 
   const handleDelete = async () => {
-    const reelId = String(reel.id);
+    const reelId = String(reel?.id || '');
+    if (!reelId) return;
     try {
       // 1. Direct Firestore & LocalStorage permanent deletion
       await deletePostFromFirestore(reelId);
@@ -1351,7 +1358,7 @@ function ReelCard({
   };
 
   const handleNotInterested = async () => {
-    if (!currentUser?.id) {
+    if (!currentUser?.id || !reel?.id) {
       toast.error('Please login first');
       return;
     }
@@ -1373,8 +1380,8 @@ function ReelCard({
 
   const handleShare = (e: React.MouseEvent) => {
     e.stopPropagation();
-    recordShareInFirestore(reel.id);
-    if (currentUser?.id) {
+    if (reel?.id) recordShareInFirestore(reel.id);
+    if (currentUser?.id && reel?.id) {
       fetch(`/api/posts/${reel.id}/share`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2054,6 +2061,7 @@ function FullScreenFeedViewerModal({
   }
 
   const currentPost = posts[currentIndex];
+  if (!currentPost) return null;
 
   // Auto-slide story timer: 5s for static images/posts
   useEffect(() => {
@@ -2133,7 +2141,7 @@ function FullScreenFeedViewerModal({
       {/* Center Reel/Post Display */}
       <div onClick={e => e.stopPropagation()} className="relative z-10 w-full max-w-[420px] h-[90vh] flex items-center justify-center">
         <ReelCard 
-          key={currentPost.id || currentIndex} 
+          key={currentPost?.id || currentIndex} 
           reel={currentPost} 
           currentUser={currentUser} 
           onClose={onClose} 
@@ -3698,7 +3706,11 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
     });
 
     const cleanPosts = filterOutHiddenContent(allCombined, user?.id);
-    setPosts(cleanPosts);
+    setPosts(prev => {
+      const fetchedIds = new Set(cleanPosts.map(p => String(p.id)));
+      const pendingOptimistic = prev.filter(p => p && p.id && !fetchedIds.has(String(p.id)));
+      return [...pendingOptimistic, ...cleanPosts];
+    });
     setLoading(false);
   };
 
@@ -4934,8 +4946,26 @@ function CreatePost({ user }: { user: any }) {
     const authorAvatar = user?.avatarUrl || user?.avatar || localStorage.getItem('vyapar_user_avatar') || BRAND_LOGO_SRC;
     const authorRole = user?.role || 'factory';
 
-    // Instant optimistic post object for zero UI delay
-    const initialMediaUrl = filePreview || '';
+    // Optimize image to persistent Base64 Data URL before navigating for zero loss
+    let persistentMediaUrl = '';
+    let persistentThumbnailUrl = '';
+    if (file && !isVideo && !isPdf) {
+      try {
+        persistentMediaUrl = await optimizeImageForPersistence(file);
+        persistentThumbnailUrl = persistentMediaUrl;
+      } catch (e) {
+        console.warn('Image optimization note:', e);
+      }
+    }
+    if (thumbnailFile) {
+      try {
+        persistentThumbnailUrl = await optimizeImageForPersistence(thumbnailFile);
+      } catch (e) {}
+    }
+
+    const resolvedMediaUrl = persistentMediaUrl || filePreview || '';
+    const resolvedThumbUrl = persistentThumbnailUrl || persistentMediaUrl || filePreview || '';
+
     const instantPost = {
       id: generatedId,
       userId: String(user.id),
@@ -4946,9 +4976,9 @@ function CreatePost({ user }: { user: any }) {
       description: content || '',
       hashtags: hashtags || '#vyaparbridge #tiles #business',
       type: postMediaType,
-      mediaUrl: initialMediaUrl,
-      thumbnailUrl: initialMediaUrl,
-      persistentMediaUrl: initialMediaUrl,
+      mediaUrl: resolvedMediaUrl,
+      thumbnailUrl: resolvedThumbUrl,
+      persistentMediaUrl: resolvedMediaUrl,
       category: 'Commercial Wholesale',
       visibility: visibility || 'public',
       status: 'approved',
@@ -4967,7 +4997,10 @@ function CreatePost({ user }: { user: any }) {
       }
     };
 
-    // 1. Instant local display & UI update
+    // 1. Instant sync to Firestore & Local Storage
+    syncPostToFirestore(instantPost).catch(e => console.warn('Firestore sync note:', e));
+
+    // 2. Instant local display & UI update
     window.dispatchEvent(new CustomEvent('postCreated', { detail: instantPost }));
     playBubblePopSound();
     toast.success(`🎉 Post ${visibility === 'scheduled' ? 'scheduled' : 'published'} successfully!`);
@@ -11248,10 +11281,58 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
     }
   };
 
-  const currentReel = reels[currentIndex];
+  const touchStartY = React.useRef<number | null>(null);
+  const touchEndY = React.useRef<number | null>(null);
+  const touchStartX = React.useRef<number | null>(null);
+  const touchEndX = React.useRef<number | null>(null);
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    touchStartY.current = e.touches[0].clientY;
+    touchEndY.current = e.touches[0].clientY;
+    touchStartX.current = e.touches[0].clientX;
+    touchEndX.current = e.touches[0].clientX;
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    touchEndY.current = e.touches[0].clientY;
+    touchEndX.current = e.touches[0].clientX;
+  };
+
+  const handleTouchEnd = () => {
+    if (touchStartY.current !== null && touchEndY.current !== null && touchStartX.current !== null && touchEndX.current !== null) {
+      const diffY = touchStartY.current - touchEndY.current;
+      const diffX = touchStartX.current - touchEndX.current;
+      const minSwipeDistance = 35;
+
+      if (Math.abs(diffY) > minSwipeDistance && Math.abs(diffY) > Math.abs(diffX)) {
+        if (diffY > 0) {
+          setCurrentIndex(prev => Math.min(reels.length - 1, prev + 1));
+        } else {
+          setCurrentIndex(prev => Math.max(0, prev - 1));
+        }
+      } else if (Math.abs(diffX) > minSwipeDistance && Math.abs(diffX) > Math.abs(diffY)) {
+        if (diffX > 0) {
+          setCurrentIndex(prev => Math.min(reels.length - 1, prev + 1));
+        } else {
+          setCurrentIndex(prev => Math.max(0, prev - 1));
+        }
+      }
+    }
+    touchStartY.current = null;
+    touchEndY.current = null;
+    touchStartX.current = null;
+    touchEndX.current = null;
+  };
+
+  const currentReel = reels.length > 0 && currentIndex >= 0 && currentIndex < reels.length ? reels[currentIndex] : null;
 
   return (
-    <div className="h-[calc(100vh-60px)] flex flex-col items-center justify-center bg-zinc-950 p-2 sm:p-4 overflow-hidden relative">
+    <div 
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
+      className="h-[calc(100vh-60px)] flex flex-col items-center justify-center bg-zinc-950 p-2 sm:p-4 overflow-hidden relative select-none"
+    >
       {/* Upload Reel Header Action */}
       <input 
         type="file" 
