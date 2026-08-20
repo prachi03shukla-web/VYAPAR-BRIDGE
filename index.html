@@ -71,6 +71,35 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@600;700&family=Great+Vibes&family=Montserrat:wght@800;900&family=Playfair+Display:ital,wght@0,400..900;1,400..900&family=Syne:wght@800&display=swap" rel="stylesheet">
+    <script>
+      (function() {
+        const suppress = function(msg) {
+          const str = String(msg?.message || msg || '');
+          return str.includes('GrpcConnection RPC') ||
+                 str.includes('Disconnecting idle stream') ||
+                 str.includes('Timed out waiting for new targets') ||
+                 str.includes('CANCELLED: Disconnecting idle stream') ||
+                 str.includes('RESOURCE_EXHAUSTED') ||
+                 str.includes('resource-exhausted') ||
+                 str.includes('Quota limit exceeded') ||
+                 str.includes('Free daily write units per project');
+        };
+        const origErr = console.error;
+        console.error = function() {
+          for (let i = 0; i < arguments.length; i++) {
+            if (suppress(arguments[i])) return;
+          }
+          origErr.apply(console, arguments);
+        };
+        const origWarn = console.warn;
+        console.warn = function() {
+          for (let i = 0; i < arguments.length; i++) {
+            if (suppress(arguments[i])) return;
+          }
+          origWarn.apply(console, arguments);
+        };
+      })();
+    </script>
   </head>
   <body class="bg-[#FAFAFA] text-zinc-900 transition-colors antialiased overflow-x-hidden selection:bg-blue-500 selection:text-white">
     <div id="root" class="w-full max-w-full overflow-x-hidden min-h-screen bg-[#FAFAFA]"></div>

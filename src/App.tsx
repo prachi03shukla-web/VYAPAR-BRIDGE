@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { BrowserRouter, Routes, Route, Link, useNavigate, useLocation, useParams } from 'react-router-dom';
-import { Facebook, Twitter, Instagram, Home, Shield, Moon, Sun, PlusSquare, MessageCircle, MessageSquare, Menu, LogOut, LogIn, Check, X, XCircle, Search, Compass, Film, Heart, Calculator, Bookmark, Info, MoreHorizontal, Image, ImageIcon, ImagePlus, Eye, EyeOff, Camera, Upload, Trash2, Plus, ShieldCheck, Sparkles, QrCode, CheckCircle, CheckCircle2, Award, Smile, Volume2, VolumeX, ChevronUp, ChevronDown, ArrowLeft, ChevronLeft, ChevronRight, UserPlus, UserCheck, Share2, Phone, Mail, Globe, Building2, Store, MapPin, Locate, Navigation, Tag, Filter, ShieldAlert, UserX, Lock, Key, Clock, FileText, FileCheck, Maximize2, Crop, Loader2, Send, BarChart2, Users, Map as MapIcon, Hash, Pencil, Rocket, ExternalLink, Star, Scale, Video, TrendingUp, ClipboardList, Bell, CreditCard, Calendar, Copy, RefreshCw, AlertTriangle } from 'lucide-react';
+import { Facebook, Twitter, Instagram, Home, Shield, Moon, Sun, PlusSquare, MessageCircle, MessageSquare, Menu, LogOut, LogIn, Check, X, XCircle, Search, Compass, Film, Heart, Calculator, Bookmark, Info, MoreHorizontal, Image, ImageIcon, ImagePlus, Eye, EyeOff, Camera, Upload, Trash2, Plus, ShieldCheck, Sparkles, QrCode, CheckCircle, CheckCircle2, Award, Smile, Volume2, VolumeX, Play, Pause, ChevronUp, ChevronDown, ArrowLeft, ChevronLeft, ChevronRight, UserPlus, UserCheck, Share2, Phone, Mail, Globe, Building2, Store, MapPin, Locate, Navigation, Tag, Filter, ShieldAlert, UserX, Lock, Key, Clock, FileText, FileCheck, Maximize2, Crop, Loader2, Send, BarChart2, Users, Map as MapIcon, Hash, Pencil, Rocket, ExternalLink, Star, Scale, Video, TrendingUp, ClipboardList, Bell, CreditCard, Calendar, Copy, RefreshCw, AlertTriangle } from 'lucide-react';
 import toast, { Toaster } from 'react-hot-toast';
 
 if (typeof (toast as any).info !== 'function') {
@@ -253,11 +253,11 @@ export function AdMediaDisplay({ ad, className, onMediaEnded }: { ad: any; class
           controls
           muted
           playsInline
-          preload="auto"
+          autoPlay
+          preload="metadata"
           onEnded={() => {
             if (onMediaEnded) onMediaEnded();
           }}
-          ref={(el) => { if (el && el.paused) { const p = el.play(); if (p !== undefined) p.catch(()=>{}); } }}
           onError={() => {
             setVideoError(true);
             if (onMediaEnded) onMediaEnded();
@@ -1078,9 +1078,10 @@ function ReelCard({
   const [reelRatingsCount, setReelRatingsCount] = useState<number>(reel?.ratingsCount || 0);
   const [isFollowing, setIsFollowing] = useState(() => isUserFollowed(authorIdentifier));
   const [isSubmittingComment, setIsSubmittingComment] = useState(false);
-  const [fitMode, setFitMode] = useState<'contain' | 'cover'>('contain');
+  const [fitMode, setFitMode] = useState<'contain' | 'cover'>('cover');
   const [showVolumeIndicator, setShowVolumeIndicator] = useState(false);
   const [showHeart, setShowHeart] = useState(false);
+  const [mediaAspectRatio, setMediaAspectRatio] = useState<number | null>(null);
   const videoRef = React.useRef<HTMLVideoElement>(null);
   const audioRef = React.useRef<HTMLAudioElement>(null);
 
@@ -1561,31 +1562,15 @@ function ReelCard({
   }, [isMuted, reelMusic, reel?.originalVolume, reel?.musicVolume]);
 
   return (
-    <div className="relative w-full max-w-[420px] h-[85vh] sm:h-[88vh] max-h-[820px] bg-black rounded-2xl overflow-hidden shadow-2xl flex flex-col justify-between select-none border border-zinc-800">
-      {/* Floating Action Controls (Clean, no extra dark header layer) */}
-      <div className="absolute top-3 inset-x-3 flex items-center justify-between text-white z-20 pointer-events-none">
-        <div className="pointer-events-auto">
-          {onClose && (
-            <button onClick={onClose} className="p-2 bg-black/50 hover:bg-black/70 backdrop-blur-md rounded-full text-white transition-all cursor-pointer border border-white/10 shadow-lg">
-              <XCircle className="w-5 h-5" />
-            </button>
-          )}
-        </div>
-
-        <div className="flex items-center gap-2 pointer-events-auto">
-          <button 
-            onClick={(e) => { e.stopPropagation(); setFitMode(prev => prev === 'contain' ? 'cover' : 'contain'); }} 
-            className="p-1.5 px-2.5 bg-black/50 hover:bg-black/70 rounded-full text-white text-[11px] font-semibold backdrop-blur-md transition-all border border-white/10 shadow-lg flex items-center gap-1 cursor-pointer" 
-            title="Toggle Aspect Ratio (Original vs Fill)"
-          >
-            <Eye className="w-3.5 h-3.5" />
-            <span>{fitMode === 'contain' ? 'Original' : 'Fill'}</span>
-          </button>
-          <button onClick={() => setShowOptionsModal(true)} className="p-2 bg-black/50 hover:bg-black/70 backdrop-blur-md rounded-full text-white transition-all cursor-pointer border border-white/10 shadow-lg">
-            <MoreHorizontal className="w-5 h-5" />
+    <div className="relative w-full h-full bg-black flex flex-col justify-between select-none overflow-hidden">
+      {/* Top Close Button (Only if displayed in popup modal) */}
+      {onClose && (
+        <div className="absolute top-3 left-3 z-30 pointer-events-auto">
+          <button onClick={onClose} className="p-2 bg-black/50 hover:bg-black/70 backdrop-blur-md rounded-full text-white transition-all cursor-pointer border border-white/10 shadow-lg">
+            <XCircle className="w-5 h-5" />
           </button>
         </div>
-      </div>
+      )}
 
       {/* Audio Track for custom music */}
       {reelMusic?.audioUrl && (
@@ -1601,8 +1586,8 @@ function ReelCard({
         />
       )}
 
-      {/* Main Media Player Canvas - Preserves Original Aspect Ratio (19:6, 16:9, 4:3, 1:1, 9:16) */}
-      <div className="absolute inset-0 flex items-center justify-center bg-zinc-950 overflow-hidden">
+      {/* Main Media Player Canvas */}
+      <div className="absolute inset-0 flex items-center justify-center bg-black overflow-hidden">
         {/* Interaction Overlay */}
         <div 
           className="absolute inset-0 z-20 cursor-pointer" 
@@ -1626,63 +1611,26 @@ function ReelCard({
           )}
         </AnimatePresence>
 
-        {/* Ambient Blurred Background for letterboxed content */}
-        {fitMode === 'contain' && (
-          <div className="absolute inset-0 pointer-events-none opacity-30 overflow-hidden">
-            {(mediaSrc.includes('youtube.com') || mediaSrc.includes('youtu.be') || mediaSrc.includes('facebook.com') || mediaSrc.includes('fb.watch')) ? (
-               <AdMediaDisplay ad={{ type: 'video', mediaUrl: mediaSrc }} className="w-full h-full object-cover blur-3xl scale-125" />
-            ) : isVideo && mediaSrc ? (
-              <video preload="auto" 
-                src={mediaSrc} 
-                muted 
-                playsInline 
-                onEnded={handleMediaEnded}
-                className="w-full h-full object-cover blur-3xl scale-125 transform-gpu will-change-transform" 
-                ref={(el) => {
-                  if (el && el.paused && isPlaying) {
-                    const p = el.play();
-                    if (p !== undefined) p.catch(() => {});
-                  }
-                }}
-              />
-            ) : mediaSrc ? (
-              <img src={mediaSrc} alt="" className="w-full h-full object-cover blur-3xl scale-125" />
-            ) : null}
-          </div>
-        )}
-
-        {/* Sharp Foreground Media in Original Aspect Ratio */}
+        {/* Sharp Foreground Media */}
         {(mediaSrc.includes('youtube.com') || mediaSrc.includes('youtu.be') || mediaSrc.includes('facebook.com') || mediaSrc.includes('fb.watch')) ? (
-          <AdMediaDisplay ad={{ type: 'video', mediaUrl: mediaSrc }} className={cn("relative z-10 w-full h-full pointer-events-auto", fitMode === 'contain' ? "object-contain" : "object-cover")} />
+          <AdMediaDisplay ad={{ type: 'video', mediaUrl: mediaSrc }} className="relative z-10 w-full h-full object-cover pointer-events-auto" />
         ) : isVideo && mediaSrc ? (
-          <video preload="auto" 
-            ref={(el) => {
-              // Combine user ref with local ref
-              if (typeof videoRef === 'function') videoRef(el);
-              else if (videoRef) videoRef.current = el;
-              if (el && el.paused && isPlaying) {
-                const p = el.play();
-                if (p !== undefined) p.catch(() => {});
-              }
-            }}
+          <video
+            ref={videoRef}
             src={mediaSrc} 
             poster={reel?.thumbnailUrl}
             muted={isMuted}
             playsInline
+            preload="auto"
+            loop
             onEnded={handleMediaEnded}
-            className={cn(
-              "relative z-10 transition-all duration-800 max-h-full max-w-full m-auto",
-              fitMode === 'contain' ? "object-contain w-full h-full" : "object-cover w-full h-full"
-            )} 
+            className="relative z-10 w-full h-full object-cover transition-all duration-300 m-auto transform-gpu will-change-transform"
           />
         ) : (
           <img 
             src={mediaSrc} 
             alt={reel?.title || 'Reel media'} 
-            className={cn(
-              "relative z-10 transition-all duration-800 max-h-full max-w-full m-auto",
-              fitMode === 'contain' ? "object-contain w-full h-full" : "object-cover w-full h-full"
-            )} 
+            className="relative z-10 w-full h-full object-cover transition-all duration-300 m-auto"
             onError={(e) => {
               e.currentTarget.src = 'https://images.unsplash.com/photo-1615971677499-5467cbab01c0?auto=format&fit=crop&w=800&q=80';
             }}
@@ -1690,8 +1638,11 @@ function ReelCard({
         )}
       </div>
 
-      {/* Right Side Vertical Action Column */}
-      <div className="absolute right-3.5 bottom-10 z-20 flex flex-col items-center gap-4">
+      {/* Subtle bottom shadow overlay for readable captions */}
+      <div className="absolute inset-x-0 bottom-0 h-48 bg-gradient-to-t from-black/90 via-black/40 to-transparent pointer-events-none z-10" />
+
+      {/* Right Side Vertical Action Column - Aligned right above the post info */}
+      <div className="absolute right-3 bottom-14 z-20 flex flex-col items-center gap-4">
         {/* Like Button */}
         <button 
           onClick={handleLike}
@@ -1699,7 +1650,7 @@ function ReelCard({
         >
           <div className={cn(
             "w-11 h-11 rounded-full flex items-center justify-center backdrop-blur-md transition-all group-active:scale-125",
-            isLiked ? "bg-red-500/30 text-red-500 border border-red-500/50" : "bg-black/40 hover:bg-black/60 text-white border border-white/10"
+            isLiked ? "bg-red-500/30 text-red-500 border border-red-500/50" : "bg-black/40 hover:bg-black/60 text-white border border-white/15"
           )}>
             <Heart 
               className={cn("w-6 h-6 transition-transform", isLiked && "scale-110")} 
@@ -1707,7 +1658,7 @@ function ReelCard({
               stroke={isLiked ? "#ef4444" : "currentColor"}
             />
           </div>
-          <span className="text-[11px] font-bold drop-shadow-md">{likesCount > 999 ? (likesCount/1000).toFixed(1) + 'K' : likesCount}</span>
+          <span className="text-xs font-semibold drop-shadow-md">{likesCount > 999 ? (likesCount/1000).toFixed(1) + 'K' : likesCount}</span>
         </button>
 
         {/* Comment Button */}
@@ -1715,10 +1666,10 @@ function ReelCard({
           onClick={(e) => { e.stopPropagation(); setShowCommentsDrawer(!showCommentsDrawer); }}
           className="flex flex-col items-center gap-1 text-white group cursor-pointer"
         >
-          <div className="w-11 h-11 rounded-full bg-black/40 hover:bg-black/60 backdrop-blur-md border border-white/10 flex items-center justify-center transition-all group-active:scale-125">
+          <div className="w-11 h-11 rounded-full bg-black/40 hover:bg-black/60 backdrop-blur-md border border-white/15 flex items-center justify-center transition-all group-active:scale-125">
             <MessageCircle className="w-6 h-6" />
           </div>
-          <span className="text-[11px] font-bold drop-shadow-md">{commentsCount}</span>
+          <span className="text-xs font-semibold drop-shadow-md">{commentsCount}</span>
         </button>
 
         {/* Share Button */}
@@ -1726,100 +1677,16 @@ function ReelCard({
           onClick={handleShare}
           className="flex flex-col items-center gap-1 text-white group cursor-pointer"
         >
-          <div className="w-11 h-11 rounded-full bg-black/40 hover:bg-black/60 backdrop-blur-md border border-white/10 flex items-center justify-center transition-all group-active:scale-125">
-            <svg aria-label="Share" className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M22 3L9.218 10.083 11.698 20.334 22 3z" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"/><polygon points="11.698 20.334 22 3 2 3 9.218 10.084 11.698 20.334" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"/></svg>
+          <div className="w-11 h-11 rounded-full bg-black/40 hover:bg-black/60 backdrop-blur-md border border-white/15 flex items-center justify-center transition-all group-active:scale-125">
+            <Share2 className="w-6 h-6" />
           </div>
-          <span className="text-[11px] font-bold drop-shadow-md">{sharesCount}</span>
-        </button>
-
-        {/* Bookmark / Save Button */}
-        <button 
-          onClick={handleSave}
-          className="flex flex-col items-center gap-1 text-white group cursor-pointer"
-        >
-          <div className={cn(
-            "w-11 h-11 rounded-full flex items-center justify-center backdrop-blur-md transition-all group-active:scale-125",
-            isSaved ? "bg-amber-500/30 text-amber-400 border border-amber-500/50" : "bg-black/40 hover:bg-black/60 text-white border border-white/10"
-          )}>
-            <Bookmark 
-              className={cn("w-6 h-6 transition-transform", isSaved && "scale-110")} 
-              fill={isSaved ? "#f59e0b" : "none"} 
-              stroke={isSaved ? "#f59e0b" : "currentColor"}
-            />
-          </div>
-          <span className="text-[11px] font-bold drop-shadow-md">{savedCount}</span>
-        </button>
-
-        {/* Inquiry / Chat Button - Especially for Customers */}
-        <button 
-          onClick={(e) => { 
-            e.stopPropagation(); 
-            
-            // Distance Check for Local Customer Members
-            if (currentUser?.role === 'customer' && currentUser?.membershipType === 'local') {
-              const targetCoords = reel?.user?.gpsCoords || reel?.gpsCoords;
-              if (userLocation && targetCoords) {
-                const dist = calculateDistance(userLocation.lat, userLocation.lng, targetCoords.lat, targetCoords.lng);
-                if (dist > 100) {
-                  toast.error(`📍 Distance Restriction: As a Local Member, you can only inquire with dealers within 100km. This business is ${Math.round(dist)}km away. Upgrade to 'Direct Company' plan for nationwide access!`);
-                  return;
-                }
-              } else if (!userLocation) {
-                toast.error("📍 Please enable GPS/Location to verify distance for Local Membership.");
-                return;
-              }
-            }
-
-            if (onClose) onClose();
-            navigate('/chat'); 
-          }}
-          className="flex flex-col items-center gap-1 text-white group cursor-pointer"
-          title="Inquire about this material"
-        >
-          <div className="w-11 h-11 rounded-full bg-gradient-to-tr from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 backdrop-blur-md border border-white/20 flex items-center justify-center transition-all group-active:scale-125 shadow-lg shadow-emerald-500/20">
-            <MessageSquare className="w-5 h-5 text-white" />
-          </div>
-          <span className="text-[10px] font-black drop-shadow-md tracking-tighter uppercase text-emerald-400">Inquiry</span>
-        </button>
-
-        {/* Star Rating Button (Public AI Rating & Feedback - No Login Needed) */}
-        <button 
-          onClick={(e) => { e.stopPropagation(); setShowRatingModal(true); }}
-          className="flex flex-col items-center gap-1 text-white cursor-pointer hover:scale-105 transition-transform"
-          title="Rate Reel with Stars (AI Auto Visibility Boost)"
-        >
-          <div className="w-11 h-11 rounded-full bg-gradient-to-tr from-amber-500/80 to-yellow-400/80 hover:from-amber-500 hover:to-yellow-400 backdrop-blur-md border border-amber-300/40 flex items-center justify-center transition-all shadow-lg shadow-amber-500/20">
-            <Star className="w-5 h-5 text-amber-100 fill-amber-200" />
-          </div>
-          <span className="text-[10px] font-black text-amber-300 drop-shadow-md tracking-tight">{reelRating.toFixed(1)}★</span>
-        </button>
-
-        {/* Insights Display */}
-        <button 
-          onClick={(e) => { e.stopPropagation(); setShowStatsModal(true); }}
-          className="flex flex-col items-center gap-1 text-white cursor-pointer hover:scale-105 transition-transform"
-          title="View detailed post insights & activity log"
-        >
-          <div className="w-11 h-11 rounded-full bg-black/40 hover:bg-black/60 backdrop-blur-md border border-white/10 flex items-center justify-center transition-all">
-            <BarChart2 className="w-5 h-5 text-blue-400" />
-          </div>
-          <span className="text-[10px] font-bold drop-shadow-md tracking-tight">Insights</span>
-        </button>
-
-        {/* More Options (...) */}
-        <button 
-          onClick={(e) => { e.stopPropagation(); setShowOptionsModal(true); }}
-          className="flex flex-col items-center text-white cursor-pointer"
-        >
-          <div className="w-9 h-9 rounded-full bg-black/40 hover:bg-black/60 backdrop-blur-md border border-white/10 flex items-center justify-center">
-            <MoreHorizontal className="w-5 h-5" />
-          </div>
+          <span className="text-xs font-semibold drop-shadow-md">{sharesCount}</span>
         </button>
       </div>
 
-      {/* Bottom Left Info & Caption Overlay */}
-      <div className="absolute left-3.5 bottom-4 right-16 z-20 text-white drop-shadow-lg flex flex-col gap-2">
-        {/* User profile row */}
+      {/* Bottom Left Info: Profile Avatar, Name, Follow, Caption & Audio */}
+      <div className="absolute left-3.5 bottom-12 right-18 z-20 text-white drop-shadow-lg flex flex-col gap-2">
+        {/* User profile & Follow row */}
         <div className="flex items-center gap-2.5">
           <div 
             onClick={(e) => { e.stopPropagation(); if (onClose) onClose(); navigate(`/profile/${authorIdentifier}`); }}
@@ -1836,10 +1703,10 @@ function ReelCard({
             </div>
           </div>
           
-          <div className="flex items-center gap-1.5 flex-wrap">
+          <div className="flex items-center gap-2 flex-wrap">
             <span 
               onClick={(e) => { e.stopPropagation(); if (onClose) onClose(); navigate(`/profile/${authorIdentifier}`); }}
-              className="font-bold text-sm tracking-wide flex items-center gap-1 text-white cursor-pointer hover:underline"
+              className="font-bold text-sm sm:text-base tracking-wide flex items-center gap-1 text-white cursor-pointer hover:underline"
             >
               {authorName}
               {isAuthorVerified && <VerifiedBadge size="sm" />}
@@ -1847,10 +1714,10 @@ function ReelCard({
             <button 
               onClick={handleToggleFollow}
               className={cn(
-                "text-[11px] font-bold px-2.5 py-0.5 rounded-full border transition-all cursor-pointer ml-1",
+                "text-xs font-bold px-3 py-1 rounded-full border transition-all cursor-pointer",
                 isFollowing 
-                  ? "bg-white/20 text-white border-white/30" 
-                  : "bg-blue-600 hover:bg-blue-700 text-white border-blue-500"
+                  ? "bg-white/20 text-white border-white/40" 
+                  : "bg-blue-600 hover:bg-blue-700 text-white border-blue-500 shadow-md"
               )}
             >
               {isFollowing ? 'Following' : 'Follow'}
@@ -1859,7 +1726,7 @@ function ReelCard({
         </div>
 
         {/* Music / Audio Track Ticker */}
-        <div className="flex items-center gap-1.5 text-xs text-zinc-200 font-medium bg-black/40 backdrop-blur-md px-2.5 py-1 rounded-full w-fit max-w-[240px] truncate border border-white/10">
+        <div className="flex items-center gap-1.5 text-xs text-zinc-200 font-medium bg-black/40 backdrop-blur-md px-2.5 py-0.5 rounded-full w-fit max-w-[240px] truncate border border-white/10">
           <span className="text-blue-400">🎵</span>
           <span className="truncate">
             {reelMusic ? `${reelMusic.title} • ${reelMusic.artist}` : `${authorName} • Original Audio`}
@@ -1966,7 +1833,22 @@ function ReelCard({
       {showOptionsModal && (
         <div className="absolute inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-end sm:items-center justify-center p-4" onClick={() => setShowOptionsModal(false)}>
           <div className="bg-zinc-900 border border-zinc-800 w-full max-w-xs rounded-2xl overflow-hidden shadow-2xl text-white text-sm" onClick={e => e.stopPropagation()}>
-            <button onClick={handleShare} className="w-full text-left px-4 py-3 hover:bg-zinc-800 border-b border-zinc-800 font-semibold text-blue-400 cursor-pointer">
+            <button onClick={() => { setShowOptionsModal(false); setShowRatingModal(true); }} className="w-full text-left px-4 py-3 hover:bg-zinc-800 border-b border-zinc-800 font-semibold text-amber-400 flex items-center justify-between cursor-pointer">
+              <span className="flex items-center gap-2">
+                <Star className="w-4 h-4 text-amber-400 fill-amber-400" />
+                <span>Rate Reel ({reelRating.toFixed(1)}★)</span>
+              </span>
+              <span className="text-[11px] text-zinc-400">AI Boost</span>
+            </button>
+            <button onClick={() => { setShowOptionsModal(false); setShowStatsModal(true); }} className="w-full text-left px-4 py-3 hover:bg-zinc-800 border-b border-zinc-800 font-semibold text-blue-400 flex items-center gap-2 cursor-pointer">
+              <BarChart2 className="w-4 h-4 text-blue-400" />
+              <span>View Reel Insights</span>
+            </button>
+            <button onClick={() => { setFitMode(prev => prev === 'contain' ? 'cover' : 'contain'); setShowOptionsModal(false); }} className="w-full text-left px-4 py-3 hover:bg-zinc-800 border-b border-zinc-800 font-semibold flex items-center gap-2 cursor-pointer">
+              <Eye className="w-4 h-4" />
+              <span>Toggle Aspect Ratio ({fitMode === 'contain' ? 'Fill' : 'Original'})</span>
+            </button>
+            <button onClick={handleShare} className="w-full text-left px-4 py-3 hover:bg-zinc-800 border-b border-zinc-800 font-semibold cursor-pointer">
               Share Reel Link
             </button>
             <button onClick={(e) => { handleSave(e); setShowOptionsModal(false); }} className="w-full text-left px-4 py-3 hover:bg-zinc-800 border-b border-zinc-800 font-semibold cursor-pointer">
@@ -2540,10 +2422,6 @@ function ReelCircleMedia({
   const [reelImgError, setReelImgError] = useState(false);
 
   if (uploadingMediaThumbnail) {
-    const isVideo = uploadingMediaThumbnail.startsWith('data:video') || uploadingMediaThumbnail.match(/\.(mp4|webm|mov|m4v|mkv|3gp)(\?.*)?$/i);
-    if (isVideo && !uploadingMediaThumbnail.match(/\.(jpg|jpeg|png|webp|gif|svg|avif)(\?.*)?$/i)) {
-      return <video src={uploadingMediaThumbnail} className="w-full h-full object-cover pointer-events-none" muted playsInline />;
-    }
     return <img src={uploadingMediaThumbnail} alt="Uploading reel" className="w-full h-full object-cover" />;
   }
 
@@ -2562,26 +2440,12 @@ function ReelCircleMedia({
     );
   }
 
-  // Fallback to Reel image / video preview if profile image is missing/broken
+  // Fallback to Reel image preview if profile image is missing/broken
   if (reelMedia && !reelImgError) {
-    const isVideo = reel?.type === 'video' || reelMedia.startsWith('data:video') || reelMedia.includes('/uploads/') || reelMedia.match(/\.(mp4|webm|mov|m4v|mkv|3gp)(\?.*)?$/i);
-    if (isVideo && !reelMedia.match(/\.(jpg|jpeg|png|webp|gif|svg|avif)(\?.*)?$/i)) {
-      return (
-        <video 
-          src={reelMedia} 
-          poster={reel?.thumbnailUrl}
-          className="w-full h-full object-cover pointer-events-none" 
-          muted 
-          playsInline 
-          onLoadedData={(e) => {
-            try { (e.target as HTMLVideoElement).currentTime = 0.5; } catch(err){}
-          }}
-        />
-      );
-    }
+    const poster = reel?.thumbnailUrl || (reelMedia.match(/\.(jpg|jpeg|png|webp|gif|svg|avif)(\?.*)?$/i) ? reelMedia : 'https://images.unsplash.com/photo-1615971677499-5467cbab01c0?auto=format&fit=crop&w=400&q=80');
     return (
       <img
-        src={reelMedia}
+        src={poster}
         alt={altName || 'Reel preview'}
         className="w-full h-full object-cover"
         onError={() => setReelImgError(true)}
@@ -2634,6 +2498,128 @@ export function formatPostTimeAgo(createdAt: number | string | Date | undefined)
   
   const years = Math.floor(months / 12);
   return `${years} ${years === 1 ? 'year' : 'years'} ago`;
+}
+
+function FeedVideoPlayer({
+  src,
+  poster,
+  className
+}: {
+  src: string;
+  poster?: string;
+  className?: string;
+}) {
+  const videoRef = React.useRef<HTMLVideoElement>(null);
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isMuted, setIsMuted] = useState(true);
+  const [isLoading, setIsLoading] = useState(false);
+  const [hasError, setHasError] = useState(false);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || typeof IntersectionObserver === 'undefined') return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          const video = videoRef.current;
+          if (!video) return;
+          if (entry.isIntersecting && entry.intersectionRatio >= 0.5) {
+            const playPromise = video.play();
+            if (playPromise !== undefined) {
+              playPromise
+                .then(() => setIsPlaying(true))
+                .catch(() => setIsPlaying(false));
+            }
+          } else {
+            video.pause();
+            setIsPlaying(false);
+          }
+        });
+      },
+      { threshold: [0.1, 0.5, 0.8] }
+    );
+
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+    };
+  }, [src]);
+
+  const togglePlay = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const video = videoRef.current;
+    if (!video) return;
+    if (video.paused) {
+      const p = video.play();
+      if (p !== undefined) {
+        p.then(() => setIsPlaying(true)).catch(() => {});
+      }
+    } else {
+      video.pause();
+      setIsPlaying(false);
+    }
+  };
+
+  const toggleMute = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const video = videoRef.current;
+    if (!video) return;
+    video.muted = !video.muted;
+    setIsMuted(video.muted);
+  };
+
+  if (hasError) {
+    return (
+      <img
+        src={poster || 'https://images.unsplash.com/photo-1615971677499-5467cbab01c0?auto=format&fit=crop&w=800&q=80'}
+        alt="Video thumbnail"
+        className={className || "w-full h-full max-h-[80vh] object-contain bg-black"}
+      />
+    );
+  }
+
+  return (
+    <div ref={containerRef} className="relative w-full h-full min-h-[300px] flex items-center justify-center bg-black group overflow-hidden select-none">
+      <video
+        ref={videoRef}
+        src={src}
+        poster={poster}
+        playsInline
+        muted={isMuted}
+        loop
+        preload="metadata"
+        onCanPlay={() => setIsLoading(false)}
+        onWaiting={() => setIsLoading(true)}
+        onPlaying={() => { setIsLoading(false); setIsPlaying(true); }}
+        onPause={() => setIsPlaying(false)}
+        onError={() => setHasError(true)}
+        className={className || "w-full h-full max-h-[80vh] object-contain bg-black transform-gpu will-change-transform"}
+      />
+
+      {/* Tap to play/pause overlay */}
+      <div 
+        onClick={togglePlay} 
+        className="absolute inset-0 cursor-pointer flex items-center justify-center z-10"
+      >
+        {!isPlaying && !isLoading && (
+          <div className="w-14 h-14 rounded-full bg-black/60 text-white backdrop-blur-md border border-white/20 flex items-center justify-center shadow-2xl transition-transform transform active:scale-90 hover:scale-110">
+            <Play className="w-7 h-7 fill-white ml-1" />
+          </div>
+        )}
+      </div>
+
+      {/* Sound Mute/Unmute Button */}
+      <button
+        onClick={toggleMute}
+        className="absolute bottom-3 right-3 z-20 p-2.5 rounded-full bg-black/65 hover:bg-black/85 text-white backdrop-blur-md border border-white/20 transition-transform active:scale-95 shadow-xl cursor-pointer"
+        title={isMuted ? "Unmute" : "Mute"}
+      >
+        {isMuted ? <VolumeX className="w-4 h-4 text-white" /> : <Volume2 className="w-4 h-4 text-white" />}
+      </button>
+    </div>
+  );
 }
 
 function PostItem({ 
@@ -3295,7 +3281,7 @@ function PostItem({
           {mediaSrc.includes('youtube.com') || mediaSrc.includes('youtu.be') || mediaSrc.includes('facebook.com') || mediaSrc.includes('fb.watch') ? (
             <AdMediaDisplay ad={{ type: 'video', mediaUrl: mediaSrc }} className="w-full h-full aspect-video min-h-[350px] max-h-[80vh] object-cover bg-black pointer-events-auto" />
           ) : (post.type === 'video' || mediaSrc.startsWith('data:video') || mediaSrc.includes('/uploads/') || mediaSrc.match(/\.(mp4|webm|mov|m4v|mkv|3gp)(\?.*)?$/i)) && !mediaSrc.match(/\.(jpg|jpeg|png|webp|gif|svg|avif)(\?.*)?$/i) ? (
-            <video preload="auto" src={mediaSrc} poster={post.thumbnailUrl} controls playsInline muted loop className="w-full h-full max-h-[80vh] object-contain bg-black transform-gpu will-change-transform" ref={(el) => { if (el && el.paused) { const p = el.play(); if (p !== undefined) p.catch(()=>{}); } }} />
+            <FeedVideoPlayer src={mediaSrc} poster={post.thumbnailUrl} className="w-full h-full max-h-[80vh] object-contain bg-black" />
           ) : post.type === 'pdf' || mediaSrc.match(/\.pdf(\?.*)?$/i) ? (
             <PdfCardViewer post={{ ...post, mediaUrl: mediaSrc }} variant="feed" />
           ) : post.type === 'audio' || mediaSrc.match(/\.(mp3|wav|ogg|m4a)(\?.*)?$/i) ? (
@@ -3874,8 +3860,6 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
 
     let fbPosts: any[] = [];
     try {
-      // Auto-purge any lingering dummy sample documents from Firestore
-      clearDefaultDataFromFirestore().catch(() => {});
       fbPosts = await fetchPostsFromFirestore();
     } catch (fbErr) {
       console.warn('Firestore fetch note:', fbErr);
@@ -6652,12 +6636,25 @@ function AdminPanel({ user }: { user: any }) {
                   onChange={() => toggleSelectOne(post.id)}
                   className="w-4 h-4 rounded text-blue-600 focus:ring-0 cursor-pointer mt-2 shrink-0"
                 />
-                <div className="w-full md:w-48 h-48 bg-slate-100 dark:bg-zinc-950 rounded-xl overflow-hidden shrink-0 flex items-center justify-center">
+                <div className="w-full md:w-48 h-48 bg-slate-100 dark:bg-zinc-950 rounded-xl overflow-hidden shrink-0 flex items-center justify-center relative group">
                   {post.mediaUrl && post.mediaUrl.trim() !== '' ? (
                     post.type === 'video' || post.mediaUrl.match(/\.(mp4|webm|mov|m4v)(\?.*)?$/i) ? (
-                      <video preload="auto" src={post.mediaUrl} poster={post.thumbnailUrl} className="w-full h-full object-cover transform-gpu will-change-transform" />
+                      <div className="relative w-full h-full">
+                        <img 
+                          src={post.thumbnailUrl || 'https://images.unsplash.com/photo-1615971677499-5467cbab01c0?auto=format&fit=crop&w=400&q=80'} 
+                          alt="Video thumbnail" 
+                          className="w-full h-full object-cover" 
+                          loading="lazy" 
+                          onError={(e) => {
+                            e.currentTarget.src = 'https://images.unsplash.com/photo-1615971677499-5467cbab01c0?auto=format&fit=crop&w=400&q=80';
+                          }}
+                        />
+                        <div className="absolute inset-0 bg-black/30 flex items-center justify-center">
+                          <Film className="w-8 h-8 text-white drop-shadow-md" />
+                        </div>
+                      </div>
                     ) : (
-                      <img src={post.mediaUrl} alt="media" className="w-full h-full object-cover" />
+                      <img src={post.mediaUrl} alt="media" className="w-full h-full object-cover" loading="lazy" />
                     )
                   ) : (
                     <div className="text-slate-500 dark:text-zinc-400 text-xs font-bold">Text Post</div>
@@ -7607,8 +7604,12 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
     try {
       const paymentItem = pendingPayments.find(p => String(p.id) === String(payId));
       if (paymentItem && paymentItem.userId) {
-        await setDoc(doc(firestoreDb, 'payments', String(payId)), { status: 'approved', verifiedAt: Date.now() }, { merge: true });
-        await setDoc(doc(firestoreDb, 'users', String(paymentItem.userId)), { isVerified: true, verifiedPlan: paymentItem.plan || 'monthly' }, { merge: true });
+        try {
+          await setDoc(doc(firestoreDb, 'payments', String(payId)), { status: 'approved', verifiedAt: Date.now() }, { merge: true });
+          await setDoc(doc(firestoreDb, 'users', String(paymentItem.userId)), { isVerified: true, verifiedPlan: paymentItem.plan || 'monthly' }, { merge: true });
+        } catch (fsErr) {
+          console.warn('Firestore payment approval sync note:', fsErr);
+        }
       }
 
       try {
@@ -7630,8 +7631,12 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
     try {
       const paymentItem = pendingPayments.find(p => String(p.id) === String(payId));
       if (paymentItem && paymentItem.userId) {
-        await setDoc(doc(firestoreDb, 'payments', String(payId)), { status: 'refund_initiated', rejectionReason: reason }, { merge: true });
-        await setDoc(doc(firestoreDb, 'users', String(paymentItem.userId)), { isVerified: false }, { merge: true });
+        try {
+          await setDoc(doc(firestoreDb, 'payments', String(payId)), { status: 'refund_initiated', rejectionReason: reason }, { merge: true });
+          await setDoc(doc(firestoreDb, 'users', String(paymentItem.userId)), { isVerified: false }, { merge: true });
+        } catch (fsErr) {
+          console.warn('Firestore payment reject sync note:', fsErr);
+        }
       }
 
       try {
@@ -8159,7 +8164,11 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
     const nextStatus = !currentStatus;
     try {
       // 1. Update Firestore user document directly
-      await setDoc(doc(firestoreDb, 'users', String(userId)), { isVerified: nextStatus, verifiedBadge: nextStatus }, { merge: true });
+      try {
+        await setDoc(doc(firestoreDb, 'users', String(userId)), { isVerified: nextStatus, verifiedBadge: nextStatus }, { merge: true });
+      } catch (fsErr) {
+        console.warn('Firestore verification toggle sync note:', fsErr);
+      }
 
       // 2. Also try backend API
       try {
@@ -11391,7 +11400,20 @@ function ExplorePage({ user, userLocation }: { user?: any, userLocation?: {lat: 
             >
               {post.mediaUrl && post.mediaUrl.trim() !== '' ? (
                 post.type === 'video' || post.mediaUrl.match(/\.(mp4|webm|mov|m4v)(\?.*)?$/i) ? (
-                  <video preload="auto" src={post.mediaUrl} poster={post.thumbnailUrl} className="w-full h-full object-cover transform-gpu will-change-transform" />
+                  <div className="relative w-full h-full">
+                    <img 
+                      src={post.thumbnailUrl || 'https://images.unsplash.com/photo-1615971677499-5467cbab01c0?auto=format&fit=crop&w=400&q=80'} 
+                      alt="Video explore" 
+                      className="w-full h-full object-cover transition-transform group-hover:scale-105" 
+                      loading="lazy" 
+                      onError={(e) => {
+                        e.currentTarget.src = 'https://images.unsplash.com/photo-1615971677499-5467cbab01c0?auto=format&fit=crop&w=400&q=80';
+                      }}
+                    />
+                    <div className="absolute top-2 right-2 p-1 rounded-full bg-black/60 text-white backdrop-blur-sm">
+                      <Film className="w-3.5 h-3.5" />
+                    </div>
+                  </div>
                 ) : post.type === 'pdf' || post.mediaUrl.match(/\.pdf(\?.*)?$/i) ? (
                   <PdfCardViewer post={post} variant="grid" />
                 ) : (
@@ -11837,6 +11859,38 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
   const touchEndY = React.useRef<number | null>(null);
   const touchStartX = React.useRef<number | null>(null);
   const touchEndX = React.useRef<number | null>(null);
+  const isWheeling = React.useRef(false);
+
+  // Keyboard navigation for reels
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowDown' || e.key === 'PageDown' || e.key === 'j' || e.key === 'J') {
+        e.preventDefault();
+        setCurrentIndex(prev => Math.min(reels.length - 1, prev + 1));
+      } else if (e.key === 'ArrowUp' || e.key === 'PageUp' || e.key === 'k' || e.key === 'K') {
+        e.preventDefault();
+        setCurrentIndex(prev => Math.max(0, prev - 1));
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [reels.length]);
+
+  // Mouse wheel trackpad scroll navigation (Instagram style)
+  const handleWheel = (e: React.WheelEvent) => {
+    if (isWheeling.current || reels.length <= 1) return;
+    if (Math.abs(e.deltaY) > 25) {
+      isWheeling.current = true;
+      if (e.deltaY > 0) {
+        setCurrentIndex(prev => Math.min(reels.length - 1, prev + 1));
+      } else {
+        setCurrentIndex(prev => Math.max(0, prev - 1));
+      }
+      setTimeout(() => {
+        isWheeling.current = false;
+      }, 400);
+    }
+  };
 
   const handleTouchStart = (e: React.TouchEvent) => {
     touchStartY.current = e.touches[0].clientY;
@@ -11854,18 +11908,15 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
     if (touchStartY.current !== null && touchEndY.current !== null && touchStartX.current !== null && touchEndX.current !== null) {
       const diffY = touchStartY.current - touchEndY.current;
       const diffX = touchStartX.current - touchEndX.current;
-      const minSwipeDistance = 35;
+      const minSwipeDistance = 30;
 
+      // Vertical swipe takes priority for Reels (Swipe UP = Next Reel, Swipe DOWN = Prev Reel)
       if (Math.abs(diffY) > minSwipeDistance && Math.abs(diffY) > Math.abs(diffX)) {
         if (diffY > 0) {
+          // Swiped Up -> Next Reel
           setCurrentIndex(prev => Math.min(reels.length - 1, prev + 1));
         } else {
-          setCurrentIndex(prev => Math.max(0, prev - 1));
-        }
-      } else if (Math.abs(diffX) > minSwipeDistance && Math.abs(diffX) > Math.abs(diffY)) {
-        if (diffX > 0) {
-          setCurrentIndex(prev => Math.min(reels.length - 1, prev + 1));
-        } else {
+          // Swiped Down -> Previous Reel
           setCurrentIndex(prev => Math.max(0, prev - 1));
         }
       }
@@ -11880,12 +11931,13 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
 
   return (
     <div 
+      onWheel={handleWheel}
       onTouchStart={handleTouchStart}
       onTouchMove={handleTouchMove}
       onTouchEnd={handleTouchEnd}
-      className="h-[calc(100vh-60px)] flex flex-col items-center justify-center bg-zinc-950 p-2 sm:p-4 overflow-hidden relative select-none"
+      className="w-full h-[calc(100dvh-56px)] md:h-[calc(100vh-64px)] flex items-center justify-center bg-black md:bg-zinc-950 overflow-hidden relative select-none"
     >
-      {/* Upload Reel Header Action */}
+      {/* Hidden file input for uploading reels */}
       <input 
         type="file" 
         ref={fileInputRef} 
@@ -11894,50 +11946,36 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
         onChange={handleFileSelect} 
       />
 
-      {user && user.role !== 'customer' && (
-        <div className="absolute top-4 right-4 sm:right-8 z-30 flex items-center gap-2">
-          <button 
-            onClick={() => fileInputRef.current?.click()}
-            className="bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs sm:text-sm px-4 py-2 rounded-full shadow-xl flex items-center gap-2 transition-transform active:scale-95 cursor-pointer border border-blue-400/30"
-          >
-            <Plus className="w-4 h-4 stroke-[3]" />
-            <span>Upload Reel</span>
-          </button>
-        </div>
-      )}
-
-      {/* Reel Card Container or Empty State */}
+      {/* Reel Phone Container (Instagram Viewport) */}
       {reels.length > 0 ? (
-        <div className="relative flex items-center justify-center w-full max-w-lg h-full">
-          <ReelCard key={currentReel?.id} reel={currentReel} currentUser={user} userLocation={userLocation} />
-
-          {/* Up / Down reel navigation controls */}
-          <div className="hidden sm:flex flex-col gap-3 absolute -right-16 top-1/2 -translate-y-1/2 z-30 text-black">
-            <button 
-              disabled={currentIndex === 0}
-              onClick={() => setCurrentIndex(prev => Math.max(0, prev - 1))}
-              className="p-3 bg-zinc-800/80 hover:bg-zinc-700 disabled:opacity-30 rounded-full border border-zinc-700 transition-all cursor-pointer shadow-lg"
-              title="Previous Reel"
-            >
-              <ChevronUp className="w-6 h-6" />
-            </button>
-            <span className="text-[11px] text-zinc-400 font-mono text-center">
-              {currentIndex + 1}/{reels.length}
-            </span>
-            <button 
-              disabled={currentIndex >= reels.length - 1}
-              onClick={() => setCurrentIndex(prev => Math.min(reels.length - 1, prev + 1))}
-              className="p-3 bg-zinc-800/80 hover:bg-zinc-700 disabled:opacity-30 rounded-full border border-zinc-700 transition-all cursor-pointer shadow-lg"
-              title="Next Reel"
-            >
-              <ChevronDown className="w-6 h-6" />
-            </button>
+        <div className="relative w-full max-w-[430px] h-full flex flex-col items-center justify-center bg-black overflow-hidden md:rounded-2xl md:border md:border-zinc-800 shadow-2xl">
+          {/* Top Instagram-Style Header */}
+          <div className="absolute top-0 inset-x-0 z-30 flex items-center justify-between px-4 pt-3.5 pb-2 bg-gradient-to-b from-black/80 via-black/30 to-transparent pointer-events-none">
+            <div className="flex items-center gap-1.5 pointer-events-auto">
+              <span className="font-extrabold text-lg sm:text-xl text-white tracking-tight drop-shadow-md">
+                Reels
+              </span>
+            </div>
           </div>
+
+          {/* Active Reel with Smooth Transition */}
+          <AnimatePresence mode="wait">
+            <motion.div 
+              key={currentReel?.id || currentIndex}
+              initial={{ opacity: 0.9, y: 15 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0.9, y: -15 }}
+              transition={{ duration: 0.22, ease: 'easeOut' }}
+              className="w-full h-full flex items-center justify-center relative overflow-hidden"
+            >
+              <ReelCard reel={currentReel} currentUser={user} userLocation={userLocation} />
+            </motion.div>
+          </AnimatePresence>
         </div>
       ) : (
-        <div className="text-center py-20 px-4 text-black flex flex-col items-center justify-center">
+        <div className="text-center py-20 px-4 text-white flex flex-col items-center justify-center">
           <div className="w-16 h-16 rounded-full bg-zinc-900 border border-zinc-800 flex items-center justify-center mb-4">
-            <Film className="w-8 h-8 text-blue-600" />
+            <Film className="w-8 h-8 text-blue-500" />
           </div>
           <h3 className="text-xl font-bold mb-2">No Video Reels Published Yet</h3>
           <p className="text-sm text-zinc-400 max-w-sm mb-6">
@@ -15036,7 +15074,20 @@ function ProfilePage({
                 className="relative aspect-square bg-slate-100 dark:bg-zinc-800 rounded-lg overflow-hidden group cursor-pointer shadow-sm"
               >
                 {post.type === 'video' && post.mediaUrl ? (
-                  <video preload="auto" src={post.mediaUrl} poster={post.thumbnailUrl} className="w-full h-full object-cover transform-gpu will-change-transform" muted playsInline />
+                  <div className="relative w-full h-full">
+                    <img 
+                      src={post.thumbnailUrl || 'https://images.unsplash.com/photo-1615971677499-5467cbab01c0?auto=format&fit=crop&w=400&q=80'} 
+                      alt={post.title || 'Post'} 
+                      className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" 
+                      loading="lazy"
+                      onError={(e) => {
+                        e.currentTarget.src = 'https://images.unsplash.com/photo-1615971677499-5467cbab01c0?auto=format&fit=crop&w=400&q=80';
+                      }}
+                    />
+                    <div className="absolute top-2 right-2 p-1 rounded-full bg-black/60 text-white backdrop-blur-sm">
+                      <Film className="w-3.5 h-3.5" />
+                    </div>
+                  </div>
                 ) : post.mediaUrl ? (
                   <img src={post.mediaUrl} alt={post.title || 'Post'} className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />
                 ) : (
@@ -15142,7 +15193,20 @@ function ProfilePage({
                 className="relative aspect-square bg-slate-100 dark:bg-zinc-800 rounded-lg overflow-hidden group cursor-pointer shadow-sm border border-slate-200 dark:border-zinc-800/50"
               >
                 {post.type === 'video' && post.mediaUrl ? (
-                  <video preload="auto" src={post.mediaUrl} poster={post.thumbnailUrl} className="w-full h-full object-cover transform-gpu will-change-transform" muted playsInline />
+                  <div className="relative w-full h-full">
+                    <img 
+                      src={post.thumbnailUrl || 'https://images.unsplash.com/photo-1615971677499-5467cbab01c0?auto=format&fit=crop&w=400&q=80'} 
+                      alt={post.title || 'Saved Video'} 
+                      className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" 
+                      loading="lazy"
+                      onError={(e) => {
+                        e.currentTarget.src = 'https://images.unsplash.com/photo-1615971677499-5467cbab01c0?auto=format&fit=crop&w=400&q=80';
+                      }}
+                    />
+                    <div className="absolute top-2 left-2 p-1 rounded-full bg-black/60 text-white backdrop-blur-sm">
+                      <Film className="w-3.5 h-3.5" />
+                    </div>
+                  </div>
                 ) : post.type === 'pdf' ? (
                   <PdfCardViewer post={post} variant="grid" />
                 ) : (
