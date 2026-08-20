@@ -38,22 +38,31 @@ try {
 
 async function uploadToFirebaseOrLocal(file: Express.Multer.File): Promise<string> {
   try {
-    if (file && file.path && fs.existsSync(file.path)) {
-      const fileBuffer = fs.readFileSync(file.path);
-      // For files up to 25MB, returning Base64 Data URL prevents 404 errors when server reboots
-      if (fileBuffer.length <= 25 * 1024 * 1024) {
-        let mime = file.mimetype || 'application/octet-stream';
-        if (file.originalname?.toLowerCase().endsWith('.pdf') || file.filename?.toLowerCase().endsWith('.pdf')) {
-          mime = 'application/pdf';
+    if (file && file.filename) {
+      const isVideoOrAudioOrPdf = 
+        file.mimetype?.startsWith('video') || 
+        file.mimetype?.startsWith('audio') || 
+        file.mimetype === 'application/pdf' || 
+        /\.(mp4|webm|mov|m4v|mkv|3gp|mp3|wav|ogg|pdf)$/i.test(file.originalname || '') ||
+        /\.(mp4|webm|mov|m4v|mkv|3gp|mp3|wav|ogg|pdf)$/i.test(file.filename || '');
+
+      if (isVideoOrAudioOrPdf) {
+        return `/uploads/${file.filename}`;
+      }
+
+      if (file.path && fs.existsSync(file.path)) {
+        const fileBuffer = fs.readFileSync(file.path);
+        if (fileBuffer.length <= 300 * 1024) {
+          let mime = file.mimetype || 'image/jpeg';
+          const base64Str = fileBuffer.toString('base64');
+          return `data:${mime};base64,${base64Str}`;
         }
-        const base64Str = fileBuffer.toString('base64');
-        return `data:${mime};base64,${base64Str}`;
       }
     }
   } catch (e) {
-    console.error('Error in uploadToFirebaseOrLocal data URL conversion:', e);
+    console.error('Error in uploadToFirebaseOrLocal:', e);
   }
-  return `/uploads/${file.filename}`;
+  return `/uploads/${file?.filename || ''}`;
 }
 
   let isFirestoreQuotaExceeded = false;
@@ -213,7 +222,7 @@ const db = {
     qrCodeUrl: '',
     barcodeImageUrl: '',
     barcodeSecretToken: 'SECURE-BARCODE-VERIFY-2026-X89',
-    aiModel: 'gemini-2.5-flash',
+    aiModel: 'gemini-3.7-flash',
     aiGuardrailActive: true,
     developerMasterPin: 'admin1234@#',
     brandVideoAd: null,
@@ -475,7 +484,7 @@ OR
       if (!ai) return { approved: true, reason: 'AI moderation skipped (No API Key)' };
 
       let responseWrapper: any = null;
-      const modelsToTry = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash'];
+      const modelsToTry = ['gemini-3.7-flash', 'gemini-3.1-flash-lite', 'gemini-flash-latest'];
       for (const mName of modelsToTry) {
         try {
           let timeoutId: any;
@@ -547,7 +556,7 @@ OR
 async function generateAICompletion(promptText: string): Promise<string | null> {
   const ai = getAI();
   if (!ai) return null;
-  const modelsToTry = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash'];
+  const modelsToTry = ['gemini-3.7-flash', 'gemini-3.1-flash-lite', 'gemini-flash-latest'];
   for (const modelName of modelsToTry) {
     try {
       if (typeof ai.models?.generateContent === 'function') {
@@ -1876,17 +1885,23 @@ Instructions:
 ${contextStr}User: ${message}
 Assistant:`;
 
-      let aiPromise;
+      let responseWrapper: any = null;
       if (ai.models && typeof ai.models.generateContent === 'function') {
-        aiPromise = ai.models.generateContent({
-          model: 'gemini-2.5-flash',
-          contents: promptText
-        });
+        const modelsToTry = ['gemini-3.7-flash', 'gemini-3.1-flash-lite', 'gemini-flash-latest'];
+        for (const mName of modelsToTry) {
+          try {
+            responseWrapper = await ai.models.generateContent({
+              model: mName,
+              contents: promptText
+            });
+            if (responseWrapper) break;
+          } catch (mErr) {
+            console.warn(`Chatbot model ${mName} note:`, mErr);
+          }
+        }
       } else {
         return res.json({ reply: 'Sorry, AI is currently offline. Please contact our support team.' });
       }
-
-      const responseWrapper = await aiPromise;
       let replyText = responseWrapper?.text || 'I am here to help you with the best deals and timely delivery!';
       
       res.json({ reply: replyText });

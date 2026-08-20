@@ -104,7 +104,7 @@ Instructions:
     const conversationText = history.slice(-6).map(h => `${h.role.toUpperCase()}: ${h.text}`).join('\n');
     const fullPrompt = `${systemInstruction}\n\n${conversationText ? 'CONVERSATION HISTORY:\n' + conversationText + '\n\n' : ''}USER QUESTION: ${userQuery}\nASSISTANT:`;
 
-    const modelsToTry = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'];
+    const modelsToTry = ['gemini-3.7-flash', 'gemini-3.1-flash-lite', 'gemini-flash-latest'];
 
     for (const model of modelsToTry) {
       try {

@@ -1079,13 +1079,17 @@ function ReelCard({
   const reelMusic = reel?.music || (reel?.musicTitle ? { title: reel.musicTitle, artist: reel.musicArtist, audioUrl: reel.musicUrl } : null);
 
   useEffect(() => {
-    // Unique view tracking for reels (Real-time Firestore & backend update)
+    // Unique view tracking for reels (Runs once per session)
     if (reel?.id) {
       const trackReelView = async () => {
-        const fsViews = await recordViewInFirestore(reel.id);
-        if (typeof fsViews === 'number' && fsViews > 0) {
-          setViewsCount(prev => Math.max(prev, fsViews));
-          if (reel) reel.viewsCount = Math.max(reel.viewsCount || 0, fsViews);
+        const sessionKey = `vyapar_viewed_reel_${reel.id}`;
+        if (!sessionStorage.getItem(sessionKey)) {
+          sessionStorage.setItem(sessionKey, '1');
+          const fsViews = await recordViewInFirestore(reel.id);
+          if (typeof fsViews === 'number' && fsViews > 0) {
+            setViewsCount(prev => Math.max(prev, fsViews));
+            if (reel) reel.viewsCount = Math.max(reel.viewsCount || 0, fsViews);
+          }
         }
         fetch(`/api/posts/${reel.id}/view`, {
           method: 'POST',
@@ -1102,12 +1106,10 @@ function ReelCard({
             setLikesCount(prev => Math.max(prev, data.likesCount));
           }
         })
-        .catch(err => console.warn('Failed to track reel view', err));
+        .catch(() => {});
       };
 
       trackReelView();
-      const interval = setInterval(trackReelView, 15000);
-      return () => clearInterval(interval);
     }
   }, [reel?.id]);
 
@@ -2490,6 +2492,117 @@ function StarRatingFeedback({
 }
 
 
+function ReelCircleMedia({
+  user,
+  reel,
+  uploadingMediaThumbnail,
+  altName
+}: {
+  user?: any;
+  reel?: any;
+  uploadingMediaThumbnail?: string | null;
+  altName?: string;
+}) {
+  const [imgError, setImgError] = useState(false);
+  const [reelImgError, setReelImgError] = useState(false);
+
+  if (uploadingMediaThumbnail) {
+    const isVideo = uploadingMediaThumbnail.startsWith('data:video') || uploadingMediaThumbnail.match(/\.(mp4|webm|mov|m4v|mkv|3gp)(\?.*)?$/i);
+    if (isVideo && !uploadingMediaThumbnail.match(/\.(jpg|jpeg|png|webp|gif|svg|avif)(\?.*)?$/i)) {
+      return <video src={uploadingMediaThumbnail} className="w-full h-full object-cover pointer-events-none" muted playsInline />;
+    }
+    return <img src={uploadingMediaThumbnail} alt="Uploading reel" className="w-full h-full object-cover" />;
+  }
+
+  const reelMedia = reel?.thumbnailUrl || reel?.mediaUrl || reel?.persistentMediaUrl || reel?.videoUrl || (reel?.id ? localStorage.getItem('vyapar_video_' + reel.id) : null);
+  const avatar = user?.avatarUrl || user?.avatar;
+
+  // Custom user avatar if set and valid
+  if (avatar && avatar !== BRAND_LOGO_SRC && !imgError) {
+    return (
+      <img
+        src={avatar}
+        alt={altName || 'User profile'}
+        className="w-full h-full object-cover"
+        onError={() => setImgError(true)}
+      />
+    );
+  }
+
+  // Fallback to Reel image / video preview if profile image is missing/broken
+  if (reelMedia && !reelImgError) {
+    const isVideo = reel?.type === 'video' || reelMedia.startsWith('data:video') || reelMedia.includes('/uploads/') || reelMedia.match(/\.(mp4|webm|mov|m4v|mkv|3gp)(\?.*)?$/i);
+    if (isVideo && !reelMedia.match(/\.(jpg|jpeg|png|webp|gif|svg|avif)(\?.*)?$/i)) {
+      return (
+        <video 
+          src={reelMedia} 
+          poster={reel?.thumbnailUrl}
+          className="w-full h-full object-cover pointer-events-none" 
+          muted 
+          playsInline 
+          onLoadedData={(e) => {
+            try { (e.target as HTMLVideoElement).currentTime = 0.5; } catch(err){}
+          }}
+        />
+      );
+    }
+    return (
+      <img
+        src={reelMedia}
+        alt={altName || 'Reel preview'}
+        className="w-full h-full object-cover"
+        onError={() => setReelImgError(true)}
+      />
+    );
+  }
+
+  // Secondary fallback if avatar was BRAND_LOGO_SRC
+  if (avatar && !imgError) {
+    return (
+      <img
+        src={avatar}
+        alt={altName || 'User profile'}
+        className="w-full h-full object-cover"
+        onError={() => setImgError(true)}
+      />
+    );
+  }
+
+  const initial = (user?.name || altName || 'U').charAt(0).toUpperCase();
+  return (
+    <div className="w-full h-full flex items-center justify-center bg-gradient-to-tr from-blue-600 via-indigo-600 to-purple-600 text-white font-extrabold text-sm uppercase">
+      {initial}
+    </div>
+  );
+}
+
+export function formatPostTimeAgo(createdAt: number | string | Date | undefined): string {
+  if (!createdAt) return 'Just now';
+  let ts = typeof createdAt === 'number' ? createdAt : new Date(createdAt).getTime();
+  if (isNaN(ts) || ts <= 0) return 'Just now';
+  
+  const diffMs = Date.now() - ts;
+  if (diffMs < 0) return 'Just now';
+  
+  const seconds = Math.floor(diffMs / 1000);
+  if (seconds < 60) return 'Just now';
+  
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} ${minutes === 1 ? 'minute' : 'minutes'} ago`;
+  
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} ${hours === 1 ? 'hour' : 'hours'} ago`;
+  
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days} ${days === 1 ? 'day' : 'days'} ago`;
+  
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months} ${months === 1 ? 'month' : 'months'} ago`;
+  
+  const years = Math.floor(months / 12);
+  return `${years} ${years === 1 ? 'year' : 'years'} ago`;
+}
+
 function PostItem({ 
   post, 
   currentUser, 
@@ -2511,6 +2624,8 @@ function PostItem({
   const activeUserId = currentUser?.id || localStorage.getItem('vyapar_user_id');
   const [isLiked, setIsLiked] = useState(() => isPostLikedByUser(post, activeUserId));
   const [isSaved, setIsSaved] = useState(() => isPostSavedByUser(post, activeUserId));
+
+  const mediaSrc = post.mediaUrl || post.persistentMediaUrl || post.videoUrl || post.thumbnailUrl || (post.id ? localStorage.getItem('vyapar_video_' + post.id) : null);
   const [isFollowing, setIsFollowing] = useState(() => isUserFollowed(post.userId));
 
   useEffect(() => {
@@ -2603,13 +2718,17 @@ function PostItem({
   }, [showComments]);
 
   useEffect(() => {
-    // Unique view tracking on post mount (Real-time Firestore & backend update)
+    // Unique view tracking on post mount (Runs once per session)
     if (post?.id) {
       const trackView = async () => {
-        const fsViews = await recordViewInFirestore(post.id);
-        if (typeof fsViews === 'number' && fsViews > 0) {
-          setViewsCount(prev => Math.max(prev, fsViews));
-          if (post) post.viewsCount = Math.max(post.viewsCount || 0, fsViews);
+        const sessionKey = `vyapar_viewed_post_${post.id}`;
+        if (!sessionStorage.getItem(sessionKey)) {
+          sessionStorage.setItem(sessionKey, '1');
+          const fsViews = await recordViewInFirestore(post.id);
+          if (typeof fsViews === 'number' && fsViews > 0) {
+            setViewsCount(prev => Math.max(prev, fsViews));
+            if (post) post.viewsCount = Math.max(post.viewsCount || 0, fsViews);
+          }
         }
         fetch(`/api/posts/${post.id}/view`, {
           method: 'POST',
@@ -2626,12 +2745,10 @@ function PostItem({
             setLikesCount(prev => Math.max(prev, data.likesCount));
           }
         })
-        .catch(err => console.warn('Failed to track view', err));
+        .catch(() => {});
       };
 
       trackView();
-      const interval = setInterval(trackView, 15000);
-      return () => clearInterval(interval);
     }
   }, [post?.id, currentUser?.id]);
 
@@ -3136,29 +3253,29 @@ function PostItem({
       </div>
       
       {/* Post Image/Video (Full Width) */}
-      {post.mediaUrl && (
+      {mediaSrc && (
         <div 
           className="relative w-full bg-black min-h-[350px] max-h-[80vh] flex items-center justify-center overflow-hidden cursor-pointer select-none border-y border-slate-50 dark:border-zinc-900"
           onDoubleClick={handleDoubleClickImage}
           onTouchEnd={handleTouchEndImage}
         >
-          {post.mediaUrl && (post.mediaUrl.includes('youtube.com') || post.mediaUrl.includes('youtu.be') || post.mediaUrl.includes('facebook.com') || post.mediaUrl.includes('fb.watch')) ? (
-            <AdMediaDisplay ad={{ type: 'video', mediaUrl: post.mediaUrl }} className="w-full h-full aspect-video min-h-[350px] max-h-[80vh] object-cover bg-black pointer-events-auto" />
-          ) : post.mediaUrl && !post.mediaUrl.match(/\.(jpg|jpeg|png|webp|gif|svg|avif)(\?.*)?$/i) && !post.mediaUrl.startsWith('data:image') && (post.type === 'video' || post.mediaUrl.match(/\.(mp4|webm|mov|m4v|mkv)(\?.*)?$/i) || post.mediaUrl.startsWith('data:video')) ? (
-            <video preload="auto" src={post.mediaUrl} poster={post.thumbnailUrl} controls playsInline muted loop className="w-full h-full max-h-[80vh] object-contain bg-black transform-gpu will-change-transform" ref={(el) => { if (el && el.paused) { const p = el.play(); if (p !== undefined) p.catch(()=>{}); } }} />
-          ) : post.type === 'pdf' || (post.mediaUrl && post.mediaUrl.match(/\.pdf(\?.*)?$/i)) ? (
-            <PdfCardViewer post={post} variant="feed" />
-          ) : post.type === 'audio' || (post.mediaUrl && post.mediaUrl.match(/\.(mp3|wav|ogg|m4a)(\?.*)?$/i)) ? (
+          {mediaSrc.includes('youtube.com') || mediaSrc.includes('youtu.be') || mediaSrc.includes('facebook.com') || mediaSrc.includes('fb.watch') ? (
+            <AdMediaDisplay ad={{ type: 'video', mediaUrl: mediaSrc }} className="w-full h-full aspect-video min-h-[350px] max-h-[80vh] object-cover bg-black pointer-events-auto" />
+          ) : (post.type === 'video' || mediaSrc.startsWith('data:video') || mediaSrc.includes('/uploads/') || mediaSrc.match(/\.(mp4|webm|mov|m4v|mkv|3gp)(\?.*)?$/i)) && !mediaSrc.match(/\.(jpg|jpeg|png|webp|gif|svg|avif)(\?.*)?$/i) ? (
+            <video preload="auto" src={mediaSrc} poster={post.thumbnailUrl} controls playsInline muted loop className="w-full h-full max-h-[80vh] object-contain bg-black transform-gpu will-change-transform" ref={(el) => { if (el && el.paused) { const p = el.play(); if (p !== undefined) p.catch(()=>{}); } }} />
+          ) : post.type === 'pdf' || mediaSrc.match(/\.pdf(\?.*)?$/i) ? (
+            <PdfCardViewer post={{ ...post, mediaUrl: mediaSrc }} variant="feed" />
+          ) : post.type === 'audio' || mediaSrc.match(/\.(mp3|wav|ogg|m4a)(\?.*)?$/i) ? (
             <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-indigo-900 to-purple-900 p-8">
                <div className="w-32 h-32 bg-white/10 rounded-full flex items-center justify-center mb-6 shadow-2xl animate-pulse">
                  <Volume2 className="w-16 h-16 text-indigo-300" />
                </div>
-               {post.mediaUrl && <audio src={post.mediaUrl} controls className="w-full max-w-[300px]" />}
+               <audio src={mediaSrc} controls className="w-full max-w-[300px]" />
                <p className="mt-4 text-xs font-bold text-indigo-200 text-center uppercase tracking-widest">{post.title || 'Audio Post'}</p>
             </div>
           ) : (
             <img 
-              src={post.mediaUrl} 
+              src={mediaSrc} 
               alt="Post media" 
               className="w-full h-full max-h-[80vh] object-contain bg-black pointer-events-none" 
               onError={(e) => {
@@ -3178,6 +3295,12 @@ function PostItem({
           )}
         </div>
       )}
+      
+      {/* Post Creation Time - Right above Heart / Actions Bar */}
+      <div className="px-3 pt-2.5 pb-0.5 flex items-center gap-1.5 text-[11px] font-bold text-black/70 dark:text-zinc-400">
+        <Clock className="w-3.5 h-3.5 text-black/50 dark:text-zinc-500 shrink-0" />
+        <span>{formatPostTimeAgo(post.createdAt)}</span>
+      </div>
       
       {/* Post Actions */}
       <div className="p-3">
@@ -4166,7 +4289,22 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
       formData.append('userAvatar', authorUser.avatarUrl);
       formData.append('type', mediaType);
       formData.append('media', pendingReelFile);
-      fetch('/api/posts', { method: 'POST', body: formData }).catch(() => {});
+      
+      fetch('/api/posts', { method: 'POST', body: formData })
+        .then(res => res.json())
+        .then(data => {
+          if (data && data.success && data.post && data.post.mediaUrl) {
+            const serverMediaUrl = data.post.mediaUrl;
+            const updatedPost = { 
+              ...finalReelPost, 
+              mediaUrl: serverMediaUrl, 
+              persistentMediaUrl: serverMediaUrl 
+            };
+            setPosts(prev => prev.map(p => p.id === reelId ? updatedPost : p));
+            syncPostToFirestore(updatedPost).catch(() => {});
+          }
+        })
+        .catch(() => {});
     } catch (e) {}
 
     clearInterval(progressTimer);
@@ -4301,7 +4439,7 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
       )}
 
       {/* Stories / Reels Tray */}
-      <div className="flex gap-4 overflow-x-auto pb-6 scrollbar-hide px-2">
+      <div className="flex gap-4 overflow-x-auto pt-3.5 pb-6 scrollbar-hide px-2">
         {/* Your Reel / Your Story Circle - Always visible for ALL users */}
         <div 
           onClick={() => {
@@ -4325,19 +4463,16 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
             )}
 
             <div className="w-full h-full rounded-full overflow-hidden bg-slate-200 dark:bg-zinc-800 flex items-center justify-center relative z-1 font-bold text-black dark:text-zinc-200 text-sm">
-              {uploadingMediaThumbnail ? (
-                <img src={uploadingMediaThumbnail} alt="Your reel" className="w-full h-full object-cover" />
-              ) : myReels.length > 0 && myReels[0]?.mediaUrl ? (
-                <img src={myReels[0].mediaUrl} alt="Your story" className="w-full h-full object-cover" />
-              ) : (user?.avatarUrl || user?.avatar) ? (
-                <img src={user.avatarUrl || user.avatar} alt="Your profile" className="w-full h-full object-cover" />
-              ) : (
-                <div>{user?.name?.charAt(0) || 'U'}</div>
-              )}
+              <ReelCircleMedia 
+                user={user} 
+                reel={myReels[0]} 
+                uploadingMediaThumbnail={uploadingMediaThumbnail} 
+                altName={user?.name || 'Your Story'} 
+              />
 
               {isUploadingProgressVisible && (
-                <div className="absolute inset-0 bg-black/60 backdrop-blur-[1px] flex flex-col items-center justify-center text-white">
-                  <span className="text-[10px] font-black">{uploadProgress}%</span>
+                <div className="absolute inset-0 bg-black/40 backdrop-blur-[1px] flex items-center justify-center z-10">
+                  <div className="w-8 h-8 rounded-full border-2 border-white border-t-blue-500 animate-spin" />
                 </div>
               )}
             </div>
@@ -4355,7 +4490,7 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
             </button>
           </div>
           <span className="text-xs font-semibold text-black dark:text-zinc-50 truncate w-16 text-center">
-            {isUploadingProgressVisible ? `${uploadProgress}%` : myReels.length > 0 ? 'Your Story' : 'Your Reel'}
+            {myReels.length > 0 ? 'Your Story' : 'Your Reel'}
           </span>
         </div>
 
@@ -4376,11 +4511,11 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
               )}>
                 <div className="w-full h-full bg-[#E6C76C] dark:bg-black rounded-full p-[1px]">
                   <div className="w-full h-full bg-slate-200 dark:bg-zinc-800 rounded-full border border-slate-100 dark:border-zinc-900 flex items-center justify-center text-black dark:text-zinc-200 font-bold text-xs overflow-hidden">
-                    {group.user?.avatarUrl ? (
-                      <img src={group.user.avatarUrl} alt={group.user.name} className="w-full h-full object-cover" />
-                    ) : (
-                      group.user?.name?.charAt(0) || 'U'
-                    )}
+                    <ReelCircleMedia 
+                      user={group.user} 
+                      reel={group.reels[0]} 
+                      altName={group.user?.name || 'Reel'} 
+                    />
                   </div>
                 </div>
               </div>

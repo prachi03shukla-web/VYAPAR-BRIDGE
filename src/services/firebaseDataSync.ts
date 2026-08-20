@@ -50,6 +50,36 @@ export interface FirestoreInquiry {
 
 const LOCAL_POSTS_CACHE_KEY = 'VyaparBridge_cached_posts';
 
+let isFirestoreQuotaExhausted = false;
+
+export function getIsFirestoreQuotaExhausted(): boolean {
+  return isFirestoreQuotaExhausted;
+}
+
+export function isQuotaExhaustedError(err: any): boolean {
+  if (!err) return false;
+  const msg = String(err?.message || err || '');
+  const code = String(err?.code || '');
+  return (
+    code === 'resource-exhausted' ||
+    code === '8' ||
+    msg.includes('RESOURCE_EXHAUSTED') ||
+    msg.includes('Quota limit exceeded') ||
+    msg.includes('quota')
+  );
+}
+
+export function handleFirestoreError(context: string, err: any) {
+  if (isQuotaExhaustedError(err)) {
+    if (!isFirestoreQuotaExhausted) {
+      isFirestoreQuotaExhausted = true;
+      console.warn(`⚠️ Firestore Daily Write Quota Reached during ${context}. App operating smoothly in local cache/offline mode.`);
+    }
+  } else {
+    console.warn(`Firestore ${context} note:`, err?.message || err);
+  }
+}
+
 export function sanitizeForFirestore(obj: any): any {
   if (obj === null) return null;
   if (obj === undefined) return undefined;
@@ -119,6 +149,10 @@ export async function syncPostToFirestore(postData: any): Promise<boolean> {
     // FIRESTORE SAFEGUARD: Limit document size to < 500 KB (Firestore max limit is 1MB)
     // NEVER put raw multi-megabyte data:video base64 strings into Firestore setDoc!
     if (cleanData.mediaUrl && cleanData.mediaUrl.startsWith('data:video')) {
+      try {
+        localStorage.setItem('vyapar_video_' + postId, cleanData.mediaUrl);
+      } catch (e) {}
+
       if (cleanData.mediaUrl.length > 300000) {
         console.warn(`⚠️ Video base64 payload is large (${cleanData.mediaUrl.length} bytes). Stripping raw video base64 for Firestore document limit...`);
         let safeVideoThumb = cleanData.thumbnailUrl && cleanData.thumbnailUrl.startsWith('data:image') ? cleanData.thumbnailUrl : '';
@@ -307,7 +341,16 @@ export function subscribeToPostsFromFirestore(callback: (posts: any[]) => void):
         const data = docSnap.data();
         if (data && docSnap.id) {
           const existing = postsMap.get(String(docSnap.id)) || {};
-          const merged = { ...existing, ...data, id: docSnap.id };
+          const localStoredVideo = localStorage.getItem('vyapar_video_' + docSnap.id);
+          const existingMedia = existing.mediaUrl || existing.persistentMediaUrl || existing.videoUrl || localStoredVideo;
+          const incomingMedia = data.mediaUrl || data.persistentMediaUrl || data.videoUrl;
+
+          let finalMedia = incomingMedia;
+          if ((!finalMedia || finalMedia === '' || (finalMedia.startsWith('data:image') && (existing.type === 'video' || data.type === 'video'))) && existingMedia && (existingMedia.startsWith('data:video') || existingMedia.includes('/uploads/') || existingMedia.match(/\.(mp4|webm|mov|m4v|mkv)(\?.*)?$/i))) {
+            finalMedia = existingMedia;
+          }
+
+          const merged = { ...existing, ...data, id: docSnap.id, mediaUrl: finalMedia || existingMedia || data.mediaUrl || '' };
 
           // Clean up blob URLs if present
           if (merged.mediaUrl && merged.mediaUrl.startsWith('blob:')) {
@@ -798,6 +841,7 @@ export async function followUserInFirestore(targetUserId: string | number, follo
 }
 
 export async function recordViewInFirestore(postId: string | number) {
+  if (isFirestoreQuotaExhausted) return null;
   try {
     const postRef = doc(db, 'posts', String(postId));
     const postSnap = await getDoc(postRef);
@@ -810,11 +854,13 @@ export async function recordViewInFirestore(postId: string | number) {
       return 1;
     }
   } catch (err) {
+    handleFirestoreError('recordViewInFirestore', err);
     return null;
   }
 }
 
 export async function recordShareInFirestore(postId: string | number) {
+  if (isFirestoreQuotaExhausted) return null;
   try {
     const postRef = doc(db, 'posts', String(postId));
     const postSnap = await getDoc(postRef);
@@ -827,6 +873,7 @@ export async function recordShareInFirestore(postId: string | number) {
       return 1;
     }
   } catch (err) {
+    handleFirestoreError('recordShareInFirestore', err);
     return null;
   }
 }
@@ -1375,6 +1422,8 @@ export async function updateUserPresence(userId: string | number, isOnline: bool
       }
     } catch (e) {}
 
+    if (isFirestoreQuotaExhausted) return true;
+
     // Sync to Firestore
     const userRef = doc(db, 'users', uId);
     await setDoc(userRef, {
@@ -1385,7 +1434,7 @@ export async function updateUserPresence(userId: string | number, isOnline: bool
 
     return true;
   } catch (err) {
-    console.warn('Firestore updateUserPresence note:', err);
+    handleFirestoreError('updateUserPresence', err);
     return false;
   }
 }
