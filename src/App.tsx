@@ -2419,57 +2419,35 @@ function ReelCircleMedia({
   altName?: string;
 }) {
   const [imgError, setImgError] = useState(false);
-  const [reelImgError, setReelImgError] = useState(false);
 
   if (uploadingMediaThumbnail) {
     return <img src={uploadingMediaThumbnail} alt="Uploading reel" className="w-full h-full object-cover" />;
   }
 
-  const reelMedia = reel?.thumbnailUrl || reel?.mediaUrl || reel?.persistentMediaUrl || reel?.videoUrl || (reel?.id ? localStorage.getItem('vyapar_video_' + reel.id) : null);
-  const avatar = user?.avatarUrl || user?.avatar;
+  const avatar = user?.avatarUrl || user?.avatar || reel?.user?.avatarUrl || reel?.user?.avatar || reel?.userAvatar || reel?.avatar;
 
-  // Custom user avatar if set and valid
-  if (avatar && avatar !== BRAND_LOGO_SRC && !imgError) {
-    return (
-      <img
-        src={avatar}
-        alt={altName || 'User profile'}
-        className="w-full h-full object-cover"
-        onError={() => setImgError(true)}
-      />
-    );
-  }
-
-  // Fallback to Reel image preview if profile image is missing/broken
-  if (reelMedia && !reelImgError) {
-    const poster = reel?.thumbnailUrl || (reelMedia.match(/\.(jpg|jpeg|png|webp|gif|svg|avif)(\?.*)?$/i) ? reelMedia : 'https://images.unsplash.com/photo-1615971677499-5467cbab01c0?auto=format&fit=crop&w=400&q=80');
-    return (
-      <img
-        src={poster}
-        alt={altName || 'Reel preview'}
-        className="w-full h-full object-cover"
-        onError={() => setReelImgError(true)}
-      />
-    );
-  }
-
-  // Secondary fallback if avatar was BRAND_LOGO_SRC
+  // Custom user profile image if available and valid
   if (avatar && !imgError) {
     return (
       <img
         src={avatar}
-        alt={altName || 'User profile'}
+        alt={altName || user?.name || 'User profile'}
         className="w-full h-full object-cover"
         onError={() => setImgError(true)}
       />
     );
   }
 
-  const initial = (user?.name || altName || 'U').charAt(0).toUpperCase();
+  // Fallback directly to Vyapar Bridge official logo from /icon.png
   return (
-    <div className="w-full h-full flex items-center justify-center bg-gradient-to-tr from-blue-600 via-indigo-600 to-purple-600 text-white font-extrabold text-sm uppercase">
-      {initial}
-    </div>
+    <img
+      src="/icon.png"
+      alt="Vyapar Bridge"
+      onError={(e) => {
+        e.currentTarget.src = BRAND_LOGO_SRC;
+      }}
+      className="w-full h-full object-cover p-1 bg-white"
+    />
   );
 }
 
@@ -7311,19 +7289,18 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
   // Platform Ratings & SEO Analytics State
   const [ratingsData, setRatingsData] = useState<any>(null);
 
-  // Brand Multi-Media Advertisement State
+  // Brand Multi-Media Advertisement State (High-Speed Image Banners & External Links)
   const [brandAdsList, setBrandAdsList] = useState<any[]>([]);
-  const [adMediaType, setAdMediaType] = useState<'video' | 'image'>('video');
+  const [adMediaType, setAdMediaType] = useState<'image' | 'link'>('image');
   const [adTitle, setAdTitle] = useState('');
   const [adCompanyName, setAdCompanyName] = useState('');
-    const [adLinkUrl, setAdLinkUrl] = useState('');
+  const [adLinkUrl, setAdLinkUrl] = useState('');
   const [adDescription, setAdDescription] = useState('');
   const [adIsActive, setAdIsActive] = useState(true);
-  const [adVideoFile, setAdVideoFile] = useState<File | null>(null);
-  const [adVideoPreview, setAdVideoPreview] = useState<string | null>(null);
+  const [adImageFile, setAdImageFile] = useState<File | null>(null);
+  const [adImagePreview, setAdImagePreview] = useState<string | null>(null);
   const [adExternalMediaUrl, setAdExternalMediaUrl] = useState('');
   const [savingAd, setSavingAd] = useState(false);
-  const [adUploadProgress, setAdUploadProgress] = useState<number>(0);
 
   // Pending Payments State
   const [pendingPayments, setPendingPayments] = useState<any[]>([]);
@@ -7428,7 +7405,6 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
   const handleSaveBrandAd = async (e: React.FormEvent) => {
     e.preventDefault();
     setSavingAd(true);
-    setAdUploadProgress(10);
 
     const currentTitle = adTitle;
     const currentCompany = adCompanyName;
@@ -7436,113 +7412,75 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
     const currentExternalUrl = adExternalMediaUrl;
     const currentDesc = adDescription;
     const currentIsActive = adIsActive;
-    const currentMediaType = adMediaType;
-    const currentVideoFile = adVideoFile;
+    const currentImageFile = adImageFile;
+    const currentPreview = adImagePreview;
 
     try {
-      let localMediaKey = '';
-      if (currentVideoFile) {
-        localMediaKey = 'media_mirror_' + Date.now();
-        try {
-          await saveMediaToLocalDisk(localMediaKey, currentVideoFile);
-        } catch (err) {
-          console.warn('Local disk storage warning:', err);
-        }
-      }
-
+      let finalMediaUrl = currentExternalUrl || currentPreview || '';
+      
       const newAdId = 'ad-' + Date.now();
+      const isYoutubeOrWeb = finalMediaUrl.includes('youtube.com') || finalMediaUrl.includes('youtu.be') || finalMediaUrl.includes('facebook.com');
       const newAd = {
         id: newAdId,
-        type: currentMediaType,
+        type: isYoutubeOrWeb ? 'video' : 'image',
         title: currentTitle || 'Official Brand Showcase',
         companyName: currentCompany || 'Vyapar Bridge Partner',
-        mediaUrl: currentExternalUrl || '',
+        mediaUrl: finalMediaUrl,
         linkUrl: currentLink || '',
         description: currentDesc || '',
         isActive: currentIsActive,
-        localMediaKey: localMediaKey || null,
         createdAt: Date.now()
       };
 
-      // 1. INSTANT LOCAL & FIRESTORE GLOBAL PUBLISH (< 1 Second)
+      // 1. Instant local and Firestore sync (< 1 second)
       setBrandAdsList(prev => {
         const updated = [newAd, ...prev];
         syncBrandAdsLocal(updated);
         return updated;
       });
 
-      // Reset form state IMMEDIATELY so admin can continue working on new tasks!
+      // Reset form state immediately
       setAdTitle('');
       setAdCompanyName('');
       setAdExternalMediaUrl('');
       setAdLinkUrl('');
       setAdDescription('');
-      setAdVideoFile(null);
-      setAdVideoPreview(null);
+      setAdImageFile(null);
+      setAdImagePreview(null);
       setSavingAd(false);
-      setAdUploadProgress(100);
 
-      toast.success(
-        `🚀 Brand Ad saved & active live globally in 1 sec! ${currentVideoFile ? '(Video uploading in background)' : ''}`,
-        { duration: 5000 }
-      );
+      toast.success('🎉 Brand Image Banner added to Showcase Playlist!');
 
-      // 2. BACKGROUND ASYNCHRONOUS SERVER UPLOAD (Non-blocking, user can leave tab/drawer)
-      if (currentVideoFile) {
-        (async () => {
-          try {
-            const formData = new FormData();
-            formData.append('title', currentTitle);
-            formData.append('companyName', currentCompany);
-            formData.append('linkUrl', currentLink);
-            formData.append('mediaUrl', currentExternalUrl);
-            formData.append('description', currentDesc);
-            formData.append('isActive', String(currentIsActive));
-            formData.append('type', currentMediaType);
-            if (localMediaKey) {
-              formData.append('localMediaKey', localMediaKey);
-            }
-            formData.append('mediaFile', currentVideoFile);
+      // 2. Server upload if file was selected
+      if (currentImageFile) {
+        try {
+          const formData = new FormData();
+          formData.append('title', currentTitle);
+          formData.append('companyName', currentCompany);
+          formData.append('linkUrl', currentLink);
+          formData.append('mediaUrl', currentExternalUrl);
+          formData.append('description', currentDesc);
+          formData.append('isActive', String(currentIsActive));
+          formData.append('type', isYoutubeOrWeb ? 'video' : 'image');
+          formData.append('mediaFile', currentImageFile);
 
-            const xhr = new XMLHttpRequest();
-            xhr.open('POST', '/api/admin/showcase', true);
-
-            xhr.upload.onprogress = (event) => {
-              if (event.lengthComputable) {
-                const percent = Math.round((event.loaded / event.total) * 100);
-                setAdUploadProgress(percent);
-              }
-            };
-
-            xhr.onload = () => {
-              try {
-                if (xhr.status >= 200 && xhr.status < 300) {
-                  const data = JSON.parse(xhr.responseText);
-                  if (data.success && data.newAd?.mediaUrl) {
-                    setBrandAdsList(prev => {
-                      const updated = prev.map(item =>
-                        item.id === newAdId ? { ...item, mediaUrl: data.newAd.mediaUrl } : item
-                      );
-                      syncBrandAdsLocal(updated);
-                      return updated;
-                    });
-                    toast.success('☁️ Background video upload complete & synced to cloud server!');
-                  }
-                }
-              } catch (e) {
-                console.warn('Background upload JSON parse warning:', e);
-              }
-            };
-
-            xhr.onerror = () => {
-              console.warn('Background upload network notice, video remains active via local device mirror.');
-            };
-
-            xhr.send(formData);
-          } catch (err) {
-            console.warn('Background upload execution error:', err);
+          const res = await fetch('/api/admin/showcase', {
+            method: 'POST',
+            body: formData
+          });
+          const data = await res.json();
+          if (data && data.success && data.newAd?.mediaUrl) {
+            setBrandAdsList(prev => {
+              const updated = prev.map(item =>
+                item.id === newAdId ? { ...item, mediaUrl: data.newAd.mediaUrl } : item
+              );
+              syncBrandAdsLocal(updated);
+              return updated;
+            });
           }
-        })();
+        } catch (serverErr) {
+          console.warn('Server sync notice:', serverErr);
+        }
       }
     } catch (err) {
       console.error('Error saving brand advertisement:', err);
@@ -8892,21 +8830,10 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
                     </div>
 
                     <form onSubmit={handleSaveBrandAd} className="space-y-4">
-                      {/* Select Media Type (Video vs Image) */}
+                      {/* Select Media Type: Image Banner vs External Link */}
                       <div>
-                        <label className="block text-xs font-bold text-amber-300 mb-1.5 uppercase tracking-wider">Select Ad Media Type *</label>
+                        <label className="block text-xs font-bold text-amber-300 mb-1.5 uppercase tracking-wider">Select Ad Type *</label>
                         <div className="grid grid-cols-2 gap-3">
-                          <button
-                            type="button"
-                            onClick={() => setAdMediaType('video')}
-                            className={cn(
-                              "py-2.5 px-3 rounded-xl text-xs font-black flex items-center justify-center gap-2 border cursor-pointer transition-all",
-                              adMediaType === 'video' ? "bg-amber-500 text-slate-950 border-amber-400 shadow-md" : "bg-white text-black/60 border-slate-200 hover:text-black"
-                            )}
-                          >
-                            <Video className="w-4 h-4" />
-                            <span>Video Ad (MP4)</span>
-                          </button>
                           <button
                             type="button"
                             onClick={() => setAdMediaType('image')}
@@ -8916,7 +8843,18 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
                             )}
                           >
                             <ImageIcon className="w-4 h-4" />
-                            <span>Image Banner (JPG/PNG)</span>
+                            <span>Image Banner (JPG/PNG/WebP)</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setAdMediaType('link')}
+                            className={cn(
+                              "py-2.5 px-3 rounded-xl text-xs font-black flex items-center justify-center gap-2 border cursor-pointer transition-all",
+                              adMediaType === 'link' ? "bg-amber-500 text-slate-950 border-amber-400 shadow-md" : "bg-white text-black/60 border-slate-200 hover:text-black"
+                            )}
+                          >
+                            <Globe className="w-4 h-4" />
+                            <span>External Link / YouTube</span>
                           </button>
                         </div>
                       </div>
@@ -8948,12 +8886,12 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
                       </div>
 
                       <div>
-                        <label className="block text-xs font-bold text-slate-700 mb-1">Target Website / Catalogue / Contact Link (Optional)</label>
+                        <label className="block text-xs font-bold text-slate-700 mb-1">Target WhatsApp / Website / Contact Link (Optional)</label>
                         <input 
                           type="text" 
                           value={adLinkUrl} 
                           onChange={(e) => setAdLinkUrl(e.target.value)} 
-                          placeholder="e.g. https://kajariaceramics.com or whatsapp / phone link (Optional)" 
+                          placeholder="e.g. 9876543210 or https://kajariaceramics.com (Optional)" 
                           className="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-2 text-xs text-black focus:outline-none focus:border-amber-500"
                         />
                       </div>
@@ -8970,16 +8908,9 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
                       </div>
 
                       <div className="bg-white/80 p-4 rounded-xl border border-slate-200 space-y-3">
-                        <div className="flex items-center justify-between">
-                          <label className="block text-xs font-bold text-amber-400">
-                            {adMediaType === 'video' ? 'Upload Video File (MP4 - Max 60 Seconds Limit) or Paste Video URL' : 'Upload Image Banner File or Paste Image URL'}
-                          </label>
-                          {adMediaType === 'video' && (
-                            <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                              ⚡ Max 60 Sec Video
-                            </span>
-                          )}
-                        </div>
+                        <label className="block text-xs font-bold text-amber-400">
+                          {adMediaType === 'image' ? '🖼️ Upload Image Banner (Recommended for Ultra-Smooth Sliding)' : '🔗 External Link or Media URL'}
+                        </label>
                         
                         <div className="flex flex-col gap-2 w-full">
                           <input 
@@ -8987,116 +8918,48 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
                             value={adExternalMediaUrl}
                             onChange={(e) => {
                                setAdExternalMediaUrl(e.target.value);
-                               if(e.target.value) setAdVideoPreview(e.target.value);
+                               if (e.target.value) setAdImagePreview(e.target.value);
                             }}
-                            placeholder={adMediaType === 'video' ? "Paste External Video URL (e.g. YouTube, MP4 link) to skip upload delay" : "Paste External Image URL"}
+                            placeholder="Paste External Image URL or YouTube Embed Link"
                             className="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-2 text-xs text-black focus:outline-none focus:border-amber-500"
                           />
-                          <div className="flex items-center gap-2 w-full justify-center text-xs font-bold text-black/70">OR UPLOAD FILE</div>
+                          <div className="flex items-center gap-2 w-full justify-center text-xs font-bold text-black/70">OR UPLOAD IMAGE FILE</div>
                           <input 
                             type="file" 
-                            accept={adMediaType === 'video' ? 'video/*,video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov,.m4v,.avi,.mkv' : 'image/*'} 
+                            accept="image/*" 
                             onChange={(e) => {
                               const inputEl = e.currentTarget;
                               const file = inputEl.files?.[0];
                               if (file) {
-                                // 1. Check File Size (Max 200MB limit)
                                 const fileSizeMB = file.size / (1024 * 1024);
-                                if (fileSizeMB > 200) {
-                                  toast.error(`⚠️ Video file is too large (${Math.round(fileSizeMB)}MB). Maximum allowed limit is 200MB.`);
-                                  setAdVideoFile(null);
-                                  setAdVideoPreview(null);
+                                if (fileSizeMB > 25) {
+                                  toast.error(`⚠️ Image file is too large (${Math.round(fileSizeMB)}MB). Maximum allowed limit is 25MB.`);
+                                  setAdImageFile(null);
+                                  setAdImagePreview(null);
                                   inputEl.value = '';
                                   return;
                                 }
 
-                                const isVid = file.type.startsWith('video/') || /\.(mp4|webm|mov|m4v|avi|mkv|3gp|flv)$/i.test(file.name);
-                                if (isVid) {
-                                  setAdMediaType('video');
-                                }
-
-                                // Set file and preview immediately
-                                setAdVideoFile(file);
-                                const objectUrl = URL.createObjectURL(file);
-                                setAdVideoPreview(objectUrl);
-
-                                if (isVid || adMediaType === 'video') {
-                                  const tempVid = document.createElement('video');
-                                  tempVid.preload = 'metadata';
-                                  
-                                  let checked = false;
-                                  const checkDuration = () => {
-                                    if (checked) return;
-                                    checked = true;
-                                    if (tempVid.duration && tempVid.duration > 60.5) {
-                                      toast(`⚠️ Video duration is ${Math.round(tempVid.duration)}s (Recommended ~60s max). File attached & ready to publish.`, { icon: '⏱️' });
-                                    } else if (tempVid.duration) {
-                                      toast.success(`✅ Video attached (${Math.round(tempVid.duration)}s - ${Math.round(fileSizeMB)}MB)`);
-                                    } else {
-                                      toast.success(`✅ Video file attached (${Math.round(fileSizeMB)}MB)`);
-                                    }
-                                  };
-
-                                  tempVid.onloadedmetadata = checkDuration;
-                                  tempVid.onerror = () => {
-                                    toast.success(`✅ Video file selected (${Math.round(fileSizeMB)}MB)`);
-                                  };
-                                  tempVid.src = objectUrl;
-                                  tempVid.load();
-
-                                  setTimeout(() => {
-                                    if (!checked) {
-                                      checkDuration();
-                                    }
-                                  }, 1000);
-                                } else {
-                                  toast.success(`✅ Image attached (${Math.round(fileSizeMB)}MB)`);
-                                }
+                                setAdImageFile(file);
+                                const reader = new FileReader();
+                                reader.onload = (re) => {
+                                  if (re.target?.result) {
+                                    setAdImagePreview(re.target.result as string);
+                                  }
+                                };
+                                reader.readAsDataURL(file);
+                                toast.success(`✅ Image banner attached (${file.name})`);
                               }
                             }}
                             className="text-xs text-slate-700 file:mr-3 file:py-1.5 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-amber-500 file:text-slate-950 hover:file:bg-amber-400 cursor-pointer"
                           />
                         </div>
-                        {adVideoPreview && (
-                          <div className="mt-3 relative w-full max-w-sm h-48 bg-black rounded-xl overflow-hidden border border-slate-200 mx-auto flex items-center justify-center">
-                            {adMediaType === 'image' ? (
-                              <img src={adVideoPreview} alt="Preview" className="w-full h-full object-contain" />
-                            ) : (
-                              <video preload="auto" 
-                                src={adVideoPreview} 
-                                controls 
-                                muted 
-                                className="w-full h-full object-contain transform-gpu will-change-transform" 
-                              />
-                            )}
+                        {adImagePreview && (
+                          <div className="mt-3 relative w-full max-w-sm h-44 bg-zinc-950 rounded-xl overflow-hidden border border-slate-200 mx-auto flex items-center justify-center">
+                            <img src={adImagePreview} alt="Banner Preview" className="w-full h-full object-contain" />
                           </div>
                         )}
                       </div>
-
-                      {savingAd && (
-                        <div className="bg-white/90 border border-amber-500/40 p-4 rounded-xl space-y-2.5">
-                          <div className="flex items-center justify-between text-xs font-bold text-amber-300">
-                            <span className="flex items-center gap-2">
-                              <Loader2 className="w-4 h-4 animate-spin text-amber-400" />
-                              {adUploadProgress < 100 
-                                ? `Uploading ${adMediaType === 'video' ? 'Video' : 'Media'} File...` 
-                                : 'Finalizing & Processing on Server...'}
-                            </span>
-                            <span className="font-mono text-amber-400 text-sm font-black">{adUploadProgress}%</span>
-                          </div>
-                          <div className="w-full bg-slate-50 rounded-full h-3 overflow-hidden border border-slate-200">
-                            <div 
-                              className="bg-gradient-to-r from-amber-500 via-amber-400 to-emerald-400 h-3 rounded-full transition-all duration-200 ease-out shadow-md shadow-amber-500/30"
-                              style={{ width: `${Math.max(4, adUploadProgress)}%` }}
-                            />
-                          </div>
-                          <p className="text-[11px] text-black/70">
-                            {adUploadProgress < 100 
-                              ? `Please wait while your ${adMediaType} file is uploading to the server.` 
-                              : 'Upload complete! Saving advertisement to showcase playlist...'}
-                          </p>
-                        </div>
-                      )}
 
                       <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2">
                         <label className="flex items-center gap-2 cursor-pointer select-none">
@@ -9117,10 +8980,10 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
                           {savingAd ? (
                             <>
                               <Loader2 className="w-4 h-4 animate-spin text-slate-950" />
-                              <span>Saving Ad & Uploading in Background...</span>
+                              <span>Saving Image Banner...</span>
                             </>
                           ) : (
-                            `🚀 Add ${adMediaType.toUpperCase()} Ad to Showcase Playlist`
+                            '🚀 Add Image Banner to Showcase Playlist'
                           )}
                         </button>
                       </div>
