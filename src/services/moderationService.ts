@@ -1,5 +1,5 @@
 // Universal B2B AI Safety & Content Moderation Guardrail for Vyapar Bridge
-// Automatically detects non-B2B explicit content, nudity/sensual attire, abusive audio/text, and routes to Admin Review Queue
+// Protects against profanity/abusive language, pornography/nudity, and unverified external links.
 
 import { getAdminSettingsFromFirestore } from './firebaseDataSync';
 
@@ -8,7 +8,7 @@ export interface ModerationResult {
   reason?: string;
   userNotice?: string;
   pending_admin_approval?: boolean;
-  category?: 'b2b_compliance' | 'abusive_language' | 'adult_content' | 'spam_scam';
+  category?: 'b2b_compliance' | 'abusive_language' | 'adult_content' | 'spam_scam' | 'external_link';
 }
 
 const GUARDRAIL_CACHE_KEY = 'VyaparBridge_ai_guardrail_active';
@@ -38,20 +38,33 @@ export async function isGuardrailActive(): Promise<boolean> {
   return true; // Default to active for security
 }
 
-// B2B Forbidden & Non-Commercial Pattern Lists
+// 1. Abusive / Profane Language (Gali Galoch)
 const ABUSIVE_PATTERNS = [
-  /\b(gaali|chutiya|bhenchod|madarchod|harami|bhosdike|laude|randi|porn|nude|naked|bikini|sensual|boobs|cleavage|lingerie|underwear|bra|sex|xxx|dating|hookup|escort|gambling|satta|matka|casino|dance reel|glamour)\b/i,
-  /\b(hate speech|kill yourself|terrorist|scam 100%|free money hack|free crypto|onlyfans|item song|hot video)\b/i
+  /\b(gaali|chutiya|bhenchod|madarchod|harami|bhosdike|laude|randi|bastard|fuck|asshole|slut|whore|kamina|suar)\b/i,
+  /\b(hate speech|terrorist|kill yourself)\b/i
 ];
 
-const NON_B2B_SELFIE_PATTERNS = [
-  /\b(my selfie|personal photo|cute pic|feeling cute|dating profile|looking for gf|looking for bf|tinder|shadi rishta|single boy|single girl|dp photo|my photo|good morning|good night|feeling sad|feeling happy|love status|sad status|status video|hero|funny video|comedy video|dance video|song reel|song video|shayari|love story|couple video)\b/i,
-  /\b(instagram model|follow for follow|f4f|like4like|subscribe to my personal|lip sync|romantic status|marriage|wedding|birthday party|party time|enjoying|pic of the day|personal pic)\b/i
+// 2. Adult / Pornography / Nudity / Explicit Content
+const EXPLICIT_PATTERNS = [
+  /\b(porn|porno|nude|naked|bikini|sensual|boobs|cleavage|lingerie|underwear|bra|sex|xxx|dating|hookup|escort|nangi|gandi video|hot video|onlyfans|item song|sex tape)\b/i
+];
+
+// 3. External Links & URLs
+const LINK_PATTERNS = [
+  /https?:\/\/[^\s]+/i,
+  /www\.[^\s]+/i,
+  /\b[a-zA-Z0-9-]+\.(com|in|org|net|xyz|info|top|site|biz|co|app|apk|online|club|me|tv|cc|io)\b/i,
+  /\b(t\.me|telegram\.me|wa\.me|chat\.whatsapp\.com|bit\.ly|tinyurl\.com)\b/i
+];
+
+// 4. Gambling / Scam / Financial Fraud
+const GAMBLING_SCAM_PATTERNS = [
+  /\b(satta|matka|casino|gambling|betting|dream11|win money|free crypto|free money hack|100% scam|double your money)\b/i
 ];
 
 /**
  * Universal Content Moderation Function
- * Evaluates text and media metadata for B2B trade compliance.
+ * Fast, lightweight check for abusive text, adult content, and external link verification.
  */
 export async function moderateContentUniversally(params: {
   title?: string;
@@ -77,62 +90,60 @@ export async function moderateContentUniversally(params: {
     return { approved: true, reason: 'Guardrails Disabled by Administrator' };
   }
 
-  const combinedText = `${title} ${content} ${description} ${hashtags}`.trim();
+  const combinedText = `${title} ${content} ${description} ${hashtags} ${mediaUrl}`.trim();
 
-  // 3. Whitelist IT Services, Software Solutions, App/Web Development & B2B Branding Logos
-  const B2B_TECH_PATTERNS = /\b(software|it service|technology|app development|web development|crm|erp|billing|branding|vyapar bridge|vyaparbridge|logo|digital marketing|agency|tech solution|b2b tool|accounting|software company|code|developer)\b/i;
-  if (B2B_TECH_PATTERNS.test(combinedText)) {
-    return { approved: true, reason: 'Approved (B2B IT & Software Solution Whitelist)' };
-  }
-
-  // 4. Check for Abusive / Adult / Explicit Nudity Patterns
+  // 3. Check for Abusive Language / Gali Galoch
   for (const pattern of ABUSIVE_PATTERNS) {
     if (pattern.test(combinedText)) {
       return {
         approved: false,
         pending_admin_approval: true,
-        reason: '⛔ AI Guardrail Flag: Potential non-B2B explicit material or flagged audio/description detected.',
-        userNotice: '⚠️ Apki reel ko hamare AI guardrail ne flag kiya hai. Admin review ke baad 24 ghante ke andar approved hone par yeh aapki profile aur feed par dikhne lagegi.',
+        reason: '⛔ Abusive Language Flagged: Inappropriate or offensive words detected.',
+        userNotice: '⚠️ Abusive language detect hua hai. Vyapar Bridge ek professional business network hai. Aapka post Admin Review me bhej diya gaya hai.',
+        category: 'abusive_language'
+      };
+    }
+  }
+
+  // 4. Check for Adult / Pornographic / Explicit Nudity Patterns
+  for (const pattern of EXPLICIT_PATTERNS) {
+    if (pattern.test(combinedText)) {
+      return {
+        approved: false,
+        pending_admin_approval: true,
+        reason: '⛔ Adult Content Flagged: Nudity, pornography, or explicit content detected.',
+        userNotice: '🚫 Pornography / Nudity strictly prohibited hai. Aapka post Admin Review ke liye hold kiya gaya hai.',
         category: 'adult_content'
       };
     }
   }
 
-  // 4. Check for Casual Selfies / Non-B2B Casual Social Posts
-  for (const pattern of NON_B2B_SELFIE_PATTERNS) {
+  // 5. Check for Gambling / Satta / Financial Fraud
+  for (const pattern of GAMBLING_SCAM_PATTERNS) {
     if (pattern.test(combinedText)) {
       return {
         approved: false,
         pending_admin_approval: true,
-        reason: '⛔ AI Guardrail: Personal selfies, lip sync reels or non-commercial posts flagged.',
-        userNotice: '⚠️ Apki reel ko hamare AI guardrail ne detect kiya hai. Vyapar Bridge kewal commercial B2B trade network hai. Admin review ke baad hi approve hogi.',
-        category: 'b2b_compliance'
+        reason: '⛔ Gambling/Scam Flagged: Unverified betting or scam pattern detected.',
+        userNotice: '⏳ Business Safety Verification: Gambling ya unverified financial content detect hua hai. Admin approval ke baad approve hoga.',
+        category: 'spam_scam'
       };
     }
   }
 
-  // 5. Try Server AI Check if available
-  try {
-    const res = await fetch('/api/ai/moderate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: combinedText, mediaType, mediaUrl })
-    });
-    if (res.ok) {
-      const data = await res.json();
-      if (data && data.approved === false) {
-        return {
-          approved: false,
-          pending_admin_approval: true,
-          reason: data.reason || '⛔ AI Safety Guardrail: Content flagged by automated B2B compliance filter.',
-          userNotice: '⚠️ Apki reel ko hamare AI guardrail ne detect kiya hai. Admin review ke baad 24 ghante ke andar approved hone par yeh aapki profile par dikhne lagegi.',
-          category: 'b2b_compliance'
-        };
-      }
+  // 6. Check for External Links & Web URLs
+  for (const pattern of LINK_PATTERNS) {
+    if (pattern.test(combinedText)) {
+      return {
+        approved: false,
+        pending_admin_approval: true,
+        reason: '🔍 External Link Detected: External web address requires admin safety clearance.',
+        userNotice: '⏳ Business Verification: Aapke post me external link hai. Trusted B2B platform security ke liye hamari team link safety verify karke 24 ghante ke andar approve kar degi.',
+        category: 'external_link'
+      };
     }
-  } catch (apiErr) {
-    // Fallback: client rules pass
   }
 
   return { approved: true, reason: 'Approved' };
 }
+

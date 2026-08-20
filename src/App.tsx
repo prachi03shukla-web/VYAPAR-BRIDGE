@@ -1071,8 +1071,28 @@ function ReelCard({
   const videoRef = React.useRef<HTMLVideoElement>(null);
   const audioRef = React.useRef<HTMLAudioElement>(null);
 
-  const isVideo = reel?.type === 'video' || (reel?.mediaUrl && reel.mediaUrl.match(/\.(mp4|webm|mov|m4v)(\?.*)?$/i)) || reel?.mediaUrl?.startsWith('data:video') || reel?.video;
-  const mediaSrc = reel?.mediaUrl || reel?.video || '';
+  const localVideoData = reel?.id ? localStorage.getItem('vyapar_video_' + reel.id) : null;
+  const rawVideoSrc = localVideoData || reel?.videoUrl || (reel?.mediaUrl && (reel.mediaUrl.startsWith('data:video') || reel.mediaUrl.startsWith('blob:') || reel.mediaUrl.match(/\.(mp4|webm|mov|m4v|mkv|3gp)(\?.*)?$/i) || reel.mediaUrl.includes('youtube.com') || reel.mediaUrl.includes('youtu.be') || reel.mediaUrl.includes('facebook.com') || reel.mediaUrl.includes('fb.watch')) ? reel.mediaUrl : '') || reel?.video || '';
+  
+  const isEmbedVideo = Boolean(
+    rawVideoSrc.includes('youtube.com') || 
+    rawVideoSrc.includes('youtu.be') || 
+    rawVideoSrc.includes('facebook.com') || 
+    rawVideoSrc.includes('fb.watch')
+  );
+
+  const isPlayableVideo = Boolean(
+    rawVideoSrc && (
+      rawVideoSrc.startsWith('data:video') || 
+      rawVideoSrc.startsWith('blob:') || 
+      rawVideoSrc.match(/\.(mp4|webm|mov|m4v|mkv|3gp)(\?.*)?$/i) ||
+      isEmbedVideo
+    ) && !rawVideoSrc.startsWith('data:image') && !rawVideoSrc.match(/\.(jpg|jpeg|png|webp|gif|svg|avif)(\?.*)?$/i)
+  );
+
+  const posterSrc = reel?.thumbnailUrl || (reel?.mediaUrl && reel.mediaUrl.startsWith('data:image') ? reel.mediaUrl : '') || reel?.persistentMediaUrl || 'https://images.unsplash.com/photo-1615971677499-5467cbab01c0?auto=format&fit=crop&w=800&q=80';
+  const mediaSrc = isPlayableVideo ? rawVideoSrc : posterSrc;
+  const isVideo = isPlayableVideo;
   const authorName = reel?.user?.name || reel?.name || 'User';
   const authorAvatar = reel?.user?.avatarUrl || reel?.avatar;
   const isAuthorVerified = reel?.user?.isVerified || reel?.isVerified;
@@ -4232,19 +4252,36 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
     // Convert file to resilient persistent Data URL & Thumbnail
     let persistentMediaUrl = '';
     let videoThumbnailUrl = '';
+    let videoStreamUrl = reelPreviewUrl || (pendingReelFile ? URL.createObjectURL(pendingReelFile) : '');
     try {
       if (!isVideoFile) {
         persistentMediaUrl = await optimizeImageForPersistence(pendingReelFile);
         videoThumbnailUrl = persistentMediaUrl;
       } else {
         videoThumbnailUrl = await generateVideoThumbnail(pendingReelFile);
-        persistentMediaUrl = videoThumbnailUrl;
+        if (pendingReelFile.size <= 3.5 * 1024 * 1024) {
+          try {
+            const videoBase64 = await fileToDataURL(pendingReelFile);
+            if (videoBase64 && videoBase64.startsWith('data:video')) {
+              videoStreamUrl = videoBase64;
+              persistentMediaUrl = videoBase64;
+            }
+          } catch (e) {}
+        }
+        if (!persistentMediaUrl) {
+          persistentMediaUrl = videoThumbnailUrl;
+        }
+        if (videoStreamUrl) {
+          try {
+            localStorage.setItem('vyapar_video_' + reelId, videoStreamUrl);
+          } catch (e) {}
+        }
       }
     } catch (e) {
       console.warn('Reel file conversion note:', e);
     }
 
-    const localMediaUrl = persistentMediaUrl || videoThumbnailUrl || reelPreviewUrl || (pendingReelFile ? URL.createObjectURL(pendingReelFile) : '');
+    const localMediaUrl = isVideoFile ? (videoStreamUrl || videoThumbnailUrl) : (persistentMediaUrl || videoThumbnailUrl);
 
     const authorName = user?.name || localStorage.getItem('vyapar_user_name') || 'Vyapar Member';
     const authorAvatar = user?.avatarUrl || user?.avatar || localStorage.getItem('vyapar_user_avatar') || BRAND_LOGO_SRC;
@@ -4266,6 +4303,18 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
       audioUrl: selectedMusic.audioUrl || selectedMusic.musicUrl || selectedMusic.url
     } : null;
 
+    const moderation = await moderateContentUniversally({
+      title: reelCaption.trim() || 'New B2B Reel',
+      content: reelCaption.trim() || 'Uploaded Story & Reel',
+      hashtags: '#reel #b2b #tiles #products #story',
+      mediaType: mediaType,
+      mediaUrl: localMediaUrl,
+      userId: authorUser.id,
+      userRole: authorUser.role
+    });
+
+    const isPendingApproval = !moderation.approved;
+
     const finalReelPost = {
       id: reelId,
       userId: authorUser.id,
@@ -4277,11 +4326,15 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
       hashtags: '#reel #b2b #tiles #products #story',
       type: mediaType,
       mediaUrl: localMediaUrl,
+      videoUrl: videoStreamUrl,
+      video: videoStreamUrl,
       thumbnailUrl: videoThumbnailUrl || localMediaUrl,
       persistentMediaUrl: persistentMediaUrl || videoThumbnailUrl || localMediaUrl,
       category: 'Commercial Wholesale',
       visibility: 'public',
-      status: 'approved',
+      status: isPendingApproval ? 'pending' : 'approved',
+      pending_admin_approval: isPendingApproval,
+      aiFlagReason: moderation.reason || null,
       likesCount: 0,
       viewsCount: 1,
       createdAt: Date.now(),
@@ -4331,7 +4384,11 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
     syncPostToFirestore(finalReelPost).catch(bgErr => console.warn('Background sync note:', bgErr));
 
     playBubblePopSound();
-    toast.success('🎉 Reel & Story uploaded to Home Feed!');
+    if (isPendingApproval) {
+      toast.info(moderation.userNotice || '⏳ Business Verification: Aapka post Admin Review me bhej diya gaya hai. Business network security ke liye moderation team verify karegi.');
+    } else {
+      toast.success('🎉 Reel & Story uploaded to Home Feed!');
+    }
 
     setTimeout(() => {
       setIsUploadingProgressVisible(false);
@@ -5325,10 +5382,8 @@ function CreatePost({ user }: { user: any }) {
           aiFlagReason: aiFlagReason || null
         };
 
-        await syncPostToFirestore(finalPostData);
-
         if (isPendingApproval) {
-          toast.info('⏳ Post sent for Admin Review');
+          toast.info(moderation?.userNotice || '⏳ Business Verification: Aapka post Admin Review ke liye bhej diya gaya hai. Business network security ke liye moderation team link aur content verify karegi.');
         }
       } catch (bgErr) {
         console.warn('Background post sync note:', bgErr);
@@ -11389,19 +11444,36 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
     // Convert file to Base64 Data URL for persistent sync
     let persistentMediaUrl = '';
     let videoThumbnailUrl = '';
+    let videoStreamUrl = previewUrl || (pendingFile ? URL.createObjectURL(pendingFile) : '');
     try {
       if (!isVideoFile) {
         persistentMediaUrl = await optimizeImageForPersistence(pendingFile);
         videoThumbnailUrl = persistentMediaUrl;
       } else {
         videoThumbnailUrl = await generateVideoThumbnail(pendingFile);
-        persistentMediaUrl = videoThumbnailUrl;
+        if (pendingFile.size <= 3.5 * 1024 * 1024) {
+          try {
+            const videoBase64 = await fileToDataURL(pendingFile);
+            if (videoBase64 && videoBase64.startsWith('data:video')) {
+              videoStreamUrl = videoBase64;
+              persistentMediaUrl = videoBase64;
+            }
+          } catch (e) {}
+        }
+        if (!persistentMediaUrl) {
+          persistentMediaUrl = videoThumbnailUrl;
+        }
+        if (videoStreamUrl) {
+          try {
+            localStorage.setItem('vyapar_video_' + generatedReelId, videoStreamUrl);
+          } catch (e) {}
+        }
       }
     } catch (e) {
       console.warn('Reel file conversion note:', e);
     }
 
-    const localMediaUrl = persistentMediaUrl || videoThumbnailUrl || previewUrl || (pendingFile ? URL.createObjectURL(pendingFile) : '');
+    const localMediaUrl = isVideoFile ? (videoStreamUrl || videoThumbnailUrl) : (persistentMediaUrl || videoThumbnailUrl);
 
     const authorName = activeUser?.name || 'Vyapar Member';
     const authorAvatar = activeUser?.avatarUrl || activeUser?.avatar || BRAND_LOGO_SRC;
@@ -11468,6 +11540,18 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
       }
 
       if (!isBlocked) {
+        const moderation = await moderateContentUniversally({
+          title: 'New B2B Reel',
+          content: 'Uploaded from Reels',
+          hashtags: '#reel #b2b #tiles #products',
+          mediaType: mediaType,
+          mediaUrl: localMediaUrl,
+          userId: currentUser.id,
+          userRole: authorRole
+        });
+
+        const isPendingApproval = !moderation.approved;
+
         const musicObj = selectedMusic ? {
           id: selectedMusic.id,
           title: selectedMusic.title || 'Selected Music',
@@ -11485,6 +11569,9 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
           mediaUrl: resolvedUrl,
           thumbnailUrl: publishedReel.thumbnailUrl || resolvedUrl,
           persistentMediaUrl: resolvedUrl,
+          status: isPendingApproval ? 'pending' : (publishedReel.status || 'approved'),
+          pending_admin_approval: isPendingApproval,
+          aiFlagReason: moderation.reason || publishedReel.aiFlagReason || null,
           user: publishedReel.user && publishedReel.user.name ? publishedReel.user : authorUser,
           userAvatar: authorUser.avatarUrl,
           music: publishedReel.music || musicObj
@@ -11503,7 +11590,9 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
           persistentMediaUrl: resolvedUrl,
           category: 'Commercial Wholesale',
           visibility: 'public',
-          status: 'approved',
+          status: isPendingApproval ? 'pending' : 'approved',
+          pending_admin_approval: isPendingApproval,
+          aiFlagReason: moderation.reason || null,
           likesCount: 0,
           viewsCount: 1,
           createdAt: Date.now(),
@@ -11521,7 +11610,11 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
         syncPostToFirestore(finalReel).catch(bgErr => console.warn('Background sync note:', bgErr));
 
         playBubblePopSound();
-        toast.success('🎉 Reel published successfully!', { id: toastId });
+        if (isPendingApproval) {
+          toast.info(moderation.userNotice || '⏳ Business Verification: Aapka post Admin Review ke liye bhej diya gaya hai. Business network security ke liye moderation team verify karegi.', { id: toastId });
+        } else {
+          toast.success('🎉 Reel published successfully!', { id: toastId });
+        }
 
         setIsPreviewModalOpen(false);
         setPendingFile(null);
@@ -13458,7 +13551,15 @@ function ProfilePage({
               videoThumbUrl = fileDataUrl;
             } else if (isVideo) {
               videoThumbUrl = await generateVideoThumbnail(postFile);
-              fileDataUrl = videoThumbUrl;
+              if (postFile.size <= 3.5 * 1024 * 1024) {
+                try {
+                  const videoBase64 = await fileToDataURL(postFile);
+                  if (videoBase64 && videoBase64.startsWith('data:video')) {
+                    fileDataUrl = videoBase64;
+                  }
+                } catch (e) {}
+              }
+              if (!fileDataUrl) fileDataUrl = videoThumbUrl;
             } else {
               fileDataUrl = postFilePreview && !postFilePreview.startsWith('blob:') ? postFilePreview : '';
             }
@@ -13544,7 +13645,7 @@ function ProfilePage({
         window.dispatchEvent(new CustomEvent('postCreated', { detail: finalProfilePost }));
 
         if (isPendingApproval) {
-          toast.info('⏳ Post sent for Admin Review');
+          toast.info(moderation?.userNotice || '⏳ Business Verification: Aapka post Admin Review ke liye bhej diya gaya hai. Business network security ke liye moderation team link aur content verify karegi.');
         }
       } catch (bgErr) {
         console.warn('Background profile post sync note:', bgErr);

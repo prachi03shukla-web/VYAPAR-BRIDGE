@@ -150,11 +150,14 @@ export async function syncPostToFirestore(postData: any): Promise<boolean> {
     delete cleanData.pendingReelFile;
 
     // FIRESTORE SAFEGUARD: Limit document size to < 500 KB (Firestore max limit is 1MB)
-    if (cleanData.mediaUrl && cleanData.mediaUrl.startsWith('data:video')) {
+    const videoStreamCandidate = cleanData.videoUrl || cleanData.video || (cleanData.mediaUrl?.startsWith('data:video') ? cleanData.mediaUrl : '');
+    if (videoStreamCandidate && (videoStreamCandidate.startsWith('data:video') || videoStreamCandidate.startsWith('blob:'))) {
       try {
-        localStorage.setItem('vyapar_video_' + postId, cleanData.mediaUrl);
+        localStorage.setItem('vyapar_video_' + postId, videoStreamCandidate);
       } catch (e) {}
+    }
 
+    if (cleanData.mediaUrl && cleanData.mediaUrl.startsWith('data:video')) {
       if (cleanData.mediaUrl.length > 300000) {
         console.warn(`⚠️ Video base64 payload is large (${cleanData.mediaUrl.length} bytes). Preserving poster image for Firestore document...`);
         let safeVideoThumb = cleanData.thumbnailUrl && cleanData.thumbnailUrl.startsWith('data:image') ? cleanData.thumbnailUrl : '';

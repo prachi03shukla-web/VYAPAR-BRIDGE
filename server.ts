@@ -410,25 +410,41 @@ const EXPLICIT_KEYWORDS = [
   'gandi', 'nangi', 'chutiya', 'gaand', 'bhosdike', 'madarchod', 'behenchod'
 ];
 
+const LINK_PATTERNS = [
+  /https?:\/\/[^\s]+/i,
+  /www\.[^\s]+/i,
+  /\b[a-zA-Z0-9-]+\.(com|in|org|net|xyz|info|top|site|biz|co|app|apk|online|club|me|tv|cc|io)\b/i,
+  /\b(t\.me|telegram\.me|wa\.me|chat\.whatsapp\.com|bit\.ly|tinyurl\.com)\b/i
+];
+
 // Helper: AI Content Moderation for Posts, Comments & Media
 async function moderateContentWithAI(text: string, mediaFilePath?: string, mediaBase64?: string): Promise<{ approved: boolean; reason?: string }> {
   const combinedText = (text || '').toLowerCase();
   
-  // 1. Instant Keyword Safety Guard
+  // 1. Instant Keyword Safety Guard (Abusive & Adult content)
   const foundBadWord = EXPLICIT_KEYWORDS.find(word => combinedText.includes(word));
   if (foundBadWord) {
     return {
       approved: false,
-      reason: `⛔ AI Safety Guardrail: Inappropriate language or adult content keyword detected ("${foundBadWord}"). Nudity, adult imagery, and abusive text are strictly prohibited.`
+      reason: `⛔ AI Safety Guardrail: Inappropriate language or adult content keyword detected ("${foundBadWord}"). Nudity, pornography, and abusive language are strictly prohibited.`
     };
   }
 
-  // 2. Gemini 2.5 AI Multimodal & Text Content Analysis
+  // 2. External Link Guard (Routes posts with links to Admin Review)
+  const hasExternalLink = LINK_PATTERNS.some(pat => pat.test(combinedText));
+  if (hasExternalLink) {
+    return {
+      approved: false,
+      reason: `🔍 External Link Detected: External web addresses and links require Admin Safety Clearance before publishing.`
+    };
+  }
+
+  // 3. Optional Gemini AI Safety Guard (For images only - skip heavy video buffer reads)
   if (process.env.GEMINI_API_KEY) {
     try {
       const contents: any[] = [];
       
-      // Attach base64 image or file for visual inspection
+      // Attach base64 image or small photo for visual inspection
       if (mediaBase64 && mediaBase64.startsWith('data:image')) {
         const parts = mediaBase64.split(';base64,');
         const mimeType = parts[0].replace('data:', '') || 'image/jpeg';
@@ -436,48 +452,19 @@ async function moderateContentWithAI(text: string, mediaFilePath?: string, media
         contents.push({
           inlineData: { mimeType, data }
         });
-      } else if (mediaFilePath && fs.existsSync(mediaFilePath)) {
-        try {
-          const fileBuffer = fs.readFileSync(mediaFilePath);
-          const base64Data = fileBuffer.toString('base64');
-          const ext = path.extname(mediaFilePath).toLowerCase();
-          let mimeType = 'image/jpeg';
-          if (ext === '.png') mimeType = 'image/png';
-          else if (ext === '.webp') mimeType = 'image/webp';
-          else if (ext === '.gif') mimeType = 'image/gif';
-          else if (ext === '.mp4') mimeType = 'video/mp4';
-          else if (ext === '.webm') mimeType = 'video/webm';
-          else if (ext === '.mov') mimeType = 'video/mp4';
-          else if (ext === '.heic' || ext === '.heif') mimeType = 'image/heic';
-          else if (ext === '.pdf') mimeType = 'application/pdf';
-          
-          contents.push({
-            inlineData: { mimeType, data: base64Data }
-          });
-        } catch (e) {
-          console.warn('File read warning for AI check:', e);
-        }
       }
 
-      const promptText = `SYSTEM DIRECTIVE: You are the AI Content Security Moderator for "Vyapar Bridge" - An all-in-one B2B & B2C E-commerce Network connecting suppliers, dealers, IT services, and customers across India for ALL trades.
-
-CRITICAL POLICY ON B2B IT & COMMERCIAL CONTENT:
-- ALLOW (approved: true): 
-  1. Software solutions, IT agency services, website/app development, CRM, ERP, billing software, technology platforms, and B2B software listings.
-  2. Company logos, branding graphics, 3D metallic logos, badges, marketing posters (e.g., Vyapar Bridge coins, trade brand graphics).
-  3. Commercial products: Ceramic tiles, electronics, hardware, clothing, sanitaryware, showroom displays, wholesale goods, machinery.
-  4. Persons holding products, recording inside showrooms/factories/offices, or promoting commercial services.
-
-- REJECT (approved: false):
-  1. Casual personal selfies, vacation photos (e.g., standing on a boat, park, beach with no product or service context).
-  2. Explicit adult content, nudity, offensive language, scam/fraud schemes.
+      const promptText = `SYSTEM DIRECTIVE: You are the Content Security Moderator for "Vyapar Bridge".
+POLICY:
+- ALLOW (approved: true): All normal videos, reels, commercial posts, products, software solutions, showroom tours, user videos, personal business intros, marketing posts, trade discussions, and general media.
+- REJECT (approved: false): Explicit adult nudity/pornography, abusive hate speech/profanity, illegal gambling/scams, or dangerous unverified links.
 
 User's provided text: "${text || 'No text provided'}"
 
-Respond STRICTLY in raw JSON format (no markdown blocks, no backticks):
+Respond STRICTLY in raw JSON format:
 {"approved": true, "reason": "Approved"}
 OR
-{"approved": false, "reason": "⛔ AI Security Shield Flag: Non-B2B or questionable image. Forwarded to Admin Console for manual review."}`;
+{"approved": false, "reason": "⛔ Flagged: Questionable content detected. Sent to Admin Review."}`;
       contents.push(promptText);
 
       const ai = getAI();
@@ -489,7 +476,7 @@ OR
         try {
           let timeoutId: any;
           const timeoutPromise = new Promise<any>((resolve) => {
-            timeoutId = setTimeout(() => resolve(null), 10000);
+            timeoutId = setTimeout(() => resolve(null), 3000);
           });
 
           let aiPromise: Promise<any>;
