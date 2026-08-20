@@ -94,3 +94,69 @@ export function fileToDataURL(file: File | Blob): Promise<string> {
     reader.readAsDataURL(file);
   });
 }
+
+export async function generateVideoThumbnail(
+  fileOrUrl: File | Blob | string,
+  seekToSeconds = 0.5
+): Promise<string> {
+  return new Promise((resolve) => {
+    try {
+      const video = document.createElement('video');
+      video.muted = true;
+      video.playsInline = true;
+      video.crossOrigin = 'anonymous';
+
+      let src = typeof fileOrUrl === 'string' ? fileOrUrl : URL.createObjectURL(fileOrUrl);
+      video.src = src;
+
+      let resolved = false;
+
+      const captureFrame = () => {
+        if (resolved) return;
+        resolved = true;
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = video.videoWidth || 640;
+          canvas.height = video.videoHeight || 360;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const thumb = canvas.toDataURL('image/jpeg', 0.8);
+            if (typeof fileOrUrl !== 'string') URL.revokeObjectURL(src);
+            resolve(thumb);
+            return;
+          }
+        } catch (e) {}
+        if (typeof fileOrUrl !== 'string') URL.revokeObjectURL(src);
+        resolve('');
+      };
+
+      video.onloadeddata = () => {
+        try {
+          video.currentTime = Math.min(seekToSeconds, video.duration || 1);
+        } catch (e) {
+          captureFrame();
+        }
+      };
+
+      video.onseeked = captureFrame;
+      video.onerror = () => {
+        if (!resolved) {
+          resolved = true;
+          if (typeof fileOrUrl !== 'string') URL.revokeObjectURL(src);
+          resolve('');
+        }
+      };
+
+      setTimeout(() => {
+        if (!resolved) {
+          captureFrame();
+        }
+      }, 2000);
+
+      video.load();
+    } catch (e) {
+      resolve('');
+    }
+  });
+}

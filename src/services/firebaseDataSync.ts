@@ -117,22 +117,25 @@ export async function syncPostToFirestore(postData: any): Promise<boolean> {
   try {
     const postId = postData.id ? String(postData.id) : `post_${Date.now()}`;
     
-    // Ensure mediaUrl is a persistent cloud/data URL, not an ephemeral local /uploads link or blob URL
-    let resolvedMediaUrl = postData.mediaUrl || postData.persistentMediaUrl || '';
-    if (resolvedMediaUrl.startsWith('/uploads') || resolvedMediaUrl.startsWith('blob:')) {
+    // Ensure mediaUrl is a persistent cloud/data URL or valid media path (DO NOT wipe /uploads/ or base64)
+    let resolvedMediaUrl = postData.persistentMediaUrl || postData.mediaUrl || postData.fileDataUrl || postData.mediaBase64 || postData.thumbnailUrl || '';
+    if (resolvedMediaUrl.startsWith('blob:')) {
       resolvedMediaUrl = postData.persistentMediaUrl || postData.fileDataUrl || postData.mediaBase64 || postData.thumbnailUrl || '';
       if (resolvedMediaUrl.startsWith('blob:')) resolvedMediaUrl = '';
     }
 
-    let resolvedThumbnailUrl = postData.thumbnailUrl || resolvedMediaUrl || '';
-    if (resolvedThumbnailUrl.startsWith('blob:')) resolvedThumbnailUrl = '';
+    let resolvedThumbnailUrl = postData.thumbnailUrl || postData.persistentMediaUrl || resolvedMediaUrl || '';
+    if (resolvedThumbnailUrl.startsWith('blob:')) {
+      resolvedThumbnailUrl = postData.persistentMediaUrl || resolvedMediaUrl || '';
+      if (resolvedThumbnailUrl.startsWith('blob:')) resolvedThumbnailUrl = '';
+    }
 
     let cleanData = sanitizeForFirestore({
       ...postData,
       id: postId,
       mediaUrl: resolvedMediaUrl,
       thumbnailUrl: resolvedThumbnailUrl,
-      persistentMediaUrl: resolvedMediaUrl,
+      persistentMediaUrl: postData.persistentMediaUrl || resolvedMediaUrl,
       status: postData.status || 'approved',
       visibility: postData.visibility || 'public',
       updatedAt: Date.now(),
@@ -147,17 +150,16 @@ export async function syncPostToFirestore(postData: any): Promise<boolean> {
     delete cleanData.pendingReelFile;
 
     // FIRESTORE SAFEGUARD: Limit document size to < 500 KB (Firestore max limit is 1MB)
-    // NEVER put raw multi-megabyte data:video base64 strings into Firestore setDoc!
     if (cleanData.mediaUrl && cleanData.mediaUrl.startsWith('data:video')) {
       try {
         localStorage.setItem('vyapar_video_' + postId, cleanData.mediaUrl);
       } catch (e) {}
 
       if (cleanData.mediaUrl.length > 300000) {
-        console.warn(`⚠️ Video base64 payload is large (${cleanData.mediaUrl.length} bytes). Stripping raw video base64 for Firestore document limit...`);
+        console.warn(`⚠️ Video base64 payload is large (${cleanData.mediaUrl.length} bytes). Preserving poster image for Firestore document...`);
         let safeVideoThumb = cleanData.thumbnailUrl && cleanData.thumbnailUrl.startsWith('data:image') ? cleanData.thumbnailUrl : '';
-        if (safeVideoThumb.length > 300000) {
-          safeVideoThumb = await optimizeImageForPersistence(safeVideoThumb, 500, 500, 0.5);
+        if (!safeVideoThumb) {
+          safeVideoThumb = 'https://images.unsplash.com/photo-1615971677499-5467cbab01c0?auto=format&fit=crop&w=800&q=80';
         }
         cleanData.mediaUrl = safeVideoThumb;
         cleanData.persistentMediaUrl = safeVideoThumb;
@@ -167,6 +169,16 @@ export async function syncPostToFirestore(postData: any): Promise<boolean> {
       console.warn(`⚠️ Image base64 payload is large (${cleanData.mediaUrl.length} bytes). Optimizing image for Firestore...`);
       cleanData.mediaUrl = await optimizeImageForPersistence(cleanData.mediaUrl, 800, 800, 0.65);
       cleanData.thumbnailUrl = cleanData.mediaUrl;
+      cleanData.persistentMediaUrl = cleanData.mediaUrl;
+    }
+
+    if (!cleanData.mediaUrl || cleanData.mediaUrl.startsWith('blob:')) {
+      cleanData.mediaUrl = cleanData.thumbnailUrl || cleanData.persistentMediaUrl || 'https://images.unsplash.com/photo-1615971677499-5467cbab01c0?auto=format&fit=crop&w=800&q=80';
+    }
+    if (!cleanData.thumbnailUrl || cleanData.thumbnailUrl.startsWith('blob:')) {
+      cleanData.thumbnailUrl = cleanData.mediaUrl;
+    }
+    if (!cleanData.persistentMediaUrl || cleanData.persistentMediaUrl.startsWith('blob:')) {
       cleanData.persistentMediaUrl = cleanData.mediaUrl;
     }
 
@@ -343,14 +355,20 @@ export function subscribeToPostsFromFirestore(callback: (posts: any[]) => void):
           const existing = postsMap.get(String(docSnap.id)) || {};
           const localStoredVideo = localStorage.getItem('vyapar_video_' + docSnap.id);
           const existingMedia = existing.mediaUrl || existing.persistentMediaUrl || existing.videoUrl || localStoredVideo;
-          const incomingMedia = data.mediaUrl || data.persistentMediaUrl || data.videoUrl;
+          const incomingMedia = data.mediaUrl || data.persistentMediaUrl || data.videoUrl || data.thumbnailUrl;
 
-          let finalMedia = incomingMedia;
-          if ((!finalMedia || finalMedia === '' || (finalMedia.startsWith('data:image') && (existing.type === 'video' || data.type === 'video'))) && existingMedia && (existingMedia.startsWith('data:video') || existingMedia.includes('/uploads/') || existingMedia.match(/\.(mp4|webm|mov|m4v|mkv)(\?.*)?$/i))) {
+          let finalMedia = incomingMedia || existingMedia || '';
+          if ((!finalMedia || finalMedia === '' || (finalMedia.startsWith('data:image') && (existing.type === 'video' || data.type === 'video'))) && existingMedia && (existingMedia.startsWith('data:video') || existingMedia.includes('/uploads/') || existingMedia.match(/\.(mp4|webm|mov|m4v|mkv|3gp)(\?.*)?$/i))) {
             finalMedia = existingMedia;
           }
 
-          const merged = { ...existing, ...data, id: docSnap.id, mediaUrl: finalMedia || existingMedia || data.mediaUrl || '' };
+          const merged = { 
+            ...existing, 
+            ...data, 
+            id: docSnap.id, 
+            mediaUrl: finalMedia || existingMedia || data.mediaUrl || data.thumbnailUrl || '',
+            thumbnailUrl: data.thumbnailUrl || existing.thumbnailUrl || finalMedia || ''
+          };
 
           // Clean up blob URLs if present
           if (merged.mediaUrl && merged.mediaUrl.startsWith('blob:')) {
@@ -359,6 +377,11 @@ export function subscribeToPostsFromFirestore(callback: (posts: any[]) => void):
           }
           if (merged.thumbnailUrl && merged.thumbnailUrl.startsWith('blob:')) {
             merged.thumbnailUrl = merged.mediaUrl || '';
+          }
+
+          // Fallback image if mediaUrl is missing on an image/video post
+          if (!merged.mediaUrl && (merged.type === 'image' || merged.type === 'video')) {
+            merged.mediaUrl = merged.thumbnailUrl || 'https://images.unsplash.com/photo-1615971677499-5467cbab01c0?auto=format&fit=crop&w=800&q=80';
           }
 
           merged.isLiked = isPostLikedByUser(merged, activeUserId);

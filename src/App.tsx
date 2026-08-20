@@ -27,7 +27,7 @@ import { DEFAULT_B2B_POSTS } from './data/defaultPosts';
 import { fetchPostsFromFirestore, syncPostToFirestore, subscribeToPostsFromFirestore, subscribeToUsersFromFirestore, subscribeToPaymentsFromFirestore, submitPaymentUTRToFirestore, getAdminSettingsFromFirestore, saveAdminSettingsToFirestore, subscribeToAdminSettingsFromFirestore, saveBrandAdsToFirestore, subscribeToBrandAdsFromFirestore, likePostInFirestore, savePostInFirestore, addCommentToFirestore, fetchCommentsFromFirestore, followUserInFirestore, recordViewInFirestore, recordShareInFirestore, authenticateUserInFirestore, blockUserInFirestore, markPostNotInterestedInFirestore, getUsersBlockedAndNotInterestedFromFirestore, clearDefaultDataFromFirestore, deleteUserFromFirestore, deletePostFromFirestore, syncUserToFirestore, fetchAllUsersFromFirestore, sanitizeForFirestore, updateUserVerificationInFirestore, subscribeToPlatformStatsFromFirestore, startPresenceHeartbeat, updateUserPresence, isUserActiveOnline, getUserLastActiveFormatted } from './services/firebaseDataSync';
 import { ConnectUserModal } from './components/ConnectUserModal';
 import { suggestHashtagsWithAI } from './services/aiService';
-import { optimizeImageForPersistence, fileToDataURL } from './utils/imageOptimizer';
+import { optimizeImageForPersistence, fileToDataURL, generateVideoThumbnail } from './utils/imageOptimizer';
 import { decodeUpiIdFromImageFile, extractUpiIdFromPayload } from './utils/qrUpiDecoder';
 import { moderateContentUniversally } from './services/moderationService';
 import { playBubblePopSound } from './utils/audioEffects';
@@ -3253,7 +3253,7 @@ function PostItem({
       </div>
       
       {/* Post Image/Video (Full Width) */}
-      {mediaSrc && (
+      {mediaSrc ? (
         <div 
           className="relative w-full bg-black min-h-[350px] max-h-[80vh] flex items-center justify-center overflow-hidden cursor-pointer select-none border-y border-slate-50 dark:border-zinc-900"
           onDoubleClick={handleDoubleClickImage}
@@ -3293,6 +3293,14 @@ function PostItem({
               </div>
             </div>
           )}
+        </div>
+      ) : (
+        <div className="relative w-full bg-slate-900 min-h-[260px] max-h-[80vh] flex items-center justify-center overflow-hidden border-y border-slate-800">
+          <img 
+            src="https://images.unsplash.com/photo-1615971677499-5467cbab01c0?auto=format&fit=crop&w=800&q=80" 
+            alt="Tiles Business Post" 
+            className="w-full h-full object-cover opacity-90" 
+          />
         </div>
       )}
       
@@ -3382,8 +3390,10 @@ function PostItem({
         
         {/* Caption */}
         <div className="text-sm text-black dark:text-zinc-50 whitespace-pre-wrap leading-snug">
-          <span className="font-bold mr-2 cursor-pointer hover:underline decoration-blue-500 underline-offset-2">{post.user?.name}</span>
-          {post.content}
+          <span className="font-bold mr-2 cursor-pointer hover:underline decoration-blue-500 underline-offset-2">
+            {post.user?.name || post.userName || 'Verified Member'}
+          </span>
+          {post.content || post.description || post.title || post.text || 'VyaparBridge Business Feed Post'}
         </div>
 
         {/* 100% Public Star Rating & Feedback (No Login Needed) */}
@@ -4219,19 +4229,22 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
       setUploadProgress(currentPct);
     }, 180);
 
-    // Convert file to resilient persistent Data URL
+    // Convert file to resilient persistent Data URL & Thumbnail
     let persistentMediaUrl = '';
+    let videoThumbnailUrl = '';
     try {
       if (!isVideoFile) {
         persistentMediaUrl = await optimizeImageForPersistence(pendingReelFile);
+        videoThumbnailUrl = persistentMediaUrl;
       } else {
-        persistentMediaUrl = await fileToDataURL(pendingReelFile);
+        videoThumbnailUrl = await generateVideoThumbnail(pendingReelFile);
+        persistentMediaUrl = videoThumbnailUrl;
       }
     } catch (e) {
       console.warn('Reel file conversion note:', e);
     }
 
-    const localMediaUrl = persistentMediaUrl || reelPreviewUrl || (pendingReelFile ? URL.createObjectURL(pendingReelFile) : '');
+    const localMediaUrl = persistentMediaUrl || videoThumbnailUrl || reelPreviewUrl || (pendingReelFile ? URL.createObjectURL(pendingReelFile) : '');
 
     const authorName = user?.name || localStorage.getItem('vyapar_user_name') || 'Vyapar Member';
     const authorAvatar = user?.avatarUrl || user?.avatar || localStorage.getItem('vyapar_user_avatar') || BRAND_LOGO_SRC;
@@ -4264,8 +4277,8 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
       hashtags: '#reel #b2b #tiles #products #story',
       type: mediaType,
       mediaUrl: localMediaUrl,
-      thumbnailUrl: localMediaUrl,
-      persistentMediaUrl: localMediaUrl,
+      thumbnailUrl: videoThumbnailUrl || localMediaUrl,
+      persistentMediaUrl: persistentMediaUrl || videoThumbnailUrl || localMediaUrl,
       category: 'Commercial Wholesale',
       visibility: 'public',
       status: 'approved',
@@ -5219,6 +5232,9 @@ function CreatePost({ user }: { user: any }) {
             if (!isVideo && !isPdf) {
               persistentMediaUrl = await optimizeImageForPersistence(file);
               persistentThumbnailUrl = persistentMediaUrl;
+            } else if (isVideo) {
+              persistentThumbnailUrl = await generateVideoThumbnail(file);
+              persistentMediaUrl = persistentThumbnailUrl;
             } else {
               persistentMediaUrl = filePreview && !filePreview.startsWith('blob:') ? filePreview : '';
             }
@@ -11372,17 +11388,20 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
 
     // Convert file to Base64 Data URL for persistent sync
     let persistentMediaUrl = '';
+    let videoThumbnailUrl = '';
     try {
       if (!isVideoFile) {
         persistentMediaUrl = await optimizeImageForPersistence(pendingFile);
+        videoThumbnailUrl = persistentMediaUrl;
       } else {
-        persistentMediaUrl = await fileToDataURL(pendingFile);
+        videoThumbnailUrl = await generateVideoThumbnail(pendingFile);
+        persistentMediaUrl = videoThumbnailUrl;
       }
     } catch (e) {
       console.warn('Reel file conversion note:', e);
     }
 
-    const localMediaUrl = persistentMediaUrl || previewUrl || (pendingFile ? URL.createObjectURL(pendingFile) : '');
+    const localMediaUrl = persistentMediaUrl || videoThumbnailUrl || previewUrl || (pendingFile ? URL.createObjectURL(pendingFile) : '');
 
     const authorName = activeUser?.name || 'Vyapar Member';
     const authorAvatar = activeUser?.avatarUrl || activeUser?.avatar || BRAND_LOGO_SRC;
@@ -13431,10 +13450,15 @@ function ProfilePage({
     (async () => {
       try {
         let fileDataUrl = '';
+        let videoThumbUrl = '';
         if (postFile) {
           try {
             if (!isVideo && !isPdf) {
               fileDataUrl = await optimizeImageForPersistence(postFile);
+              videoThumbUrl = fileDataUrl;
+            } else if (isVideo) {
+              videoThumbUrl = await generateVideoThumbnail(postFile);
+              fileDataUrl = videoThumbUrl;
             } else {
               fileDataUrl = postFilePreview && !postFilePreview.startsWith('blob:') ? postFilePreview : '';
             }
@@ -13443,7 +13467,7 @@ function ProfilePage({
           }
         }
 
-        const resolvedProfileMedia = fileDataUrl || (postFilePreview && !postFilePreview.startsWith('blob:') ? postFilePreview : '');
+        const resolvedProfileMedia = fileDataUrl || videoThumbUrl || (postFilePreview && !postFilePreview.startsWith('blob:') ? postFilePreview : '');
 
         const formData = new FormData();
         formData.append('title', postTitle);
