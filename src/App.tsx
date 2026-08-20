@@ -2,6 +2,10 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { BrowserRouter, Routes, Route, Link, useNavigate, useLocation, useParams } from 'react-router-dom';
 import { Facebook, Twitter, Instagram, Home, Shield, Moon, Sun, PlusSquare, MessageCircle, MessageSquare, Menu, LogOut, LogIn, Check, X, XCircle, Search, Compass, Film, Heart, Calculator, Bookmark, Info, MoreHorizontal, Image, ImageIcon, ImagePlus, Eye, EyeOff, Camera, Upload, Trash2, Plus, ShieldCheck, Sparkles, QrCode, CheckCircle, CheckCircle2, Award, Smile, Volume2, VolumeX, ChevronUp, ChevronDown, ArrowLeft, ChevronLeft, ChevronRight, UserPlus, UserCheck, Share2, Phone, Mail, Globe, Building2, Store, MapPin, Locate, Navigation, Tag, Filter, ShieldAlert, UserX, Lock, Key, Clock, FileText, FileCheck, Maximize2, Crop, Loader2, Send, BarChart2, Users, Map as MapIcon, Hash, Pencil, Rocket, ExternalLink, Star, Scale, Video, TrendingUp, ClipboardList, Bell, CreditCard, Calendar, Copy, RefreshCw, AlertTriangle } from 'lucide-react';
 import toast, { Toaster } from 'react-hot-toast';
+
+if (typeof (toast as any).info !== 'function') {
+  (toast as any).info = (msg: string | React.ReactNode, opts?: any) => toast(msg, { icon: 'ℹ️', ...opts });
+}
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { motion, AnimatePresence } from 'motion/react';
@@ -77,13 +81,22 @@ export function filterOutHiddenContent(items: any[], userId?: string | number) {
   const blockedSet = new Set(blockedUsers.map(String));
   const notInterestedSet = new Set(notInterestedPosts.map(String));
 
+  let deletedPostsSet = new Set<string>();
+  try {
+    const delStr = localStorage.getItem('VyaparBridge_deleted_posts');
+    if (delStr) {
+      const arr = JSON.parse(delStr);
+      if (Array.isArray(arr)) deletedPostsSet = new Set(arr.map(String));
+    }
+  } catch (e) {}
+
   return items.filter(item => {
     if (!item) return false;
     const itemId = String(item.id || '');
     const itemUserId = String(item.userId || item.user?.id || item.actorId || '');
 
-    if (item.description === 'My tree' || item.title === 'Tree' || itemId === 'post_admin_1787027595927' || itemId === 'post_admin_1787027350660') return false;
-
+    if (item.status === 'rejected') return false;
+    if (itemId && deletedPostsSet.has(itemId)) return false;
     if (itemId && notInterestedSet.has(itemId)) return false;
     if (itemUserId && blockedSet.has(itemUserId)) return false;
     return true;
@@ -5832,8 +5845,73 @@ function AdminPanel({ user }: { user: any }) {
   const [activeTab, setActiveTab] = useState<'posts' | 'reports' | 'music' | 'users' | 'payments' | 'ai_pending'>('posts');
   const [userToDelete, setUserToDelete] = useState<any>(null);
   const [isDeletingUser, setIsDeletingUser] = useState(false);
+  const [selectedPostIds, setSelectedPostIds] = useState<string[]>([]);
 
   const pendingModerationPosts = posts.filter(p => p.pending_admin_approval || p.status === 'pending' || p.status === 'pending_admin_approval');
+
+  const toggleSelectAll = (targetList: any[]) => {
+    const targetIds = targetList.map(p => String(p.id));
+    const allSelected = targetIds.length > 0 && targetIds.every(id => selectedPostIds.includes(id));
+    if (allSelected) {
+      setSelectedPostIds(prev => prev.filter(id => !targetIds.includes(id)));
+    } else {
+      setSelectedPostIds(prev => Array.from(new Set([...prev, ...targetIds])));
+    }
+  };
+
+  const toggleSelectOne = (id: string) => {
+    const pId = String(id);
+    setSelectedPostIds(prev => prev.includes(pId) ? prev.filter(x => x !== pId) : [...prev, pId]);
+  };
+
+  const handleBulkApprove = async (targetList: any[]) => {
+    const idsToProcess = selectedPostIds.filter(id => targetList.some(p => String(p.id) === String(id)));
+    if (idsToProcess.length === 0) return toast.error('Pehle kam se kam ek item select karein!');
+    
+    toast.info(`Approving ${idsToProcess.length} items...`);
+    for (const id of idsToProcess) {
+      const pId = String(id);
+      try { await handleStatusUpdate(pId, 'approved'); } catch (e) {}
+      try { await setDoc(doc(firestoreDb, 'posts', pId), { status: 'approved', pending_admin_approval: false }, { merge: true }); } catch (e) {}
+    }
+
+    setPosts(prev => prev.map(p => idsToProcess.includes(String(p.id)) ? { ...p, status: 'approved', pending_admin_approval: false } : p));
+    setSelectedPostIds(prev => prev.filter(id => !idsToProcess.includes(id)));
+    toast.success(`✅ ${idsToProcess.length} items approved & released!`);
+  };
+
+  const handleBulkDelete = async (targetList: any[]) => {
+    const idsToProcess = selectedPostIds.filter(id => targetList.some(p => String(p.id) === String(id)));
+    if (idsToProcess.length === 0) return toast.error('Pehle kam se kam ek item select karein!');
+
+    toast.info(`Deleting ${idsToProcess.length} items permanently...`);
+
+    // Instantly reflect deletion in UI
+    setPosts(prev => prev.filter(p => !idsToProcess.includes(String(p.id))));
+    setSelectedPostIds(prev => prev.filter(id => !idsToProcess.includes(id)));
+
+    // Track deleted IDs in local storage
+    try {
+      const delStr = localStorage.getItem('VyaparBridge_deleted_posts') || '[]';
+      const delList = JSON.parse(delStr);
+      if (Array.isArray(delList)) {
+        idsToProcess.forEach(id => {
+          if (!delList.includes(String(id))) delList.push(String(id));
+        });
+        localStorage.setItem('VyaparBridge_deleted_posts', JSON.stringify(delList.slice(-500)));
+      }
+    } catch (e) {}
+
+    // Async delete from Firestore and Backend
+    for (const id of idsToProcess) {
+      const pId = String(id);
+      try { await deletePostFromFirestore(pId); } catch (e) {}
+      try { await fetch(`/api/posts/${pId}`, { method: 'DELETE' }); } catch (e) {}
+      try { await setDoc(doc(firestoreDb, 'posts', pId), { status: 'rejected', pending_admin_approval: false }, { merge: true }); } catch (e) {}
+    }
+
+    toast.success(`💥 ${idsToProcess.length} items permanently deleted everywhere!`);
+  };
 
   const fetchUsers = async () => {
     let fbUsers: any[] = [];
@@ -5955,14 +6033,35 @@ function AdminPanel({ user }: { user: any }) {
     }
   };
 
-  const handleStatusUpdate = async (id: string, status: string) => {
-    await fetch(`/api/admin/posts/${id}/status`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status })
-    });
-    setPosts(posts.map(p => p.id === id ? { ...p, status } : p));
-    toast.success(`Post marked as ${status}`);
+  const handleStatusUpdate = async (id: string, status: statusKey | string) => {
+    const pId = String(id);
+    try {
+      await fetch(`/api/admin/posts/${pId}/status`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status })
+      });
+    } catch (e) {}
+
+    try {
+      await setDoc(doc(firestoreDb, 'posts', pId), { status, pending_admin_approval: status !== 'approved' }, { merge: true });
+    } catch (e) {}
+
+    if (status === 'rejected') {
+      try {
+        const delStr = localStorage.getItem('VyaparBridge_deleted_posts') || '[]';
+        const delList = JSON.parse(delStr);
+        if (Array.isArray(delList) && !delList.includes(pId)) {
+          delList.push(pId);
+          localStorage.setItem('VyaparBridge_deleted_posts', JSON.stringify(delList.slice(-200)));
+        }
+      } catch (e) {}
+      setPosts(prev => prev.filter(p => String(p.id) !== pId));
+      toast.success('❌ Post rejected & removed permanently from all feeds.');
+    } else {
+      setPosts(prev => prev.map(p => String(p.id) === pId ? { ...p, status, pending_admin_approval: false } : p));
+      toast.success(`✅ Post status updated to ${status}`);
+    }
   };
 
   const handleDismissReport = async (reportId: string) => {
@@ -6084,6 +6183,50 @@ function AdminPanel({ user }: { user: any }) {
             </p>
           </div>
 
+          {pendingModerationPosts.length > 0 && (
+            <div className="bg-slate-100 dark:bg-zinc-800/80 p-3 rounded-2xl flex flex-wrap items-center justify-between gap-3 border border-slate-200 dark:border-zinc-700">
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => toggleSelectAll(pendingModerationPosts)}
+                  className="px-3.5 py-2 bg-white dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-xl text-xs font-bold text-black dark:text-white flex items-center gap-2 hover:bg-slate-50 dark:hover:bg-zinc-800 cursor-pointer transition-all shadow-sm"
+                >
+                  <input
+                    type="checkbox"
+                    checked={pendingModerationPosts.length > 0 && pendingModerationPosts.every(p => selectedPostIds.includes(String(p.id)))}
+                    onChange={() => toggleSelectAll(pendingModerationPosts)}
+                    className="w-4 h-4 rounded text-blue-600 focus:ring-0 cursor-pointer pointer-events-none"
+                  />
+                  <span>Select All ({pendingModerationPosts.length})</span>
+                </button>
+                <span className="text-xs font-bold text-slate-700 dark:text-zinc-200 bg-white dark:bg-zinc-900 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-zinc-800">
+                  {selectedPostIds.filter(id => pendingModerationPosts.some(p => String(p.id) === id)).length} Selected
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleBulkApprove(pendingModerationPosts)}
+                  disabled={selectedPostIds.filter(id => pendingModerationPosts.some(p => String(p.id) === id)).length === 0}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white text-xs font-black rounded-xl flex items-center gap-1.5 cursor-pointer shadow-sm transition-all disabled:cursor-not-allowed"
+                >
+                  <CheckCircle className="w-4 h-4" />
+                  <span>Approve Selected</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleBulkDelete(pendingModerationPosts)}
+                  disabled={selectedPostIds.filter(id => pendingModerationPosts.some(p => String(p.id) === id)).length === 0}
+                  className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:opacity-40 text-white text-xs font-black rounded-xl flex items-center gap-1.5 cursor-pointer shadow-sm transition-all disabled:cursor-not-allowed"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  <span>Delete Selected</span>
+                </button>
+              </div>
+            </div>
+          )}
+
           {pendingModerationPosts.length === 0 ? (
             <div className="text-center py-12 bg-white dark:bg-zinc-900 rounded-2xl border border-slate-200 dark:border-zinc-800">
               <CheckCircle className="w-10 h-10 text-emerald-500 mx-auto mb-2" />
@@ -6093,10 +6236,16 @@ function AdminPanel({ user }: { user: any }) {
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {pendingModerationPosts.map(p => (
-                <div key={p.id} className="bg-white dark:bg-zinc-900 border border-amber-300 dark:border-amber-800/60 rounded-2xl p-4 shadow-md flex flex-col justify-between">
+                <div key={p.id} className={cn("bg-white dark:bg-zinc-900 border rounded-2xl p-4 shadow-md flex flex-col justify-between transition-all", selectedPostIds.includes(String(p.id)) ? "border-blue-500 dark:border-blue-500 ring-2 ring-blue-500/20" : "border-amber-300 dark:border-amber-800/60")}>
                   <div>
                     <div className="flex items-center justify-between mb-2">
                       <div className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={selectedPostIds.includes(String(p.id))}
+                          onChange={() => toggleSelectOne(p.id)}
+                          className="w-4 h-4 rounded text-blue-600 focus:ring-0 cursor-pointer shrink-0"
+                        />
                         <div className="w-8 h-8 rounded-full bg-slate-200 dark:bg-zinc-800 flex items-center justify-center font-bold text-xs overflow-hidden">
                           {p.user?.avatarUrl ? <img src={p.user.avatarUrl} alt="" className="w-full h-full object-cover" /> : (p.userName?.charAt(0) || 'U')}
                         </div>
@@ -6450,18 +6599,70 @@ function AdminPanel({ user }: { user: any }) {
 
       {activeTab === 'posts' && (
         <div className="space-y-4">
+          {posts.length > 0 && (
+            <div className="bg-slate-100 dark:bg-zinc-800/80 p-3 rounded-2xl flex flex-wrap items-center justify-between gap-3 border border-slate-200 dark:border-zinc-700">
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => toggleSelectAll(posts)}
+                  className="px-3.5 py-2 bg-white dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-xl text-xs font-bold text-black dark:text-white flex items-center gap-2 hover:bg-slate-50 dark:hover:bg-zinc-800 cursor-pointer transition-all shadow-sm"
+                >
+                  <input
+                    type="checkbox"
+                    checked={posts.length > 0 && posts.every(p => selectedPostIds.includes(String(p.id)))}
+                    onChange={() => toggleSelectAll(posts)}
+                    className="w-4 h-4 rounded text-blue-600 focus:ring-0 cursor-pointer pointer-events-none"
+                  />
+                  <span>Select All ({posts.length})</span>
+                </button>
+                <span className="text-xs font-bold text-slate-700 dark:text-zinc-200 bg-white dark:bg-zinc-900 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-zinc-800">
+                  {selectedPostIds.filter(id => posts.some(p => String(p.id) === id)).length} Selected
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleBulkApprove(posts)}
+                  disabled={selectedPostIds.filter(id => posts.some(p => String(p.id) === id)).length === 0}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white text-xs font-black rounded-xl flex items-center gap-1.5 cursor-pointer shadow-sm transition-all disabled:cursor-not-allowed"
+                >
+                  <CheckCircle className="w-4 h-4" />
+                  <span>Approve Selected</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleBulkDelete(posts)}
+                  disabled={selectedPostIds.filter(id => posts.some(p => String(p.id) === id)).length === 0}
+                  className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:opacity-40 text-white text-xs font-black rounded-xl flex items-center gap-1.5 cursor-pointer shadow-sm transition-all disabled:cursor-not-allowed"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  <span>Delete Selected</span>
+                </button>
+              </div>
+            </div>
+          )}
+
           {posts.map((post, i) => (
-            <div key={post.id || `post-${i}`} className="bg-white dark:bg-zinc-900 rounded-2xl border border-slate-200 dark:border-zinc-800 p-4 shadow-sm flex flex-col md:flex-row gap-4">
-              <div className="w-full md:w-48 h-48 bg-slate-100 dark:bg-zinc-950 rounded-xl overflow-hidden shrink-0 flex items-center justify-center">
-                {post.mediaUrl && post.mediaUrl.trim() !== '' ? (
-                  post.type === 'video' || post.mediaUrl.match(/\.(mp4|webm|mov|m4v)(\?.*)?$/i) ? (
-                    <video preload="auto" src={post.mediaUrl} poster={post.thumbnailUrl} className="w-full h-full object-cover transform-gpu will-change-transform" />
+            <div key={post.id || `post-${i}`} className={cn("bg-white dark:bg-zinc-900 rounded-2xl border p-4 shadow-sm flex flex-col md:flex-row gap-4 transition-all", selectedPostIds.includes(String(post.id)) ? "border-blue-500 dark:border-blue-500 ring-2 ring-blue-500/20" : "border-slate-200 dark:border-zinc-800")}>
+              <div className="flex items-start gap-3">
+                <input
+                  type="checkbox"
+                  checked={selectedPostIds.includes(String(post.id))}
+                  onChange={() => toggleSelectOne(post.id)}
+                  className="w-4 h-4 rounded text-blue-600 focus:ring-0 cursor-pointer mt-2 shrink-0"
+                />
+                <div className="w-full md:w-48 h-48 bg-slate-100 dark:bg-zinc-950 rounded-xl overflow-hidden shrink-0 flex items-center justify-center">
+                  {post.mediaUrl && post.mediaUrl.trim() !== '' ? (
+                    post.type === 'video' || post.mediaUrl.match(/\.(mp4|webm|mov|m4v)(\?.*)?$/i) ? (
+                      <video preload="auto" src={post.mediaUrl} poster={post.thumbnailUrl} className="w-full h-full object-cover transform-gpu will-change-transform" />
+                    ) : (
+                      <img src={post.mediaUrl} alt="media" className="w-full h-full object-cover" />
+                    )
                   ) : (
-                    <img src={post.mediaUrl} alt="media" className="w-full h-full object-cover" />
-                  )
-                ) : (
-                  <div className="text-slate-500 dark:text-zinc-400 text-xs font-bold">Text Post</div>
-                )}
+                    <div className="text-slate-500 dark:text-zinc-400 text-xs font-bold">Text Post</div>
+                  )}
+                </div>
               </div>
               
               <div className="flex-1 flex flex-col">

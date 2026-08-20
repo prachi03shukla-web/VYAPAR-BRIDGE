@@ -308,9 +308,21 @@ export async function fetchPostsFromFirestore(): Promise<any[]> {
     }
   }
 
+  let deletedPostsSet = new Set<string>();
+  try {
+    const delStr = localStorage.getItem('VyaparBridge_deleted_posts');
+    if (delStr) {
+      const arr = JSON.parse(delStr);
+      if (Array.isArray(arr)) deletedPostsSet = new Set(arr.map(String));
+    }
+  } catch (e) {}
+
   const result = Array.from(postsMap.values())
     .filter(p => {
       if (!p) return false;
+      const pId = String(p.id);
+      if (deletedPostsSet.has(pId)) return false;
+      if (p.status === 'rejected') return false;
       const media = String(p.mediaUrl || p.thumbnailUrl || '');
       if (media.startsWith('blob:')) return false;
       if (p.description === 'My tree' || p.title === 'Tree' || p.id === 'post_admin_1787027595927' || p.id === 'post_admin_1787027350660') return false;
@@ -394,9 +406,21 @@ export function subscribeToPostsFromFirestore(callback: (posts: any[]) => void):
         }
       });
 
+      let deletedPostsSet = new Set<string>();
+      try {
+        const delStr = localStorage.getItem('VyaparBridge_deleted_posts');
+        if (delStr) {
+          const arr = JSON.parse(delStr);
+          if (Array.isArray(arr)) deletedPostsSet = new Set(arr.map(String));
+        }
+      } catch (e) {}
+
       const result = Array.from(postsMap.values())
         .filter(p => {
           if (!p) return false;
+          const pId = String(p.id);
+          if (deletedPostsSet.has(pId)) return false;
+          if (p.status === 'rejected') return false;
           const media = String(p.mediaUrl || p.thumbnailUrl || '');
           if (media.startsWith('blob:')) return false;
           if (p.description === 'My tree' || p.title === 'Tree' || p.id === 'post_admin_1787027595927' || p.id === 'post_admin_1787027350660') return false;
@@ -1383,41 +1407,43 @@ export async function submitPlatformRatingToFirestore(ratingData: {
 
 export async function clearDefaultDataFromFirestore() {
   try {
-    // Delete default and dummy posts from Firestore
-    const defaultPostIds = [
-      'post_b2b_101', 'post_b2b_102', 'post_b2b_103', 'post_b2b_104',
-      'post_1786913295313', 'reel_1786970917881', '1786915808301', '1786961789782', 'reel_1786946107574',
-      'post_admin_1787027595927', 'post_admin_1787027350660'
-    ];
-    for (const pId of defaultPostIds) {
-      try { await deleteDoc(doc(db, 'posts', pId)); } catch (e) {}
-    }
-
-    // Scan posts collection and remove any posts with blob: URLs or test descriptions
+    // 1. Delete ALL posts from Firestore
     try {
       const snap = await getDocs(collection(db, 'posts'));
       for (const d of snap.docs) {
-        const data = d.data();
-        if (
-          d.id.startsWith('post_b2b_') ||
-          (data.mediaUrl && String(data.mediaUrl).startsWith('blob:')) ||
-          data.description === 'My tree' ||
-          data.title === 'Tree' ||
-          data.title === 'Tile'
-        ) {
-          try { await deleteDoc(doc(db, 'posts', d.id)); } catch (e) {}
+        try { await deleteDoc(doc(db, 'posts', d.id)); } catch (e) {}
+      }
+    } catch (e) {}
+
+    // 2. Delete ALL non-admin users from Firestore
+    try {
+      const snap = await getDocs(collection(db, 'users'));
+      for (const d of snap.docs) {
+        const u = d.data();
+        if (u.role !== 'admin' && String(d.id) !== '1' && String(u.id) !== '1') {
+          try { await deleteDoc(doc(db, 'users', d.id)); } catch (e) {}
         }
       }
     } catch (e) {}
 
-    // Delete default users and dummy users from Firestore
-    const defaultUserIds = [
-      'factory_balaji_1', 'dealer_apex_2', 'factory_somany_style_3', 'factory_royal_ceramic_4',
-      'usr_1786909912788_ey47m', 'admin_manit_1', 'undefined'
+    // 3. Clear all browser localStorage caches
+    const keysToRemove = [
+      'tileance_posts_cache',
+      'VyaparBridge_posts_cache',
+      'local_posts_cache',
+      'tileance_users_cache',
+      'tileance_admin_settings_cache',
+      'tileance_brand_ads_cache',
+      'vyapar_liked_posts',
+      'vyapar_saved_posts',
+      'VyaparBridge_deleted_posts',
+      'VyaparBridge_blocked_users_guest',
+      'VyaparBridge_not_interested_guest'
     ];
-    for (const uId of defaultUserIds) {
-      try { await deleteDoc(doc(db, 'users', uId)); } catch (e) {}
-    }
+    keysToRemove.forEach(k => {
+      try { localStorage.removeItem(k); } catch (e) {}
+    });
+
     return true;
   } catch (err) {
     console.warn('Firestore clearDefaultData note:', err);

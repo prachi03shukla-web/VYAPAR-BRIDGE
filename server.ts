@@ -73,37 +73,35 @@ async function uploadToFirebaseOrLocal(file: Express.Multer.File): Promise<strin
       const usersSnap = await getDocs(collection(firestoreDb, 'users'));
       if (!usersSnap.empty) {
         const fbUsers = usersSnap.docs.map(d => ({ ...d.data(), id: d.id }));
-        const existingUserIds = new Set(db.users.map(u => String(u.id)));
+        const fbUserMap = new Map(fbUsers.map(u => [String(u.id), u]));
+        db.users = db.users.filter(u => u.role === 'admin' || String(u.id) === '1' || fbUserMap.has(String(u.id)));
         for (const u of fbUsers) {
-          if (!existingUserIds.has(String(u.id))) {
-            db.users.push(u);
-          } else {
-             const idx = db.users.findIndex(ex => String(ex.id) === String(u.id));
-             if (idx !== -1) db.users[idx] = { ...db.users[idx], ...u };
-          }
+          const idx = db.users.findIndex(ex => String(ex.id) === String(u.id));
+          if (idx !== -1) db.users[idx] = { ...db.users[idx], ...u };
+          else db.users.push(u);
         }
-        console.log(`🔄 Synced ${fbUsers.length} users from Firestore`);
       }
 
       const postsSnap = await getDocs(collection(firestoreDb, 'posts'));
-      if (!postsSnap.empty) {
-        const fbPosts = postsSnap.docs.map(d => ({ ...d.data(), id: d.id }));
-        const existingPostIds = new Set(db.posts.map(p => String(p.id)));
-        for (const p of fbPosts) {
-          if (!existingPostIds.has(String(p.id))) {
-            db.posts.push(p);
-          } else {
-            const idx = db.posts.findIndex(ex => String(ex.id) === String(p.id));
-            if (idx !== -1) db.posts[idx] = { ...db.posts[idx], ...p };
-          }
+      const fbPosts = postsSnap.docs.map(d => ({ ...d.data(), id: d.id }));
+      const fbPostIds = new Set(fbPosts.map(p => String(p.id)));
+      
+      const now = Date.now();
+      db.posts = db.posts.filter(p => fbPostIds.has(String(p.id)) || (p.createdAt && (now - new Date(p.createdAt).getTime()) < 30000));
+      
+      for (const p of fbPosts) {
+        const idx = db.posts.findIndex(ex => String(ex.id) === String(p.id));
+        if (idx !== -1) {
+          db.posts[idx] = { ...db.posts[idx], ...p };
+        } else {
+          db.posts.push(p);
         }
-        db.posts.sort((a, b) => {
-          const timeA = typeof a.createdAt === 'number' ? a.createdAt : new Date(a.createdAt || 0).getTime();
-          const timeB = typeof b.createdAt === 'number' ? b.createdAt : new Date(b.createdAt || 0).getTime();
-          return timeB - timeA;
-        });
-        console.log(`🔄 Synced ${fbPosts.length} posts from Firestore`);
       }
+      db.posts.sort((a, b) => {
+        const timeA = typeof a.createdAt === 'number' ? a.createdAt : new Date(a.createdAt || 0).getTime();
+        const timeB = typeof b.createdAt === 'number' ? b.createdAt : new Date(b.createdAt || 0).getTime();
+        return timeB - timeA;
+      });
 
       const adsSnap = await getDocs(collection(firestoreDb, 'advertisements'));
       if (!adsSnap.empty) {
@@ -119,14 +117,11 @@ async function uploadToFirebaseOrLocal(file: Express.Multer.File): Promise<strin
              if (idx !== -1) db.adminSettings.brandAdsList[idx] = { ...db.adminSettings.brandAdsList[idx], ...a };
           }
         }
-        console.log(`🔄 Synced ${fbAds.length} ads from Firestore`);
       }
 
       const likesSnap = await getDocs(collection(firestoreDb, 'likes'));
       if (!likesSnap.empty) {
-        const fbLikes = likesSnap.docs.map(d => d.data());
-        db.likes = fbLikes;
-        console.log(`🔄 Synced ${fbLikes.length} likes from Firestore`);
+        db.likes = likesSnap.docs.map(d => d.data());
       }
 
       // Sync persisted admin settings from Firestore
@@ -137,7 +132,6 @@ async function uploadToFirebaseOrLocal(file: Express.Multer.File): Promise<strin
           if (fbAdmin) {
             db.adminSettings = { ...db.adminSettings, ...fbAdmin };
             fs.writeFileSync(ADMIN_SETTINGS_FILE, JSON.stringify(db.adminSettings, null, 2), 'utf-8');
-            console.log('🔄 Synced persisted adminSettings from Firestore');
           }
         }
       } catch (e) {
@@ -2961,10 +2955,10 @@ Sitemap: ${baseUrl}/sitemap.xml`;
     });
   });
 
-  // Reset & Clear Sample Default Traders, Buyers & Posts from DB & Firestore
+  // Reset & Clear All Data & Posts from Server & Firestore
   app.post('/api/admin/reset-database', async (req, res) => {
     try {
-      // Keep Master Admin user '1', wipe sample posts and sample demo users
+      // Keep Master Admin user '1', wipe posts and non-admin users
       db.users = db.users.filter(u => u.role === 'admin' || String(u.id) === '1');
       db.posts = [];
       db.comments = [];
@@ -2982,19 +2976,39 @@ Sitemap: ${baseUrl}/sitemap.xml`;
 
       saveDatabase();
 
-      // Clear sample default posts and users in Firestore
       if (firestoreDb) {
-        const defaultPostIds = ['post_b2b_101', 'post_b2b_102', 'post_b2b_103', 'post_b2b_104'];
-        for (const pId of defaultPostIds) {
-          try { await deleteDoc(doc(firestoreDb, 'posts', pId)); } catch (e) {}
-        }
-        const defaultUserIds = ['factory_balaji_1', 'dealer_apex_2', 'factory_somany_style_3', 'factory_royal_ceramic_4'];
-        for (const uId of defaultUserIds) {
-          try { await deleteDoc(doc(firestoreDb, 'users', uId)); } catch (e) {}
+        // Wipe ALL posts from Firestore
+        try {
+          const postsSnap = await getDocs(collection(firestoreDb, 'posts'));
+          for (const d of postsSnap.docs) {
+            try { await deleteDoc(doc(firestoreDb, 'posts', d.id)); } catch (e) {}
+          }
+        } catch (e) {}
+
+        // Wipe ALL non-admin users from Firestore
+        try {
+          const usersSnap = await getDocs(collection(firestoreDb, 'users'));
+          for (const d of usersSnap.docs) {
+            const uData = d.data();
+            if (uData.role !== 'admin' && String(d.id) !== '1' && String(uData.id) !== '1') {
+              try { await deleteDoc(doc(firestoreDb, 'users', d.id)); } catch (e) {}
+            }
+          }
+        } catch (e) {}
+
+        // Wipe auxiliary collections
+        const collectionsToClear = ['likes', 'comments', 'notifications', 'messages', 'follows', 'blocks', 'reports', 'saves', 'views', 'shares'];
+        for (const colName of collectionsToClear) {
+          try {
+            const snap = await getDocs(collection(firestoreDb, colName));
+            for (const d of snap.docs) {
+              try { await deleteDoc(doc(firestoreDb, colName, d.id)); } catch (e) {}
+            }
+          } catch (e) {}
         }
       }
 
-      res.json({ success: true, message: '🧹 Database reset successfully! Default sample traders and posts cleared.' });
+      res.json({ success: true, message: '🧹 Complete database reset! All posts, feeds and sample data deleted permanently.' });
     } catch (err: any) {
       console.error('Error resetting database:', err);
       res.status(500).json({ success: false, error: err.message || 'Failed to reset database' });
