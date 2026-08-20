@@ -1,5 +1,6 @@
 import { db, auth } from '../firebase';
 import { optimizeImageForPersistence } from '../utils/imageOptimizer';
+import { setPostLikedInLocalStorage, setPostSavedInLocalStorage, isPostLikedByUser, isPostSavedByUser } from '../utils/likeSaveHelpers';
 import { 
   collection, 
   doc, 
@@ -228,6 +229,7 @@ export async function fetchPostsFromFirestore(): Promise<any[]> {
   try {
     const postsQuery = query(collection(db, 'posts'));
     const snap = await getDocs(postsQuery);
+    const activeUserId = localStorage.getItem('vyapar_user_id') || '';
     snap.forEach((docSnap) => {
       const data = docSnap.data();
       if (data && docSnap.id) {
@@ -242,6 +244,9 @@ export async function fetchPostsFromFirestore(): Promise<any[]> {
         if (merged.thumbnailUrl && merged.thumbnailUrl.startsWith('blob:')) {
           merged.thumbnailUrl = merged.mediaUrl || '';
         }
+
+        merged.isLiked = isPostLikedByUser(merged, activeUserId);
+        merged.isSaved = isPostSavedByUser(merged, activeUserId);
         
         postsMap.set(String(docSnap.id), merged);
       }
@@ -297,6 +302,7 @@ export function subscribeToPostsFromFirestore(callback: (posts: any[]) => void):
       } catch (e) {}
 
       // Deep merge real-time snapshot documents over baseline
+      const activeUserId = localStorage.getItem('vyapar_user_id') || '';
       snapshot.forEach((docSnap) => {
         const data = docSnap.data();
         if (data && docSnap.id) {
@@ -311,6 +317,9 @@ export function subscribeToPostsFromFirestore(callback: (posts: any[]) => void):
           if (merged.thumbnailUrl && merged.thumbnailUrl.startsWith('blob:')) {
             merged.thumbnailUrl = merged.mediaUrl || '';
           }
+
+          merged.isLiked = isPostLikedByUser(merged, activeUserId);
+          merged.isSaved = isPostSavedByUser(merged, activeUserId);
 
           postsMap.set(String(docSnap.id), merged);
         }
@@ -591,6 +600,11 @@ export async function likePostInFirestore(postId: string | number, userId: strin
     const pId = String(postId);
     const postRef = doc(db, 'posts', pId);
     const postSnap = await getDoc(postRef);
+    const isNowLiked = !wasLiked;
+
+    // Immediately persist in local storage
+    setPostLikedInLocalStorage(pId, isNowLiked);
+
     if (postSnap.exists()) {
       const data = postSnap.data();
       const likedBy = Array.isArray(data.likedBy) ? data.likedBy : [];
@@ -605,7 +619,7 @@ export async function likePostInFirestore(postId: string | number, userId: strin
         newLikedBy = newLikedBy.filter(id => String(id) !== String(userId));
       } else {
         newCount = currentLikes + 1;
-        if (!newLikedBy.includes(String(userId))) {
+        if (!newLikedBy.map(String).includes(String(userId))) {
           newLikedBy.push(String(userId));
         }
       }
@@ -628,7 +642,7 @@ export async function likePostInFirestore(postId: string | number, userId: strin
 
       await updateDoc(postRef, patchData);
 
-      return { success: true, isLiked: !wasLiked, likesCount: newCount };
+      return { success: true, isLiked: isNowLiked, likesCount: newCount };
     } else {
       const newCount = wasLiked ? 0 : 1;
       const newLikedBy = wasLiked ? [] : [String(userId)];
@@ -643,7 +657,7 @@ export async function likePostInFirestore(postId: string | number, userId: strin
       });
 
       await setDoc(postRef, initialDoc, { merge: true });
-      return { success: true, isLiked: !wasLiked, likesCount: newCount };
+      return { success: true, isLiked: isNowLiked, likesCount: newCount };
     }
   } catch (err) {
     console.warn('Firestore likePost note:', err);
@@ -656,6 +670,11 @@ export async function savePostInFirestore(postId: string | number, userId: strin
     const pId = String(postId);
     const postRef = doc(db, 'posts', pId);
     const postSnap = await getDoc(postRef);
+    const isNowSaved = !wasSaved;
+
+    // Immediately persist in local storage
+    setPostSavedInLocalStorage(pId, isNowSaved);
+
     if (postSnap.exists()) {
       const data = postSnap.data();
       const currentSaved = typeof data.savedCount === 'number' ? data.savedCount : 0;
@@ -668,7 +687,7 @@ export async function savePostInFirestore(postId: string | number, userId: strin
         newSavedBy = newSavedBy.filter(id => String(id) !== String(userId));
       } else {
         newCount = currentSaved + 1;
-        if (!newSavedBy.includes(String(userId))) {
+        if (!newSavedBy.map(String).includes(String(userId))) {
           newSavedBy.push(String(userId));
         }
       }
@@ -688,7 +707,7 @@ export async function savePostInFirestore(postId: string | number, userId: strin
 
       await updateDoc(postRef, patchData);
 
-      return { success: true, isSaved: !wasSaved, savedCount: newCount };
+      return { success: true, isSaved: isNowSaved, savedCount: newCount };
     } else {
       const newCount = wasSaved ? 0 : 1;
       const newSavedBy = wasSaved ? [] : [String(userId)];
@@ -703,7 +722,7 @@ export async function savePostInFirestore(postId: string | number, userId: strin
       });
 
       await setDoc(postRef, initialDoc, { merge: true });
-      return { success: true, isSaved: !wasSaved, savedCount: newCount };
+      return { success: true, isSaved: isNowSaved, savedCount: newCount };
     }
   } catch (err) {
     console.warn('Firestore savePost note:', err);

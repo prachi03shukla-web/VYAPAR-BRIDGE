@@ -37,6 +37,22 @@ try {
 // Function to sync from Firestore to memory on startup
 
 async function uploadToFirebaseOrLocal(file: Express.Multer.File): Promise<string> {
+  try {
+    if (file && file.path && fs.existsSync(file.path)) {
+      const fileBuffer = fs.readFileSync(file.path);
+      // For files up to 25MB, returning Base64 Data URL prevents 404 errors when server reboots
+      if (fileBuffer.length <= 25 * 1024 * 1024) {
+        let mime = file.mimetype || 'application/octet-stream';
+        if (file.originalname?.toLowerCase().endsWith('.pdf') || file.filename?.toLowerCase().endsWith('.pdf')) {
+          mime = 'application/pdf';
+        }
+        const base64Str = fileBuffer.toString('base64');
+        return `data:${mime};base64,${base64Str}`;
+      }
+    }
+  } catch (e) {
+    console.error('Error in uploadToFirebaseOrLocal data URL conversion:', e);
+  }
   return `/uploads/${file.filename}`;
 }
 

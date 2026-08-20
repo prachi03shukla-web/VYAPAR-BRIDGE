@@ -399,6 +399,7 @@ export const PdfReaderModal: React.FC<PdfReaderModalProps> = ({
   const [scale, setScale] = useState<number>(1.2);
   const [loading, setLoading] = useState<boolean>(true);
   const [pdfDoc, setPdfDoc] = useState<any>(null);
+  const [pdfError, setPdfError] = useState<boolean>(false);
   const [viewMode, setViewMode] = useState<'canvas' | 'embed'>('canvas');
 
   useEffect(() => {
@@ -408,6 +409,7 @@ export const PdfReaderModal: React.FC<PdfReaderModalProps> = ({
     const loadPdfDoc = async () => {
       try {
         setLoading(true);
+        setPdfError(false);
         const pdfjsVer = pdfjsLib.version || '6.2.108';
         const loadingTask = pdfjsLib.getDocument({
           url: pdfUrl,
@@ -423,9 +425,11 @@ export const PdfReaderModal: React.FC<PdfReaderModalProps> = ({
         setLoading(false);
       } catch (err) {
         console.warn('PDF Full Reader Load Error:', err);
-        setLoading(false);
-        // Fallback to embed view inside modal
-        setViewMode('embed');
+        if (isMounted) {
+          setLoading(false);
+          setPdfError(true);
+          setViewMode('embed');
+        }
       }
     };
 
@@ -544,7 +548,28 @@ export const PdfReaderModal: React.FC<PdfReaderModalProps> = ({
           </div>
         )}
 
-        {viewMode === 'embed' || !pdfDoc ? (
+        {pdfError && !pdfUrl.startsWith('data:') ? (
+          <div className="flex flex-col items-center justify-center p-6 text-center bg-slate-900/90 border border-amber-500/30 rounded-2xl max-w-md my-auto shadow-2xl">
+            <div className="w-14 h-14 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 mb-3">
+              <FileText className="w-7 h-7" />
+            </div>
+            <h3 className="text-sm font-black text-white uppercase tracking-wider mb-1">
+              {companyName}
+            </h3>
+            <p className="text-xs text-amber-300 font-bold mb-3">
+              📄 Catalogue PDF File Unavailable on Server
+            </p>
+            <p className="text-[11px] text-zinc-300 mb-5 leading-relaxed">
+              This catalogue file was saved locally on the previous server session. All new uploaded PDFs are now saved permanently as Base64 Data URLs so they never expire!
+            </p>
+            <button 
+              onClick={onClose}
+              className="px-5 py-2 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black rounded-xl text-xs shadow-lg transition-transform active:scale-95 cursor-pointer"
+            >
+              Close & Re-upload Catalogue
+            </button>
+          </div>
+        ) : viewMode === 'embed' || !pdfDoc ? (
           <iframe 
             src={pdfUrl.startsWith('data:') ? pdfUrl : (pdfUrl.startsWith('http') ? `https://docs.google.com/viewer?url=${encodeURIComponent(pdfUrl)}&embedded=true` : pdfUrl)} 
             className="w-full h-full rounded-xl border border-slate-800 bg-white" 

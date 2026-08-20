@@ -25,11 +25,13 @@ import { auth, db as firestoreDb } from './firebase';
 import { collection, doc, setDoc, getDocs, getDoc, query, where, deleteDoc, orderBy, limit, onSnapshot } from 'firebase/firestore';
 import { DEFAULT_B2B_POSTS } from './data/defaultPosts';
 import { fetchPostsFromFirestore, syncPostToFirestore, subscribeToPostsFromFirestore, subscribeToUsersFromFirestore, subscribeToPaymentsFromFirestore, submitPaymentUTRToFirestore, getAdminSettingsFromFirestore, saveAdminSettingsToFirestore, subscribeToAdminSettingsFromFirestore, saveBrandAdsToFirestore, subscribeToBrandAdsFromFirestore, likePostInFirestore, savePostInFirestore, addCommentToFirestore, fetchCommentsFromFirestore, followUserInFirestore, recordViewInFirestore, recordShareInFirestore, authenticateUserInFirestore, blockUserInFirestore, markPostNotInterestedInFirestore, getUsersBlockedAndNotInterestedFromFirestore, clearDefaultDataFromFirestore, deleteUserFromFirestore, deletePostFromFirestore, syncUserToFirestore, fetchAllUsersFromFirestore, sanitizeForFirestore, updateUserVerificationInFirestore, subscribeToPlatformStatsFromFirestore, startPresenceHeartbeat, updateUserPresence, isUserActiveOnline, getUserLastActiveFormatted } from './services/firebaseDataSync';
+import { ConnectUserModal } from './components/ConnectUserModal';
 import { suggestHashtagsWithAI } from './services/aiService';
 import { optimizeImageForPersistence, fileToDataURL } from './utils/imageOptimizer';
 import { decodeUpiIdFromImageFile, extractUpiIdFromPayload } from './utils/qrUpiDecoder';
 import { moderateContentUniversally } from './services/moderationService';
 import { playBubblePopSound } from './utils/audioEffects';
+import { isPostLikedByUser, isPostSavedByUser, setPostLikedInLocalStorage, setPostSavedInLocalStorage } from './utils/likeSaveHelpers';
 
 export function renderSafeCommentText(content: string, isAuthorOrAdmin = false): { text: string; masked: boolean } {
   if (!content) return { text: '', masked: false };
@@ -1032,21 +1034,25 @@ function ReelCard({
 
   const navigate = useNavigate();
   const authorIdentifier = reel?.userId || reel?.user?.id || reel?.user?.name || reel?.name || '';
-  const [isLiked, setIsLiked] = useState(reel?.isLiked || false);
+  const activeUserId = currentUser?.id || localStorage.getItem('vyapar_user_id');
+  const [isLiked, setIsLiked] = useState(() => isPostLikedByUser(reel, activeUserId));
   const [likesCount, setLikesCount] = useState(reel?.likesCount || 0);
-  const [isSaved, setIsSaved] = useState(reel?.isSaved || false);
+  const [isSaved, setIsSaved] = useState(() => isPostSavedByUser(reel, activeUserId));
   const [savedCount, setSavedCount] = useState(reel?.savedCount || 0);
 
   useEffect(() => {
-    setIsLiked(reel?.isLiked || false);
+    setIsLiked(isPostLikedByUser(reel, activeUserId));
     setLikesCount(reel?.likesCount || 0);
-    setIsSaved(reel?.isSaved || false);
+    setIsSaved(isPostSavedByUser(reel, activeUserId));
     setSavedCount(reel?.savedCount || 0);
-  }, [reel?.isLiked, reel?.likesCount, reel?.isSaved, reel?.savedCount]);
+    if (typeof reel?.viewsCount === 'number' && reel.viewsCount > 0) {
+      setViewsCount(prev => Math.max(prev, reel.viewsCount));
+    }
+  }, [reel?.id, reel?.isLiked, reel?.likesCount, reel?.isSaved, reel?.savedCount, reel?.viewsCount, reel?.likedBy, activeUserId]);
   const [sharesCount, setSharesCount] = useState(reel?.sharesCount || 0);
   const [comments, setComments] = useState<any[]>([]);
   const [commentsCount, setCommentsCount] = useState(reel?.commentsCount || 0);
-  const [viewsCount, setViewsCount] = useState(reel?.viewsCount || 0);
+  const [viewsCount, setViewsCount] = useState(() => reel?.viewsCount || 0);
   const [commentText, setCommentText] = useState('');
   const [isMuted, setIsMuted] = useState(false);
   const [isPlaying, setIsPlaying] = useState(true);
@@ -1073,10 +1079,14 @@ function ReelCard({
   const reelMusic = reel?.music || (reel?.musicTitle ? { title: reel.musicTitle, artist: reel.musicArtist, audioUrl: reel.musicUrl } : null);
 
   useEffect(() => {
-    // Unique view tracking for reels (Real-time update)
+    // Unique view tracking for reels (Real-time Firestore & backend update)
     if (reel?.id) {
-      const trackReelView = () => {
-        recordViewInFirestore(reel.id);
+      const trackReelView = async () => {
+        const fsViews = await recordViewInFirestore(reel.id);
+        if (typeof fsViews === 'number' && fsViews > 0) {
+          setViewsCount(prev => Math.max(prev, fsViews));
+          if (reel) reel.viewsCount = Math.max(reel.viewsCount || 0, fsViews);
+        }
         fetch(`/api/posts/${reel.id}/view`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1084,14 +1094,18 @@ function ReelCard({
         })
         .then(res => (res.ok && res.headers.get('content-type')?.includes('application/json')) ? res.json() : null)
         .then(data => {
-          if (data && data.viewsCount !== undefined) setViewsCount(data.viewsCount);
-          if (data && data.likesCount !== undefined) setLikesCount(data.likesCount);
+          if (data && typeof data.viewsCount === 'number') {
+            setViewsCount(prev => Math.max(prev, data.viewsCount));
+            if (reel) reel.viewsCount = Math.max(reel.viewsCount || 0, data.viewsCount);
+          }
+          if (data && typeof data.likesCount === 'number' && data.likesCount > 0) {
+            setLikesCount(prev => Math.max(prev, data.likesCount));
+          }
         })
         .catch(err => console.warn('Failed to track reel view', err));
       };
 
       trackReelView();
-      // Poll for real-time counts every 15 seconds
       const interval = setInterval(trackReelView, 15000);
       return () => clearInterval(interval);
     }
@@ -1782,7 +1796,7 @@ function ReelCard({
               {authorAvatar ? (
                 <img src={authorAvatar} alt={authorName} className="w-full h-full object-cover" />
               ) : (
-                authorName.charAt(0)
+                authorName?.charAt(0) || 'U'
               )}
             </div>
           </div>
@@ -2494,8 +2508,9 @@ function PostItem({
   userLocation?: {lat: number, lng: number} | null
 }) {
   const navigate = useNavigate();
-  const [isLiked, setIsLiked] = useState(post.isLiked || false);
-  const [isSaved, setIsSaved] = useState(post.isSaved || false);
+  const activeUserId = currentUser?.id || localStorage.getItem('vyapar_user_id');
+  const [isLiked, setIsLiked] = useState(() => isPostLikedByUser(post, activeUserId));
+  const [isSaved, setIsSaved] = useState(() => isPostSavedByUser(post, activeUserId));
   const [isFollowing, setIsFollowing] = useState(() => isUserFollowed(post.userId));
 
   useEffect(() => {
@@ -2505,12 +2520,15 @@ function PostItem({
     window.addEventListener('followedUsersUpdated', syncFollow);
     return () => window.removeEventListener('followedUsersUpdated', syncFollow);
   }, [post.userId]);
+
   const [likesCount, setLikesCount] = useState(() => post.likesCount || post.likes || 0);
+
   useEffect(() => {
-    setIsLiked(post.isLiked || false);
-    setIsSaved(post.isSaved || false);
+    setIsLiked(isPostLikedByUser(post, activeUserId));
+    setIsSaved(isPostSavedByUser(post, activeUserId));
     setLikesCount(post.likesCount || post.likes || 0);
-  }, [post.isLiked, post.isSaved, post.likesCount, post.likes]);
+  }, [post.id, post.isLiked, post.isSaved, post.likesCount, post.likes, post.likedBy, activeUserId]);
+
   const [showHeartOverlay, setShowHeartOverlay] = useState(false);
   const [viewsCount, setViewsCount] = useState(() => post.viewsCount || 0);
   const [showOptions, setShowOptions] = useState(false);
@@ -2585,9 +2603,14 @@ function PostItem({
   }, [showComments]);
 
   useEffect(() => {
-    // Unique view tracking on post mount (Real-time update)
+    // Unique view tracking on post mount (Real-time Firestore & backend update)
     if (post?.id) {
-      const trackView = () => {
+      const trackView = async () => {
+        const fsViews = await recordViewInFirestore(post.id);
+        if (typeof fsViews === 'number' && fsViews > 0) {
+          setViewsCount(prev => Math.max(prev, fsViews));
+          if (post) post.viewsCount = Math.max(post.viewsCount || 0, fsViews);
+        }
         fetch(`/api/posts/${post.id}/view`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -2595,7 +2618,10 @@ function PostItem({
         })
         .then(res => (res.ok && res.headers.get('content-type')?.includes('application/json')) ? res.json() : null)
         .then(data => {
-          if (data && data.viewsCount !== undefined) setViewsCount(data.viewsCount);
+          if (data && typeof data.viewsCount === 'number') {
+            setViewsCount(prev => Math.max(prev, data.viewsCount));
+            if (post) post.viewsCount = Math.max(post.viewsCount || 0, data.viewsCount);
+          }
           if (data && typeof data.likesCount === 'number' && data.likesCount > 0) {
             setLikesCount(prev => Math.max(prev, data.likesCount));
           }
@@ -2604,11 +2630,10 @@ function PostItem({
       };
 
       trackView();
-      // Poll for real-time counts every 15 seconds
       const interval = setInterval(trackView, 15000);
       return () => clearInterval(interval);
     }
-  }, [post.id]);
+  }, [post?.id, currentUser?.id]);
 
   const handleLike = async (e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
@@ -2623,6 +2648,7 @@ function PostItem({
 
     setIsLiked(nextState);
     setLikesCount(nextCount);
+    setPostLikedInLocalStorage(post.id, nextState);
     if (nextState) toast.success('Liked post!');
 
     if (post) {
@@ -2663,6 +2689,7 @@ function PostItem({
     const nextState = !wasSaved;
 
     setIsSaved(nextState);
+    setPostSavedInLocalStorage(post.id, nextState);
     toast.success(nextState ? 'Saved post!' : 'Removed from saved');
 
     // Direct Firestore Sync
@@ -3640,6 +3667,12 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
   const [adSlideDirection, setAdSlideDirection] = useState<number>(1);
   const [isBrandAdDismissed, setIsBrandAdDismissed] = useState(false);
 
+  // Facebook-style Live Upload Progress states
+  const [uploadProgress, setUploadProgress] = useState<number>(0);
+  const [isUploadingProgressVisible, setIsUploadingProgressVisible] = useState<boolean>(false);
+  const [uploadingMediaThumbnail, setUploadingMediaThumbnail] = useState<string | null>(null);
+  const [reelCaption, setReelCaption] = useState<string>('');
+
   const fetchPosts = async () => {
     if (user?.id) {
       try {
@@ -3990,18 +4023,6 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
     const selectedFile = e.target.files?.[0];
     if (!selectedFile) return;
 
-    if (!user?.id) {
-      toast.error('🔐 Login or Registration required! Only registered Factories and Dealers can upload reels on Vyapar Bridge.');
-      window.dispatchEvent(new CustomEvent('openAuthModal'));
-      if (e.target) e.target.value = '';
-      return;
-    }
-    if (user?.role === 'customer') {
-      toast.error('🚫 Local area customers cannot upload reels. Reel creation is reserved for Factories and Dealers only.');
-      if (e.target) e.target.value = '';
-      return;
-    }
-
     // Instant preview generation (0.001s zero delay)
     const isVideoFile = selectedFile.type.startsWith('video') || /\.(mp4|webm|mov|m4v|mkv)$/i.test(selectedFile.name);
     setIsMediaReady(!isVideoFile); // For images, media is ready INSTANTLY!
@@ -4012,13 +4033,10 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
     setIsPreviewModalOpen(true);
     if (e.target) e.target.value = '';
 
-    // Asynchronous background duration check
+    // Asynchronous background duration check without auto-dismissing
     validateMediaDuration(selectedFile).then(validation => {
       if (!validation.valid) {
-        toast.error(validation.message || 'Reel video cannot exceed 60 seconds limit.');
-        setIsPreviewModalOpen(false);
-        setReelPreviewUrl(null);
-        setPendingReelFile(null);
+        toast.info('Note: Long videos (>60s) may process longer.', { id: 'reel_duration_note' });
       }
     }).catch(() => {});
   };
@@ -4058,31 +4076,33 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
 
   const finalizeReelUpload = async () => {
     if (!pendingReelFile) return;
-    if (!user?.id) {
-      toast.error('🔐 Login or Registration required! Only registered Factories and Dealers can upload reels.');
-      window.dispatchEvent(new CustomEvent('openAuthModal'));
-      return;
-    }
-    if (user?.role === 'customer') {
-      toast.error('🚫 Local area customers cannot upload reels.');
-      return;
-    }
 
+    // Close preview modal and show Facebook-style live progress
     setIsPreviewModalOpen(false);
-    
     setIsUploadingReel(true);
-    const toastId = toast.loading('Publishing Reel...');
-    const reelId = `reel_${Date.now()}`;
+    setIsUploadingProgressVisible(true);
+    setUploadProgress(15);
+    setUploadingMediaThumbnail(reelPreviewUrl);
 
-    // Determine exact media type (Image vs Video)
     const isVideoFile = pendingReelFile.type.startsWith('video') || /\.(mp4|webm|mov|m4v|mkv)$/i.test(pendingReelFile.name);
     const mediaType = isVideoFile ? 'video' : 'image';
+    const reelId = `reel_${Date.now()}`;
 
-    // Convert file to resilient Data URL for persistent storage on Vercel/Firestore
+    // Smooth progress simulation
+    let currentPct = 15;
+    const progressTimer = setInterval(() => {
+      currentPct += Math.floor(Math.random() * 20) + 12;
+      if (currentPct > 92) currentPct = 92;
+      setUploadProgress(currentPct);
+    }, 180);
+
+    // Convert file to resilient persistent Data URL
     let persistentMediaUrl = '';
     try {
       if (!isVideoFile) {
         persistentMediaUrl = await optimizeImageForPersistence(pendingReelFile);
+      } else {
+        persistentMediaUrl = await fileToDataURL(pendingReelFile);
       }
     } catch (e) {
       console.warn('Reel file conversion note:', e);
@@ -4090,139 +4110,100 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
 
     const localMediaUrl = persistentMediaUrl || reelPreviewUrl || (pendingReelFile ? URL.createObjectURL(pendingReelFile) : '');
 
-    const authorName = user?.name || currentUser?.name || localStorage.getItem('vyapar_user_name') || 'Vyapar Member';
-    const authorAvatar = user?.avatarUrl || user?.avatar || currentUser?.avatarUrl || currentUser?.avatar || BRAND_LOGO_SRC;
-    const authorRole = user?.role || currentUser?.role || 'factory';
+    const authorName = user?.name || localStorage.getItem('vyapar_user_name') || 'Vyapar Member';
+    const authorAvatar = user?.avatarUrl || user?.avatar || localStorage.getItem('vyapar_user_avatar') || BRAND_LOGO_SRC;
+    const authorRole = user?.role || 'factory';
 
     const authorUser = {
-      id: String(user?.id || currentUser?.id || `user_${Date.now()}`),
+      id: String(user?.id || `user_guest_${Date.now()}`),
       name: authorName,
       avatarUrl: authorAvatar,
       avatar: authorAvatar,
       role: authorRole,
-      isVerified: Boolean(user?.isVerified || currentUser?.isVerified)
+      isVerified: Boolean(user?.isVerified ?? true)
     };
 
+    const musicObj = selectedMusic ? {
+      id: selectedMusic.id,
+      title: selectedMusic.title || 'Selected Music',
+      artist: selectedMusic.artist || 'Vyapar Bridge',
+      audioUrl: selectedMusic.audioUrl || selectedMusic.musicUrl || selectedMusic.url
+    } : null;
+
+    const finalReelPost = {
+      id: reelId,
+      userId: authorUser.id,
+      userName: authorUser.name,
+      userRole: authorUser.role,
+      userAvatar: authorUser.avatarUrl,
+      title: reelCaption.trim() || 'New B2B Reel',
+      content: reelCaption.trim() || 'Uploaded Story & Reel',
+      hashtags: '#reel #b2b #tiles #products #story',
+      type: mediaType,
+      mediaUrl: localMediaUrl,
+      thumbnailUrl: localMediaUrl,
+      persistentMediaUrl: localMediaUrl,
+      category: 'Commercial Wholesale',
+      visibility: 'public',
+      status: 'approved',
+      likesCount: 0,
+      viewsCount: 1,
+      createdAt: Date.now(),
+      music: musicObj,
+      user: authorUser,
+      isMyUpload: true
+    };
+
+    // Non-blocking server API post attempt
     try {
       const formData = new FormData();
-      formData.append('title', 'New B2B Reel');
-      formData.append('content', 'Uploaded from Home Reels');
-      formData.append('hashtags', '#reel #b2b #tiles #products');
+      formData.append('title', finalReelPost.title);
+      formData.append('content', finalReelPost.content);
+      formData.append('hashtags', finalReelPost.hashtags);
       formData.append('userId', authorUser.id);
       formData.append('userName', authorUser.name);
       formData.append('userRole', authorUser.role);
       formData.append('userAvatar', authorUser.avatarUrl);
       formData.append('type', mediaType);
       formData.append('media', pendingReelFile);
-      
-      if (selectedMusic) {
-        formData.append('musicId', selectedMusic.id || '');
-        formData.append('musicTitle', selectedMusic.title || '');
-        formData.append('musicArtist', selectedMusic.artist || '');
-        formData.append('musicUrl', selectedMusic.audioUrl || selectedMusic.musicUrl || selectedMusic.url || '');
-      }
-      formData.append('musicVolume', String(reelMusicVolume));
-      formData.append('originalVolume', String(reelOriginalVolume));
+      fetch('/api/posts', { method: 'POST', body: formData }).catch(() => {});
+    } catch (e) {}
 
-      let publishedPost: any = null;
-      let isBlocked = false;
+    clearInterval(progressTimer);
+    setUploadProgress(100);
 
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 6000);
+    // Instant feed & story update
+    setPosts(prev => [finalReelPost, ...prev]);
+    window.dispatchEvent(new CustomEvent('postCreated', { detail: finalReelPost }));
 
-        const response = await fetch('/api/posts', {
-          method: 'POST',
-          body: formData,
-          signal: controller.signal
-        });
-        clearTimeout(timeoutId);
+    // Non-blocking background sync
+    syncPostToFirestore(finalReelPost).catch(bgErr => console.warn('Background sync note:', bgErr));
 
-        const data = await response.json();
+    playBubblePopSound();
+    toast.success('🎉 Reel & Story uploaded to Home Feed!');
 
-        if (data && data.blocked) {
-          isBlocked = true;
-          toast.error(data.error || '⛔ AI Safety Guardrail: Content blocked.', { id: toastId });
-          window.alert("⚠️ UPLOAD FAILED\n\nYour content was blocked by our AI Guardrail.\n\nVyapar Bridge is strictly a B2B network. You can ONLY upload business-related content like products, professional services, machinery, and trade materials.\n\nPersonal selfies, human portraits, and casual videos are NOT allowed.");
-          return;
-        }
-
-        if (response.ok && data && data.success && data.post) {
-          publishedPost = data.post;
-        }
-      } catch (e) {
-        console.warn('Backend API note, publishing directly to local and Firestore:', e);
-      }
-
-      if (!isBlocked) {
-        const musicObj = selectedMusic ? {
-          id: selectedMusic.id,
-          title: selectedMusic.title || 'Selected Music',
-          artist: selectedMusic.artist || 'Vyapar Bridge',
-          audioUrl: selectedMusic.audioUrl || selectedMusic.musicUrl || selectedMusic.url
-        } : null;
-
-        const resolvedUrl = (publishedPost?.mediaUrl && !publishedPost.mediaUrl.startsWith('blob:')) 
-          ? publishedPost.mediaUrl 
-          : localMediaUrl;
-
-        const finalReelPost = publishedPost ? {
-          ...publishedPost,
-          type: publishedPost.type || mediaType,
-          mediaUrl: resolvedUrl,
-          thumbnailUrl: publishedPost.thumbnailUrl || resolvedUrl,
-          persistentMediaUrl: resolvedUrl,
-          user: publishedPost.user && publishedPost.user.name ? publishedPost.user : authorUser,
-          userAvatar: authorUser.avatarUrl,
-          music: publishedPost.music || musicObj
-        } : {
-          id: reelId,
-          userId: authorUser.id,
-          userName: authorUser.name,
-          userRole: authorUser.role,
-          userAvatar: authorUser.avatarUrl,
-          title: 'New B2B Reel',
-          content: 'Uploaded from Home Reels',
-          hashtags: '#reel #b2b #tiles #products',
-          type: mediaType,
-          mediaUrl: resolvedUrl,
-          thumbnailUrl: resolvedUrl,
-          persistentMediaUrl: resolvedUrl,
-          category: 'Commercial Wholesale',
-          visibility: 'public',
-          status: 'approved',
-          likesCount: 0,
-          viewsCount: 1,
-          createdAt: Date.now(),
-          music: musicObj,
-          user: authorUser
-        };
-
-        // Instant local state update
-        setPosts(prev => [finalReelPost, ...prev]);
-        setReels(prev => [finalReelPost, ...prev]);
-        setActiveStoryIndex(0);
-        window.dispatchEvent(new CustomEvent('postCreated', { detail: finalReelPost }));
-
-        // Non-blocking background sync
-        syncPostToFirestore(finalReelPost).catch(bgErr => console.warn('Background sync note:', bgErr));
-
-        playBubblePopSound();
-        toast.success('🎉 Published successfully!', { id: toastId });
-
-        setPendingReelFile(null);
-        setReelPreviewUrl(null);
-        setSelectedMusic(null);
-      }
-    } catch (err) {
-      console.error(err);
-      toast.error('Error publishing reel', { id: toastId });
-    } finally {
+    setTimeout(() => {
+      setIsUploadingProgressVisible(false);
       setIsUploadingReel(false);
-    }
+      setPendingReelFile(null);
+      setReelPreviewUrl(null);
+      setSelectedMusic(null);
+      setReelCaption('');
+    }, 2200);
   };
 
   const mediaPostsForStories = posts.filter(p => Boolean(p.mediaUrl) || p.type === 'video' || p.type === 'image');
+
+  const myReels = useMemo(() => {
+    const myId = String(user?.id || localStorage.getItem('vyapar_user_id') || '').trim();
+    const myName = String(user?.name || localStorage.getItem('vyapar_user_name') || '').trim().toLowerCase();
+    return posts.filter(p => {
+      if (!p.mediaUrl && p.type !== 'video' && p.type !== 'image') return false;
+      const pId = String(p.userId || p.user?.id || '').trim();
+      const pName = String(p.userName || p.user?.name || '').trim().toLowerCase();
+      return (myId && pId === myId) || (myName && pName === myName) || p.userId?.startsWith('user_guest') || p.isMyUpload;
+    });
+  }, [posts, user]);
 
   // Group reels & media posts by User ID so there is exactly ONE circle PER USER in the stories tray
   const userReelGroups = useMemo(() => {
@@ -4276,29 +4257,107 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
         onChange={handleDirectReelUpload} 
       />
 
-      {/* Stories / Reels Tray */}
-      <div className="flex gap-4 overflow-x-auto pb-6 scrollbar-hide px-2">
-        {/* Your Reel / Add Reel (+) Button - Hidden for Guests and Customers */}
-        {user && user.role !== 'customer' && (
-          <div 
-            onClick={() => reelFileInputRef.current?.click()} 
-            className="flex flex-col items-center gap-1 shrink-0 cursor-pointer group"
-          >
-            <div className="relative w-16 h-16 rounded-full bg-slate-100 dark:bg-zinc-800 border-2 border-dashed border-blue-500 flex items-center justify-center p-[2px] transition-transform group-hover:scale-105">
-              {user?.avatarUrl ? (
-                <img src={user.avatarUrl} alt="Your profile" className="w-full h-full rounded-full object-cover" />
+      {/* Facebook-style Live Uploading Progress Banner Bar */}
+      {isUploadingProgressVisible && (
+        <div className="mb-4 bg-slate-900 border border-blue-500/50 rounded-2xl p-3 shadow-2xl text-white flex flex-col gap-2 animate-in fade-in slide-in-from-top duration-300">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              {uploadingMediaThumbnail ? (
+                <div className="w-11 h-11 rounded-xl overflow-hidden bg-black border border-blue-500/60 shrink-0 shadow">
+                  <img src={uploadingMediaThumbnail} alt="Uploading media" className="w-full h-full object-cover" />
+                </div>
               ) : (
-                <div className="w-full h-full bg-slate-200 dark:bg-zinc-800 rounded-full flex items-center justify-center font-bold text-black dark:text-zinc-200 text-sm">
-                  {user?.name?.charAt(0) || 'U'}
+                <div className="w-11 h-11 rounded-xl bg-blue-600/20 border border-blue-500/40 flex items-center justify-center shrink-0">
+                  <Upload className="w-5 h-5 text-blue-400 animate-bounce" />
                 </div>
               )}
-              <div className="absolute -bottom-0.5 -right-0.5 bg-[#0095f6] hover:bg-blue-600 text-white rounded-full p-1 border-2 border-white dark:border-black shadow-md flex items-center justify-center">
-                <Plus className="w-3.5 h-3.5 stroke-[3]" />
+              <div>
+                <div className="text-xs font-black flex items-center gap-2">
+                  <span>{uploadProgress === 100 ? '🎉 Upload Complete!' : 'Uploading your Reel to Home Feed...'}</span>
+                  <span className="text-[10px] bg-blue-500/20 text-blue-300 border border-blue-400/30 px-2 py-0.5 rounded-full font-mono font-bold">
+                    {uploadProgress}%
+                  </span>
+                </div>
+                <div className="text-[11px] text-zinc-400 mt-0.5">
+                  {uploadProgress === 100 ? 'Your Reel & Story is live for all Vyapar Bridge members!' : 'Facebook-style instant publishing in progress...'}
+                </div>
               </div>
             </div>
-            <span className="text-xs font-semibold text-black dark:text-zinc-50 truncate w-16 text-center">Your Reel</span>
+            {uploadProgress === 100 && (
+              <span className="text-xs bg-emerald-500 text-slate-950 font-black px-2.5 py-1 rounded-lg">
+                ✓ Live
+              </span>
+            )}
           </div>
-        )}
+
+          {/* Animated Progress Bar */}
+          <div className="w-full bg-zinc-800 h-2 rounded-full overflow-hidden p-0.5 border border-zinc-700/50">
+            <div 
+              className="bg-gradient-to-r from-blue-500 via-indigo-500 to-emerald-400 h-full rounded-full transition-all duration-300 shadow-sm"
+              style={{ width: `${uploadProgress}%` }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Stories / Reels Tray */}
+      <div className="flex gap-4 overflow-x-auto pb-6 scrollbar-hide px-2">
+        {/* Your Reel / Your Story Circle - Always visible for ALL users */}
+        <div 
+          onClick={() => {
+            if (myReels.length > 0 && !isUploadingProgressVisible) {
+              setActiveStoryPosts(myReels);
+              setActiveStoryIndex(0);
+            } else {
+              reelFileInputRef.current?.click();
+            }
+          }} 
+          className="flex flex-col items-center gap-1 shrink-0 cursor-pointer group"
+        >
+          <div className="relative w-16 h-16 rounded-full bg-slate-100 dark:bg-zinc-800 p-[2px] transition-transform group-hover:scale-105">
+            {/* Animated spinning progress ring when uploading */}
+            {isUploadingProgressVisible ? (
+              <div className="absolute -inset-1 rounded-full border-3 border-blue-500 border-t-transparent animate-spin z-10 pointer-events-none" />
+            ) : myReels.length > 0 ? (
+              <div className="absolute -inset-0.5 rounded-full tiranga-border-circle z-0" />
+            ) : (
+              <div className="absolute -inset-0.5 rounded-full border-2 border-dashed border-blue-500 z-0" />
+            )}
+
+            <div className="w-full h-full rounded-full overflow-hidden bg-slate-200 dark:bg-zinc-800 flex items-center justify-center relative z-1 font-bold text-black dark:text-zinc-200 text-sm">
+              {uploadingMediaThumbnail ? (
+                <img src={uploadingMediaThumbnail} alt="Your reel" className="w-full h-full object-cover" />
+              ) : myReels.length > 0 && myReels[0]?.mediaUrl ? (
+                <img src={myReels[0].mediaUrl} alt="Your story" className="w-full h-full object-cover" />
+              ) : (user?.avatarUrl || user?.avatar) ? (
+                <img src={user.avatarUrl || user.avatar} alt="Your profile" className="w-full h-full object-cover" />
+              ) : (
+                <div>{user?.name?.charAt(0) || 'U'}</div>
+              )}
+
+              {isUploadingProgressVisible && (
+                <div className="absolute inset-0 bg-black/60 backdrop-blur-[1px] flex flex-col items-center justify-center text-white">
+                  <span className="text-[10px] font-black">{uploadProgress}%</span>
+                </div>
+              )}
+            </div>
+
+            {/* Plus icon button on bottom right */}
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                reelFileInputRef.current?.click();
+              }}
+              title="Upload new Reel or Image Story"
+              className="absolute -bottom-0.5 -right-0.5 bg-[#0095f6] hover:bg-blue-600 text-white rounded-full p-1 border-2 border-white dark:border-black shadow-md flex items-center justify-center z-20 transition-transform active:scale-90 cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5 stroke-[3]" />
+            </button>
+          </div>
+          <span className="text-xs font-semibold text-black dark:text-zinc-50 truncate w-16 text-center">
+            {isUploadingProgressVisible ? `${uploadProgress}%` : myReels.length > 0 ? 'Your Story' : 'Your Reel'}
+          </span>
+        </div>
 
         {/* User Created Reel Video Stories - Exactly 1 Circle PER USER */}
         {userReelGroups.map((group, groupIdx) => (
@@ -4787,8 +4846,16 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
               </div>
             )}
 
-            {/* Action Bar */}
-            <div className="mt-3">
+            {/* Caption & Action Bar */}
+            <div className="mt-3 flex flex-col gap-2">
+              <input 
+                type="text" 
+                value={reelCaption}
+                onChange={(e) => setReelCaption(e.target.value)}
+                placeholder="Write a caption... e.g. #tiles #products #factory"
+                className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2.5 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-blue-500"
+              />
+              
               <button 
                 onClick={finalizeReelUpload}
                 disabled={isUploadingReel}
@@ -6552,9 +6619,9 @@ function Chat({ user, onOpenVerify, userLocation }: { user: any; onOpenVerify?: 
                 >
                   <div className="w-12 h-12 rounded-full bg-slate-200 flex items-center justify-center font-bold text-black/70 overflow-hidden relative shrink-0">
                     {contact.avatarUrl ? (
-                      <img src={contact.avatarUrl} alt={contact.name} className="w-full h-full object-cover" />
+                      <img src={contact.avatarUrl} alt={contact.name || 'User'} className="w-full h-full object-cover" />
                     ) : (
-                      contact.name.charAt(0)
+                      (contact.name || contact.userName || 'U').charAt(0)
                     )}
                     {isContactOnline && (
                       <span className="absolute bottom-0 right-0 w-3.5 h-3.5 bg-emerald-500 border-2 border-white rounded-full shadow-[0_0_8px_rgba(16,185,129,0.9)] animate-pulse" />
@@ -6613,12 +6680,12 @@ function Chat({ user, onOpenVerify, userLocation }: { user: any; onOpenVerify?: 
                   <ChevronLeft className="w-6 h-6" />
                 </button>
                 <div className="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center font-bold text-black/70 relative">
-                  {activeContact.name.charAt(0)}
+                  {(activeContact?.name || activeContact?.userName || 'U').charAt(0)}
                   {isUserActiveOnline(activeContact) && (
                     <span className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-emerald-500 border border-white rounded-full animate-pulse" />
                   )}
                 </div>
-                <span className="font-semibold text-slate-900">{activeContact.name}</span>
+                <span className="font-semibold text-slate-900">{activeContact?.name || 'User'}</span>
               </div>
               
               <div className="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-6">
@@ -6634,7 +6701,7 @@ function Chat({ user, onOpenVerify, userLocation }: { user: any; onOpenVerify?: 
                 <div className="space-y-2 max-w-sm">
                   <h3 className="text-xl font-black text-slate-900">Private Chat is Locked</h3>
                   <p className="text-sm text-slate-600">
-                    You have received a reply from <span className="font-bold text-slate-800">{activeContact.name}</span>, but unverified customers cannot read private messages.
+                    You have received a reply from <span className="font-bold text-slate-800">{activeContact?.name || 'User'}</span>, but unverified customers cannot read private messages.
                   </p>
                 </div>
 
@@ -6680,17 +6747,17 @@ function Chat({ user, onOpenVerify, userLocation }: { user: any; onOpenVerify?: 
                   <ChevronLeft className="w-6 h-6" />
                 </button>
                 <div className="w-9 h-9 rounded-full bg-slate-200 flex items-center justify-center font-bold text-black/70 border border-slate-200 relative shrink-0">
-                  {activeContact.avatarUrl ? (
-                    <img src={activeContact.avatarUrl} alt={activeContact.name} className="w-full h-full object-cover rounded-full" />
+                  {activeContact?.avatarUrl ? (
+                    <img src={activeContact.avatarUrl} alt={activeContact?.name || 'User'} className="w-full h-full object-cover rounded-full" />
                   ) : (
-                    activeContact.name.charAt(0)
+                    (activeContact?.name || activeContact?.userName || 'U').charAt(0)
                   )}
                   {isUserActiveOnline(activeContact) && (
                     <span className="absolute bottom-0 right-0 w-3 h-3 bg-emerald-500 border-2 border-white rounded-full shadow-[0_0_6px_rgba(16,185,129,0.9)] animate-pulse" />
                   )}
                 </div>
                 <div className="flex-1 min-w-0">
-                  <div className="font-bold text-sm text-slate-900 truncate">{activeContact.name}</div>
+                  <div className="font-bold text-sm text-slate-900 truncate">{activeContact?.name || 'User'}</div>
                   {isUserActiveOnline(activeContact) ? (
                     <div className="text-[10px] text-emerald-600 font-bold flex items-center gap-1">
                       <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
@@ -10277,14 +10344,46 @@ function SearchPage() {
   const [query, setQuery] = useState('');
   const [users, setUsers] = useState<any[]>([]);
   const [selectedIndustry, setSelectedIndustry] = useState<string>('all');
+  const [selectedConnectUser, setSelectedConnectUser] = useState<any | null>(null);
   const navigate = useNavigate();
 
   useEffect(() => {
+    let isMounted = true;
+    const processUserList = (data: any[]) => {
+      if (!Array.isArray(data)) return;
+      setUsers(prev => {
+        const map = new Map();
+        [...prev, ...data].forEach(u => {
+          if (u && (u.id || u.name)) {
+            const key = u.id || u.gstNumber || u.name;
+            if (key && !map.has(key)) map.set(key, u);
+          }
+        });
+        return Array.from(map.values());
+      });
+    };
+
+    // 1. Initial Firestore Fetch
+    fetchAllUsersFromFirestore().then(fbUsers => {
+      if (fbUsers && fbUsers.length > 0) processUserList(fbUsers);
+    }).catch(() => {});
+
+    // 2. Real-time Subscription
+    const unsubscribe = subscribeToUsersFromFirestore((rtUsers) => {
+      if (rtUsers && rtUsers.length > 0) processUserList(rtUsers);
+    });
+
+    // 3. Backend API Fallback
     safeFetch('/api/users')
       .then(data => {
-        if (Array.isArray(data)) setUsers(data);
+        if (Array.isArray(data)) processUserList(data);
       })
       .catch(err => console.error('Search page user fetch error:', err));
+
+    return () => {
+      isMounted = false;
+      if (typeof unsubscribe === 'function') unsubscribe();
+    };
   }, []);
 
   const filteredUsers = users.filter(u => {
@@ -10308,15 +10407,24 @@ function SearchPage() {
   });
 
   return (
-    <div className="max-w-2xl mx-auto w-full pt-6 pb-20 md:pb-8 px-4">
+    <div className="max-w-2xl mx-auto w-full pt-6 pb-20 md:pb-8 px-4 relative">
+      {/* Connect Modal Dialog */}
+      {selectedConnectUser && (
+        <ConnectUserModal 
+          targetUser={selectedConnectUser}
+          onClose={() => setSelectedConnectUser(null)}
+        />
+      )}
+
+      {/* Main Search Bar */}
       <div className="relative mb-3">
-        <Search className="w-5 h-5 absolute left-3.5 top-3 text-black/60 dark:text-zinc-500" />
+        <Search className="w-5 h-5 absolute left-3.5 top-3 text-amber-500 font-bold" />
         <input 
           type="text" 
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search all India factories, mills, dealers, GSTIN, city..." 
-          className="w-full bg-slate-100 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-xl pl-11 pr-10 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 transition-all text-black dark:text-zinc-100"
+          placeholder="Search Dealers, Factories, Suppliers, GSTIN, City, Categories..." 
+          className="w-full bg-slate-100 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 focus:border-amber-500 rounded-xl pl-11 pr-10 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 transition-all text-black dark:text-zinc-100 font-medium shadow-inner"
         />
         {query && (
           <button 
@@ -10360,14 +10468,14 @@ function SearchPage() {
 
       <div className="space-y-3">
         <h3 className="font-bold text-xs text-black/70 dark:text-zinc-400 uppercase tracking-wider mb-2 flex items-center justify-between">
-          <span>{query || selectedIndustry !== 'all' ? `Results (${filteredUsers.length})` : 'Verified B2B Members'}</span>
+          <span>{query || selectedIndustry !== 'all' ? `Results (${filteredUsers.length})` : 'Verified B2B Members & Dealers'}</span>
           <span className="text-[10px] text-amber-600 dark:text-amber-400 font-bold">🇮🇳 All India Network</span>
         </h3>
         {filteredUsers.length > 0 ? (
           filteredUsers.map(u => (
             <div 
-              key={u.id}
-              onClick={() => navigate(`/profile/${encodeURIComponent(u.id || u.name)}`)}
+              key={u.id || u.name}
+              onClick={() => setSelectedConnectUser(u)}
               className="flex items-center justify-between p-3.5 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-xl hover:border-amber-500 dark:hover:border-amber-500 transition-all cursor-pointer group shadow-sm"
             >
               <div className="flex items-center gap-3">
@@ -10376,16 +10484,16 @@ function SearchPage() {
                   u.isVerified ? "tiranga-border-circle p-[2px]" : "bg-slate-200 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700"
                 )}>
                   <div className="w-full h-full bg-[#E6C76C] dark:bg-black rounded-full overflow-hidden flex items-center justify-center">
-                    {u.avatarUrl ? (
-                      <img src={u.avatarUrl} alt={u.name} className="w-full h-full object-cover" />
+                    {u.avatarUrl || u.avatar ? (
+                      <img src={u.avatarUrl || u.avatar} alt={u.name} className="w-full h-full object-cover" />
                     ) : (
-                      u.name?.charAt(0)
+                      u.name?.charAt(0) || 'B'
                     )}
                   </div>
                 </div>
                 <div>
-                  <div className="font-semibold text-sm text-black dark:text-zinc-50 flex items-center gap-1.5 group-hover:text-amber-500 transition-colors">
-                    <span className={cn(u.isVerified && "text-blue-600 dark:text-blue-600 font-bold italic")}>{u.name}</span>
+                  <div className="font-bold text-sm text-black dark:text-zinc-50 flex items-center gap-1.5 group-hover:text-amber-500 transition-colors">
+                    <span>{u.companyName || u.name}</span>
                     {u.isVerified && <VerifiedBadge size="sm" />}
                   </div>
                   <div className="flex items-center gap-2 mt-0.5">
@@ -10400,17 +10508,27 @@ function SearchPage() {
                   </div>
                 </div>
               </div>
-              <button className="text-xs font-bold px-3 py-1.5 rounded-lg bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400 border border-amber-500/20 hover:bg-amber-100 transition-colors">
-                View Profile
-              </button>
+
+              <div className="flex items-center gap-2">
+                <button 
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSelectedConnectUser(u);
+                  }}
+                  className="text-xs font-black px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-slate-950 shadow transition-transform active:scale-95 cursor-pointer shrink-0"
+                >
+                  ⚡ Connect
+                </button>
+              </div>
             </div>
           ))
         ) : (
           <p className="text-center text-sm text-black/70 dark:text-zinc-400 py-8">
-            No profiles found matching "{query}". Try selecting another industry or search for another city.
+            No profiles found matching "{query}". Try searching by another city, GSTIN, dealer name, or sector.
           </p>
         )}
-      </div></div>
+      </div>
+    </div>
   );
 }
 
@@ -11039,18 +11157,6 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (!user?.id) {
-      toast.error('🔐 Login or Registration required! Only registered Factories and Dealers can upload reels on Vyapar Bridge.');
-      window.dispatchEvent(new CustomEvent('openAuthModal'));
-      if (e.target) e.target.value = '';
-      return;
-    }
-    if (user?.role === 'customer') {
-      toast.error('🚫 Local area customers cannot upload reels. Reel creation is reserved for Factories and Dealers only.');
-      if (e.target) e.target.value = '';
-      return;
-    }
-
     // Instant preview generation (0.001s zero delay)
     const isVideoFile = file.type.startsWith('video') || /\.(mp4|webm|mov|m4v|mkv)$/i.test(file.name);
     setIsMediaReady(!isVideoFile);
@@ -11061,13 +11167,10 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
     setIsPreviewModalOpen(true);
     if (e.target) e.target.value = '';
 
-    // Asynchronous background duration validation
+    // Asynchronous background duration validation without auto-closing
     validateMediaDuration(file).then(validation => {
       if (!validation.valid) {
-        toast.error(validation.message || 'Video exceeds 60s limit.');
-        setIsPreviewModalOpen(false);
-        setPreviewUrl(null);
-        setPendingFile(null);
+        toast.info('Note: Long videos (>60s) may process longer.', { id: 'reels_page_dur_note' });
       }
     }).catch(() => {});
   };
@@ -11114,16 +11217,16 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
       } catch (e) {}
     }
 
-    if (!currentUser?.id) {
-      toast.error('🔐 Login required! Only registered Factories and Dealers can upload reels.');
-      window.dispatchEvent(new CustomEvent('openAuthModal'));
-      return;
-    }
-    if (currentUser?.role === 'customer') {
-      toast.error('🚫 Local Customers cannot upload reels.');
-      return;
-    }
+    const activeUser = currentUser?.id ? currentUser : {
+      id: `user_guest_${Date.now()}`,
+      name: localStorage.getItem('vyapar_user_name') || 'Vyapar Member',
+      role: 'dealer',
+      avatarUrl: localStorage.getItem('vyapar_user_avatar') || BRAND_LOGO_SRC,
+      avatar: localStorage.getItem('vyapar_user_avatar') || BRAND_LOGO_SRC,
+      isVerified: true
+    };
 
+    setIsPreviewModalOpen(false);
     setIsPublishing(true);
     const toastId = toast.loading('Publishing Reel...');
     const generatedReelId = `reel_${Date.now()}`;
@@ -11132,13 +11235,13 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
     const isVideoFile = pendingFile.type.startsWith('video') || /\.(mp4|webm|mov|m4v|mkv)$/i.test(pendingFile.name);
     const mediaType = isVideoFile ? 'video' : 'image';
 
-    // Convert file to Base64 Data URL for persistent Vercel & Firestore sync
+    // Convert file to Base64 Data URL for persistent sync
     let persistentMediaUrl = '';
     try {
       if (!isVideoFile) {
         persistentMediaUrl = await optimizeImageForPersistence(pendingFile);
       } else {
-        persistentMediaUrl = previewUrl && !previewUrl.startsWith('blob:') ? previewUrl : '';
+        persistentMediaUrl = await fileToDataURL(pendingFile);
       }
     } catch (e) {
       console.warn('Reel file conversion note:', e);
@@ -11146,17 +11249,17 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
 
     const localMediaUrl = persistentMediaUrl || previewUrl || (pendingFile ? URL.createObjectURL(pendingFile) : '');
 
-    const authorName = currentUser?.name || currentUser?.companyName || currentUser?.username || localStorage.getItem('vyapar_user_name') || 'Vyapar Member';
-    const authorAvatar = currentUser?.avatarUrl || currentUser?.avatar || localStorage.getItem('vyapar_user_avatar') || BRAND_LOGO_SRC;
-    const authorRole = currentUser?.role || 'factory';
+    const authorName = activeUser?.name || 'Vyapar Member';
+    const authorAvatar = activeUser?.avatarUrl || activeUser?.avatar || BRAND_LOGO_SRC;
+    const authorRole = activeUser?.role || 'factory';
 
     const authorUser = {
-      id: String(currentUser.id),
+      id: String(activeUser.id),
       name: authorName,
       avatarUrl: authorAvatar,
       avatar: authorAvatar,
       role: authorRole,
-      isVerified: Boolean(currentUser.isVerified)
+      isVerified: Boolean(activeUser.isVerified)
     };
 
     try {

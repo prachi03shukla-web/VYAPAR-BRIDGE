@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { ALL_INDUSTRIES, IndustryHub, SubCategory } from '../constants/industryData';
-import { Building2, Store, MapPin, Sparkles, Filter, Navigation, Globe, ShieldCheck, ChevronRight, CheckCircle2 } from 'lucide-react';
+import { Building2, Store, MapPin, Sparkles, Filter, Navigation, Globe, ShieldCheck, ChevronRight, CheckCircle2, Search, X, UserCheck, MessageCircle, Phone } from 'lucide-react';
 import { clsx } from 'clsx';
 import { calculateDistance } from '../App';
+import { ConnectUserModal } from './ConnectUserModal';
 
 interface IndustryCommerceHubProps {
   selectedIndustryId: string;
@@ -33,25 +34,43 @@ export function IndustryCommerceHub({
   onOpenDirectory,
   onOpenVerifyModal
 }: IndustryCommerceHubProps) {
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedConnectUser, setSelectedConnectUser] = useState<any | null>(null);
   const activeIndustry = ALL_INDUSTRIES.find(i => i.id === selectedIndustryId);
 
-  // Calculate counts
-  const filteredDealersCount = dealersList.filter(d => {
-    if (selectedIndustryId === 'all') return true;
-    const catStr = (d.category || '').toLowerCase();
-    const ind = ALL_INDUSTRIES.find(i => i.id === selectedIndustryId);
-    if (!ind) return true;
-    
-    // Check if dealer belongs to any subcategory or industry keywords
-    if (catStr.includes(ind.name.toLowerCase()) || catStr.includes(ind.shortName.toLowerCase())) return true;
-    return ind.subcategories.some(sub => 
-      catStr.includes(sub.name.toLowerCase()) || 
-      sub.tags.some(t => catStr.includes(t))
-    );
-  }).length;
+  // Live search filtering across dealers/suppliers/merchants and industries/categories
+  const cleanQ = searchQuery.trim().toLowerCase();
+
+  const matchedDealers = cleanQ ? dealersList.filter(d => {
+    const name = (d.name || '').toLowerCase();
+    const company = (d.companyName || '').toLowerCase();
+    const cat = (d.category || '').toLowerCase();
+    const city = (d.city || '').toLowerCase();
+    const state = (d.state || '').toLowerCase();
+    const gst = (d.gstNumber || '').toLowerCase();
+    const role = (d.role || '').toLowerCase();
+    const bio = (d.bio || '').toLowerCase();
+
+    return name.includes(cleanQ) || company.includes(cleanQ) || cat.includes(cleanQ) || city.includes(cleanQ) || state.includes(cleanQ) || gst.includes(cleanQ) || role.includes(cleanQ) || bio.includes(cleanQ);
+  }) : [];
+
+  const matchedIndustries = cleanQ ? ALL_INDUSTRIES.filter(ind => {
+    const indName = ind.name.toLowerCase();
+    const shortName = ind.shortName.toLowerCase();
+    const subsMatch = ind.subcategories.some(s => s.name.toLowerCase().includes(cleanQ) || s.tags.some(t => t.toLowerCase().includes(cleanQ)));
+    return indName.includes(cleanQ) || shortName.includes(cleanQ) || subsMatch;
+  }) : [];
 
   return (
-    <div className="w-full mb-6 space-y-3">
+    <div className="w-full mb-6 space-y-3 relative">
+      {/* Connect Modal Dialog */}
+      {selectedConnectUser && (
+        <ConnectUserModal 
+          targetUser={selectedConnectUser}
+          onClose={() => setSelectedConnectUser(null)}
+        />
+      )}
+
       {/* Top Banner: All India Commerce Hub Header */}
       <div className="bg-gradient-to-r from-amber-500/10 via-slate-900/40 to-blue-500/10 dark:from-amber-950/40 dark:via-zinc-900/60 dark:to-blue-950/40 border border-amber-500/30 dark:border-amber-500/20 rounded-2xl p-3.5 shadow-md">
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5">
@@ -69,7 +88,7 @@ export function IndustryCommerceHub({
                 </span>
               </div>
               <p className="text-[11px] text-black/70 dark:text-zinc-400 font-medium">
-                Tiles, Textile, FMCG, Hardware & Logistics connecting directly with Factories & Dealers
+                Search & Connect directly with Factories, Mills, Dealers & Suppliers
               </p>
             </div>
           </div>
@@ -106,6 +125,135 @@ export function IndustryCommerceHub({
               <span className="text-[9px] px-1 py-0.2 bg-white/20 rounded font-black">VIP ₹1188</span>
             </button>
           </div>
+        </div>
+
+        {/* Live Search Bar inside Vyapar Hub */}
+        <div className="mt-3 relative">
+          <div className="relative flex items-center">
+            <Search className="w-4 h-4 absolute left-3.5 text-amber-500 font-bold" />
+            <input 
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search Dealer, Factory, Merchant, Item (e.g. Mukul, Tiles, FMCG, City)..."
+              className="w-full bg-white dark:bg-zinc-950 border border-amber-500/40 focus:border-amber-500 rounded-xl pl-10 pr-9 py-2 text-xs font-medium text-black dark:text-zinc-100 placeholder:text-black/70 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-amber-500/30 shadow-inner"
+            />
+            {searchQuery && (
+              <button 
+                onClick={() => setSearchQuery('')}
+                className="absolute right-3 text-black/60 dark:text-zinc-400 hover:text-black text-xs font-bold p-1 cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+
+          {/* LIVE SEARCH POPUP OVERLAY */}
+          {cleanQ && (
+            <div className="absolute left-0 right-0 top-full mt-2 z-50 bg-white dark:bg-zinc-900 rounded-2xl shadow-2xl border border-amber-500/40 p-4 max-h-[75vh] overflow-y-auto animate-in fade-in zoom-in-95 duration-150">
+              <div className="flex items-center justify-between pb-2 mb-3 border-b border-slate-100 dark:border-zinc-800">
+                <div className="flex items-center gap-1.5">
+                  <Sparkles className="w-4 h-4 text-amber-500" />
+                  <span className="font-black text-xs uppercase tracking-wider text-black dark:text-zinc-100">
+                    Live Search Results ({matchedDealers.length + matchedIndustries.length})
+                  </span>
+                </div>
+                <button 
+                  onClick={() => setSearchQuery('')}
+                  className="text-[11px] font-bold text-amber-600 dark:text-amber-400 hover:underline cursor-pointer"
+                >
+                  Close Results
+                </button>
+              </div>
+
+              {/* 1. Matching Dealers & Merchants */}
+              <div className="space-y-2 mb-4">
+                <span className="text-[10px] font-black uppercase tracking-widest text-black/70 dark:text-zinc-400 block">
+                  🏬 Suppliers, Dealers & Merchants ({matchedDealers.length})
+                </span>
+                {matchedDealers.length > 0 ? (
+                  matchedDealers.map((d, idx) => (
+                    <div 
+                      key={d.id || `dealer-${idx}`}
+                      onClick={() => setSelectedConnectUser(d)}
+                      className="p-3 bg-slate-50 dark:bg-zinc-950 border border-slate-200 dark:border-zinc-800 rounded-xl hover:border-amber-500 transition-all flex items-center justify-between gap-3 cursor-pointer group"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className={`w-10 h-10 rounded-full overflow-hidden shrink-0 ${d.isVerified ? 'tiranga-border-circle p-[2px]' : 'bg-slate-200 dark:bg-zinc-800'}`}>
+                          <div className="w-full h-full bg-[#E6C76C] dark:bg-black rounded-full overflow-hidden flex items-center justify-center font-bold text-black dark:text-zinc-200 text-sm">
+                            {d.avatarUrl || d.avatar ? (
+                              <img src={d.avatarUrl || d.avatar} alt={d.name} className="w-full h-full object-cover" />
+                            ) : (
+                              d.name?.charAt(0) || 'B'
+                            )}
+                          </div>
+                        </div>
+                        <div className="min-w-0">
+                          <h4 className="font-bold text-xs text-black dark:text-zinc-100 group-hover:text-amber-500 transition-colors flex items-center gap-1 truncate">
+                            <span>{d.companyName || d.name}</span>
+                            {d.isVerified && <CheckCircle2 className="w-3.5 h-3.5 text-blue-500 shrink-0" />}
+                          </h4>
+                          <p className="text-[10px] text-black/60 dark:text-zinc-400 truncate">
+                            {d.role === 'factory' ? '🏭 Factory / Mill' : '🏬 Dealer / Dist.'} {d.city ? `• ${d.city}, ${d.state || ''}` : ''}
+                          </p>
+                        </div>
+                      </div>
+
+                      <button 
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedConnectUser(d);
+                        }}
+                        className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-[11px] rounded-lg shadow transition-transform active:scale-95 cursor-pointer shrink-0"
+                      >
+                        ⚡ Connect Now
+                      </button>
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-xs text-black/70 dark:text-zinc-400 italic py-1">
+                    No specific dealer/supplier name matching "{searchQuery}"
+                  </p>
+                )}
+              </div>
+
+              {/* 2. Matching Categories & Industries */}
+              <div className="space-y-2">
+                <span className="text-[10px] font-black uppercase tracking-widest text-black/70 dark:text-zinc-400 block">
+                  🏷️ Categories & Sector Hubs ({matchedIndustries.length})
+                </span>
+                {matchedIndustries.length > 0 ? (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {matchedIndustries.map(ind => (
+                      <button
+                        key={ind.id}
+                        onClick={() => {
+                          onSelectIndustry(ind.id);
+                          onSelectSubcategory('all');
+                          setSearchQuery('');
+                        }}
+                        className="p-2.5 bg-slate-50 dark:bg-zinc-950 border border-slate-200 dark:border-zinc-800 rounded-xl hover:border-amber-500 transition-all flex items-center gap-2 text-left cursor-pointer"
+                      >
+                        <span className="text-base">{ind.icon}</span>
+                        <div>
+                          <span className="font-bold text-xs text-black dark:text-zinc-100 block">
+                            {ind.name}
+                          </span>
+                          <span className="text-[10px] text-black/60 dark:text-zinc-400 block">
+                            Filter by {ind.shortName}
+                          </span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-black/70 dark:text-zinc-400 italic py-1">
+                    No matching industry categories
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Primary Industry Tabs Bar */}
@@ -154,6 +302,7 @@ export function IndustryCommerceHub({
           })}
         </div>
       </div>
+
 
       {/* Subcategory Pills & Secondary Filter Toolbar */}
       {activeIndustry && (
