@@ -224,9 +224,9 @@ export async function fetchPostsFromFirestore(): Promise<any[]> {
     }
   } catch (e) {}
 
-  // 2. Load latest real-time documents from Firestore with query limit
+  // 2. Load latest real-time documents from Firestore (All Posts & Members Uncapped)
   try {
-    const postsQuery = query(collection(db, 'posts'), limit(250));
+    const postsQuery = query(collection(db, 'posts'));
     const snap = await getDocs(postsQuery);
     snap.forEach((docSnap) => {
       const data = docSnap.data();
@@ -279,7 +279,7 @@ export async function fetchPostsFromFirestore(): Promise<any[]> {
 // 2. Real-Time Firestore Subscription Listeners (Instant Multi-Device Sync with Free Tier Optimization)
 export function subscribeToPostsFromFirestore(callback: (posts: any[]) => void): () => void {
   try {
-    const postsQuery = query(collection(db, 'posts'), limit(250));
+    const postsQuery = query(collection(db, 'posts'));
     return onSnapshot(postsQuery, (snapshot) => {
       const postsMap = new Map<string, any>();
 
@@ -337,6 +337,8 @@ export function subscribeToPostsFromFirestore(callback: (posts: any[]) => void):
     }, (error: any) => {
       if (error?.message?.includes('Quota') || error?.code === 'resource-exhausted') {
         console.warn('Firestore real-time posts: Free daily read units limit reached. Local cache active.');
+      } else if (error?.code === 'cancelled' || error?.message?.includes('CANCELLED') || error?.message?.includes('Disconnecting idle stream')) {
+        // Normal gRPC stream lifecycle event when idle, ignore
       } else {
         console.warn('Firestore real-time posts subscription note:', error);
       }
@@ -349,7 +351,7 @@ export function subscribeToPostsFromFirestore(callback: (posts: any[]) => void):
 
 export function subscribeToUsersFromFirestore(callback: (users: any[]) => void): () => void {
   try {
-    const usersQuery = query(collection(db, 'users'), limit(50));
+    const usersQuery = query(collection(db, 'users'));
     return onSnapshot(usersQuery, (snapshot) => {
       const list: any[] = [];
       snapshot.forEach((docSnap) => {
@@ -362,6 +364,8 @@ export function subscribeToUsersFromFirestore(callback: (users: any[]) => void):
     }, (error: any) => {
       if (error?.message?.includes('Quota') || error?.code === 'resource-exhausted') {
         console.warn('Firestore real-time users: Free daily read units limit reached. Local cache active.');
+      } else if (error?.code === 'cancelled' || error?.message?.includes('CANCELLED') || error?.message?.includes('Disconnecting idle stream')) {
+        // Normal gRPC stream lifecycle event when idle, ignore
       } else {
         console.warn('Firestore real-time users subscription note:', error);
       }
@@ -1005,9 +1009,9 @@ export async function fetchAllUsersFromFirestore(): Promise<any[]> {
     }
   } catch (e) {}
 
-  // 2. Fetch from Firestore 'users' collection with query limit
+  // 2. Fetch from Firestore 'users' collection (All Members Uncapped)
   try {
-    const usersQuery = query(collection(db, 'users'), limit(50));
+    const usersQuery = query(collection(db, 'users'));
     const snap = await getDocs(usersQuery);
     snap.forEach((docSnap) => {
       const data = docSnap.data();
