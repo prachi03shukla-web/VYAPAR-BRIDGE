@@ -377,6 +377,9 @@ function loadDatabase() {
   if (!db.notInterested) db.notInterested = [];
   loadAdminSettings(); // Load overrides
   syncFromFirestore();
+  setInterval(() => {
+    syncFromFirestore().catch(() => {});
+  }, 15000);
 }
 
 // Helper to save database synchronously to disk immediately
@@ -864,12 +867,16 @@ Return ONLY a valid raw JSON object (NO markdown, NO \`\`\`json backticks, NO ex
   });
 
   // Get all posts (ranked via Recommendation Algorithm, excluding blocked users and Not Interested posts)
-  app.get('/api/posts', (req, res) => {
+  app.get('/api/posts', async (req, res) => {
     const currentUserId = req.query.currentUserId ? String(req.query.currentUserId) : null;
     const queryUserId = req.query.userId ? String(req.query.userId) : undefined;
     const admin = req.query.admin === 'true';
     const limit = req.query.limit ? parseInt(String(req.query.limit), 10) : undefined;
     const page = req.query.page ? parseInt(String(req.query.page), 10) : undefined;
+
+    try {
+      await syncFromFirestore();
+    } catch (e) {}
 
     const rankedPosts = generateInstagramFeed(currentUserId, db, { queryUserId, admin, limit, page });
     res.json(rankedPosts);

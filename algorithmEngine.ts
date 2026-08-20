@@ -79,8 +79,8 @@ export function generateInstagramFeed(
       if (!isTargetUser) return false;
     }
 
-    // Filter by post status (approved unless admin mode)
-    if (!options.admin && p.status && p.status !== 'approved') return false;
+    // Filter out rejected posts
+    if (p.status === 'rejected') return false;
 
     return true;
   });

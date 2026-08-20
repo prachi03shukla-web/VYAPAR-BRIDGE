@@ -5382,6 +5382,9 @@ function CreatePost({ user }: { user: any }) {
           aiFlagReason: aiFlagReason || null
         };
 
+        await syncPostToFirestore(finalPostData);
+        window.dispatchEvent(new CustomEvent('postCreated', { detail: finalPostData }));
+
         if (isPendingApproval) {
           toast.info(moderation?.userNotice || '⏳ Business Verification: Aapka post Admin Review ke liye bhej diya gaya hai. Business network security ke liye moderation team link aur content verify karegi.');
         }
