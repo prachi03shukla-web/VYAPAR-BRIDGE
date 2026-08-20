@@ -28,7 +28,7 @@ export const auth = getAuth(app);
 let firestoreInstance: any;
 try {
   firestoreInstance = initializeFirestore(app, {
-    experimentalForceLongPolling: true
+    experimentalAutoDetectLongPolling: true
   }, firebaseConfig.firestoreDatabaseId);
 } catch {
   firestoreInstance = getFirestore(app, firebaseConfig.firestoreDatabaseId);

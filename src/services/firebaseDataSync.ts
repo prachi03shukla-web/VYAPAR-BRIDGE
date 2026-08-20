@@ -472,7 +472,7 @@ export function subscribeToPaymentsFromFirestore(callback: (payments: any[]) => 
         const cached = localStorage.getItem('tileance_payments_cache');
         if (cached) callback(JSON.parse(cached));
       } catch (e) {}
-      if (error?.message?.includes('Quota') || error?.code === 'resource-exhausted') {
+      if (error?.message?.includes('Quota') || error?.code === 'resource-exhausted' || error?.code === 'cancelled' || error?.message?.includes('CANCELLED') || error?.message?.includes('Disconnecting idle stream')) {
         // Handled silently
       } else {
         console.warn('Firestore real-time payments subscription note:', error);
@@ -598,7 +598,7 @@ export function subscribeToAdminSettingsFromFirestore(callback: (data: any) => v
         const cached = localStorage.getItem('tileance_admin_settings_cache');
         if (cached) callback(JSON.parse(cached));
       } catch (e) {}
-      if (error?.message?.includes('Quota') || error?.code === 'resource-exhausted') {
+      if (error?.message?.includes('Quota') || error?.code === 'resource-exhausted' || error?.code === 'cancelled' || error?.message?.includes('CANCELLED') || error?.message?.includes('Disconnecting idle stream')) {
         // Handled silently with cache fallback
       } else {
         console.warn('Firestore admin settings snapshot note:', error);
@@ -651,7 +651,7 @@ export function subscribeToBrandAdsFromFirestore(callback: (ads: any[]) => void)
         const cached = localStorage.getItem('tileance_brand_ads_cache');
         if (cached) callback(JSON.parse(cached));
       } catch (e) {}
-      if (error?.message?.includes('Quota') || error?.code === 'resource-exhausted') {
+      if (error?.message?.includes('Quota') || error?.code === 'resource-exhausted' || error?.code === 'cancelled' || error?.message?.includes('CANCELLED') || error?.message?.includes('Disconnecting idle stream')) {
         // Handled silently
       } else {
         console.warn('Firestore brandAds snapshot note:', error);
@@ -1287,8 +1287,12 @@ export function subscribeToPlatformStatsFromFirestore(
           feedbacks: Array.isArray(data.feedbacks) ? data.feedbacks : []
         });
       }
-    }, (err) => {
-      console.warn('Firestore subscribeToPlatformStats note:', err);
+    }, (err: any) => {
+      if (err?.code === 'cancelled' || err?.message?.includes('CANCELLED') || err?.message?.includes('Disconnecting idle stream')) {
+        // Normal gRPC stream lifecycle event when idle, ignore
+      } else {
+        console.warn('Firestore subscribeToPlatformStats note:', err);
+      }
     });
   } catch (err) {
     console.warn('Firestore subscribeToPlatformStats init error:', err);
