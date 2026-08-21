@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { BrowserRouter, Routes, Route, Link, useNavigate, useLocation, useParams } from 'react-router-dom';
-import { Facebook, Twitter, Instagram, Home, Shield, Moon, Sun, PlusSquare, MessageCircle, MessageSquare, Menu, LogOut, LogIn, Check, X, XCircle, Search, Compass, Film, Heart, Calculator, Bookmark, Info, MoreHorizontal, Image, ImageIcon, ImagePlus, Eye, EyeOff, Camera, Upload, Trash2, Plus, ShieldCheck, Sparkles, QrCode, CheckCircle, CheckCircle2, Award, Smile, Volume2, VolumeX, Play, Pause, ChevronUp, ChevronDown, ArrowLeft, ChevronLeft, ChevronRight, UserPlus, UserCheck, Share2, Phone, Mail, Globe, Building2, Store, MapPin, Locate, Navigation, Tag, Filter, ShieldAlert, UserX, Lock, Key, Clock, FileText, FileCheck, Maximize2, Crop, Loader2, Send, BarChart2, Users, Map as MapIcon, Hash, Pencil, Rocket, ExternalLink, Star, Scale, Video, TrendingUp, ClipboardList, Bell, CreditCard, Calendar, Copy, RefreshCw, AlertTriangle } from 'lucide-react';
+import { Facebook, Twitter, Instagram, Home, Shield, Moon, Sun, PlusSquare, MessageCircle, MessageSquare, Menu, LogOut, LogIn, Check, X, XCircle, Search, Compass, Film, Heart, Calculator, Bookmark, Info, MoreHorizontal, MoreVertical, Music, Image, ImageIcon, ImagePlus, Eye, EyeOff, Camera, Upload, Trash2, Plus, ShieldCheck, Sparkles, QrCode, CheckCircle, CheckCircle2, Award, Smile, Volume2, VolumeX, Play, Pause, ChevronUp, ChevronDown, ArrowLeft, ChevronLeft, ChevronRight, UserPlus, UserCheck, Share2, Phone, Mail, Globe, Building2, Store, MapPin, Locate, Navigation, Tag, Filter, ShieldAlert, UserX, Lock, Key, Clock, FileText, FileCheck, Maximize2, Crop, Loader2, Send, BarChart2, Users, Map as MapIcon, Hash, Pencil, Rocket, ExternalLink, Star, Scale, Video, TrendingUp, ClipboardList, Bell, CreditCard, Calendar, Copy, RefreshCw, AlertTriangle } from 'lucide-react';
 import toast, { Toaster } from 'react-hot-toast';
 
 if (typeof (toast as any).info !== 'function') {
@@ -28,13 +28,16 @@ import { BRAND_LOGO_SRC, BRAND_NAME } from './constants/brandLogo';
 import { auth, db as firestoreDb } from './firebase';
 import { collection, doc, setDoc, getDocs, getDoc, query, where, deleteDoc, orderBy, limit, onSnapshot } from 'firebase/firestore';
 import { DEFAULT_B2B_POSTS } from './data/defaultPosts';
-import { fetchPostsFromFirestore, syncPostToFirestore, subscribeToPostsFromFirestore, subscribeToUsersFromFirestore, subscribeToPaymentsFromFirestore, submitPaymentUTRToFirestore, getAdminSettingsFromFirestore, saveAdminSettingsToFirestore, subscribeToAdminSettingsFromFirestore, saveBrandAdsToFirestore, subscribeToBrandAdsFromFirestore, likePostInFirestore, savePostInFirestore, addCommentToFirestore, fetchCommentsFromFirestore, subscribeToCommentsFromFirestore, followUserInFirestore, recordViewInFirestore, recordShareInFirestore, authenticateUserInFirestore, blockUserInFirestore, markPostNotInterestedInFirestore, getUsersBlockedAndNotInterestedFromFirestore, clearDefaultDataFromFirestore, deleteUserFromFirestore, deletePostFromFirestore, syncUserToFirestore, fetchAllUsersFromFirestore, sanitizeForFirestore, updateUserVerificationInFirestore, subscribeToPlatformStatsFromFirestore, startPresenceHeartbeat, updateUserPresence, isUserActiveOnline, getUserLastActiveFormatted } from './services/firebaseDataSync';
+import { fetchPostsFromFirestore, syncPostToFirestore, subscribeToPostsFromFirestore, subscribeToUsersFromFirestore, subscribeToPaymentsFromFirestore, submitPaymentUTRToFirestore, getAdminSettingsFromFirestore, saveAdminSettingsToFirestore, subscribeToAdminSettingsFromFirestore, saveBrandAdsToFirestore, subscribeToBrandAdsFromFirestore, likePostInFirestore, savePostInFirestore, recordEnquiryInFirestore, addCommentToFirestore, fetchCommentsFromFirestore, subscribeToCommentsFromFirestore, followUserInFirestore, recordViewInFirestore, recordShareInFirestore, authenticateUserInFirestore, blockUserInFirestore, markPostNotInterestedInFirestore, getUsersBlockedAndNotInterestedFromFirestore, clearDefaultDataFromFirestore, deleteUserFromFirestore, deletePostFromFirestore, syncUserToFirestore, fetchAllUsersFromFirestore, sanitizeForFirestore, updateUserVerificationInFirestore, subscribeToPlatformStatsFromFirestore, startPresenceHeartbeat, updateUserPresence, isUserActiveOnline, getUserLastActiveFormatted } from './services/firebaseDataSync';
 import { ConnectUserModal } from './components/ConnectUserModal';
 import { suggestHashtagsWithAI } from './services/aiService';
 import { optimizeImageForPersistence, fileToDataURL, generateVideoThumbnail } from './utils/imageOptimizer';
 import { decodeUpiIdFromImageFile, extractUpiIdFromPayload } from './utils/qrUpiDecoder';
 import { moderateContentUniversally } from './services/moderationService';
-import { playBubblePopSound } from './utils/audioEffects';
+import { playBubblePopSound, playLikeSound, playSaveSound, playShareSound, playEnquirySound, playMessageSound, getSoundSettingsSync, updateSoundSettings } from './utils/audioEffects';
+import { CommentMediaLightbox } from './components/CommentMediaLightbox';
+import { GifPickerModal } from './components/GifPickerModal';
+import { handleClipboardMediaPaste } from './utils/clipboardHelper';
 import { isPostLikedByUser, isPostSavedByUser, setPostLikedInLocalStorage, setPostSavedInLocalStorage } from './utils/likeSaveHelpers';
 
 export function renderSafeCommentText(content: string, isAuthorOrAdmin = false): { text: string; masked: boolean } {
@@ -1065,8 +1068,13 @@ function ReelCard({
   const [sharesCount, setSharesCount] = useState(reel?.sharesCount || 0);
   const [comments, setComments] = useState<any[]>([]);
   const [commentsCount, setCommentsCount] = useState(reel?.commentsCount || 0);
+  const [enquiriesCount, setEnquiriesCount] = useState(reel?.enquiriesCount || 0);
   const [viewsCount, setViewsCount] = useState(() => reel?.viewsCount || 0);
   const [commentText, setCommentText] = useState('');
+  const [reelCommentImagePreview, setReelCommentImagePreview] = useState<string | null>(null);
+  const [isReelGifModalOpen, setIsReelGifModalOpen] = useState(false);
+  const [selectedReelLightboxImage, setSelectedReelLightboxImage] = useState<{ url: string; user?: string; avatar?: string; text?: string } | null>(null);
+  const reelCommentFileInputRef = React.useRef<HTMLInputElement>(null);
   const [isMuted, setIsMuted] = useState(false);
   const [isPlaying, setIsPlaying] = useState(true);
   const [showMore, setShowMore] = useState(false);
@@ -1296,6 +1304,7 @@ function ReelCard({
 
   const handleLike = async (e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
+    if (!isLiked) playLikeSound();
     if (!currentUser?.id) {
       toast.error('🔐 Please Login or Register to Like reels!');
       window.dispatchEvent(new CustomEvent('openAuthModal'));
@@ -1335,6 +1344,7 @@ function ReelCard({
 
   const handleSave = async (e: React.MouseEvent) => {
     e.stopPropagation();
+    if (!isSaved) playSaveSound();
     if (!currentUser?.id) {
       toast.error('🔐 Please Login or Register to Save reels!');
       window.dispatchEvent(new CustomEvent('openAuthModal'));
@@ -1380,9 +1390,20 @@ function ReelCard({
     currentUser?.isAdmin
   );
 
-  const handleDelete = async () => {
+  const handleDelete = async (e?: React.MouseEvent) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
     const reelId = String(reel?.id || '');
     if (!reelId) return;
+    
+    // Immediate Optimistic UI updates
+    setShowOptionsModal(false);
+    if (onClose) onClose();
+    window.dispatchEvent(new CustomEvent('reelDeleted', { detail: { reelId } }));
+    window.dispatchEvent(new CustomEvent('postDeleted', { detail: { postId: reelId } }));
+
     try {
       // 1. Direct Firestore & LocalStorage permanent deletion
       await deletePostFromFirestore(reelId);
@@ -1393,17 +1414,8 @@ function ReelCard({
       } catch (e) {}
 
       toast.success('Reel deleted successfully');
-      setShowOptionsModal(false);
-      if (onClose) onClose();
-      // Notify other components
-      window.dispatchEvent(new CustomEvent('reelDeleted', { detail: { reelId } }));
-      window.dispatchEvent(new CustomEvent('postDeleted', { detail: { postId: reelId } }));
     } catch (err) {
       toast.success('Reel deleted');
-      setShowOptionsModal(false);
-      if (onClose) onClose();
-      window.dispatchEvent(new CustomEvent('reelDeleted', { detail: { reelId } }));
-      window.dispatchEvent(new CustomEvent('postDeleted', { detail: { postId: reelId } }));
     }
   };
 
@@ -1430,6 +1442,8 @@ function ReelCard({
 
   const handleShare = (e: React.MouseEvent) => {
     e.stopPropagation();
+    setSharesCount(prev => prev + 1);
+    playShareSound();
     if (reel?.id) recordShareInFirestore(reel.id);
     if (currentUser?.id && reel?.id) {
       fetch(`/api/posts/${reel.id}/share`, {
@@ -1465,12 +1479,43 @@ function ReelCard({
     }
   }, [showCommentsDrawer, reel?.id]);
 
+  const handleReelCommentImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const isGif = file.type === 'image/gif' || file.name.toLowerCase().endsWith('.gif');
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        if (event.target?.result) {
+          setReelCommentImagePreview(event.target.result as string);
+        }
+      };
+      reader.readAsDataURL(file);
+
+      if (!isGif) {
+        try {
+          const compressed = await optimizeImageForPersistence(file, 640, 640, 0.72);
+          if (compressed) {
+            setReelCommentImagePreview(compressed);
+          }
+        } catch (err) {
+          console.warn('Image optimization notice:', err);
+        }
+      }
+    }
+  };
+
   const handleAddComment = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!commentText.trim()) return;
+    if (!currentUser) {
+      window.dispatchEvent(new CustomEvent('openAuthModal'));
+      return;
+    }
+    if (!commentText.trim() && !reelCommentImagePreview) return;
 
     const content = commentText.trim();
+    const commentImg = reelCommentImagePreview;
     setCommentText('');
+    setReelCommentImagePreview(null);
     setIsSubmittingComment(false);
 
     try { playBubblePopSound(); } catch (e) {}
@@ -1480,6 +1525,8 @@ function ReelCard({
     const optimisticComment = {
       id: tempId,
       content,
+      commentImage: commentImg,
+      imageUrl: commentImg,
       userId: currentUser?.id || '1',
       userName: currentUser?.name || 'You',
       userAvatar: currentUser?.avatarUrl || localStorage.getItem('vyapar_user_avatar') || BRAND_LOGO_SRC,
@@ -1509,6 +1556,8 @@ function ReelCard({
 
         const newCommentObj = {
           content,
+          commentImage: commentImg,
+          imageUrl: commentImg,
           userId: currentUser?.id || '1',
           userName: currentUser?.name || 'User',
           userAvatar: currentUser?.avatarUrl || '',
@@ -1526,6 +1575,7 @@ function ReelCard({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             content,
+            commentImage: commentImg,
             userId: currentUser?.id || '1'
           })
         });
@@ -1613,9 +1663,26 @@ function ReelCard({
           )}
         </AnimatePresence>
 
+        {/* Ambient Blur Backdrop */}
+        {isVideo && mediaSrc ? (
+          <video
+            src={mediaSrc}
+            muted
+            playsInline
+            loop
+            className="absolute inset-0 w-full h-full object-cover blur-2xl opacity-40 scale-110 pointer-events-none"
+          />
+        ) : (
+          <img
+            src={mediaSrc}
+            alt=""
+            className="absolute inset-0 w-full h-full object-cover blur-2xl opacity-40 scale-110 pointer-events-none"
+          />
+        )}
+
         {/* Sharp Foreground Media */}
         {(mediaSrc.includes('youtube.com') || mediaSrc.includes('youtu.be') || mediaSrc.includes('facebook.com') || mediaSrc.includes('fb.watch')) ? (
-          <AdMediaDisplay ad={{ type: 'video', mediaUrl: mediaSrc }} className="relative z-10 w-full h-full object-cover pointer-events-auto" />
+          <AdMediaDisplay ad={{ type: 'video', mediaUrl: mediaSrc }} className="relative z-10 w-full h-full object-contain pointer-events-auto" />
         ) : isVideo && mediaSrc ? (
           <video
             ref={videoRef}
@@ -1626,13 +1693,13 @@ function ReelCard({
             preload="auto"
             loop
             onEnded={handleMediaEnded}
-            className="relative z-10 w-full h-full object-cover transition-all duration-300 m-auto transform-gpu will-change-transform"
+            className="relative z-10 w-full h-full object-contain transition-all duration-300 m-auto transform-gpu will-change-transform"
           />
         ) : (
           <img 
             src={mediaSrc} 
             alt={reel?.title || 'Reel media'} 
-            className="relative z-10 w-full h-full object-cover transition-all duration-300 m-auto"
+            className="relative z-10 w-full h-full object-contain transition-all duration-300 m-auto"
             onError={(e) => {
               e.currentTarget.src = 'https://images.unsplash.com/photo-1615971677499-5467cbab01c0?auto=format&fit=crop&w=800&q=80';
             }}
@@ -1683,6 +1750,58 @@ function ReelCard({
             <Share2 className="w-6 h-6" />
           </div>
           <span className="text-xs font-semibold drop-shadow-md">{sharesCount}</span>
+        </button>
+
+        {/* Save Button */}
+        <button 
+          onClick={handleSave}
+          className="flex flex-col items-center gap-1 text-white group cursor-pointer"
+        >
+          <div className="w-11 h-11 rounded-full bg-black/40 hover:bg-black/60 backdrop-blur-md border border-white/15 flex items-center justify-center transition-all group-active:scale-125">
+            <Bookmark className={cn("w-6 h-6", isSaved && "fill-white")} />
+          </div>
+          <span className="text-xs font-semibold drop-shadow-md">{savedCount}</span>
+        </button>
+        
+        {/* Enquiry Button */}
+        <button 
+          onClick={(e) => {
+            e.stopPropagation();
+            if (currentUser?.role === 'customer' && currentUser?.membershipType === 'local') {
+              const targetCoords = reel?.user?.gpsCoords || reel?.gpsCoords;
+              if (userLocation && targetCoords) {
+                const dist = calculateDistance(userLocation.lat, userLocation.lng, targetCoords.lat, targetCoords.lng);
+                if (dist > 100) {
+                  window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: `📍 Distance Restriction: As a Local Member, you can only inquire with dealers within 100km. This business is ${Math.round(dist)}km away.` } }));
+                  return;
+                }
+              }
+            }
+            playEnquirySound();
+            if (reel.id) {
+              setEnquiriesCount(prev => prev + 1);
+              recordEnquiryInFirestore(reel.id, currentUser?.id || 'anonymous', currentUser?.name || 'A user').catch(()=>{});
+            }
+            if (onClose) onClose();
+            navigate('/chat');
+          }}
+          className="flex flex-col items-center gap-1 text-emerald-400 group cursor-pointer"
+        >
+          <div className="w-11 h-11 rounded-full bg-black/40 hover:bg-black/60 backdrop-blur-md border border-white/15 flex items-center justify-center transition-all group-active:scale-125">
+            <MessageSquare className="w-6 h-6" />
+          </div>
+          <span className="text-xs font-semibold drop-shadow-md text-white">{enquiriesCount}</span>
+        </button>
+
+        {/* Options / More Button */}
+        <button 
+          onClick={(e) => { e.stopPropagation(); setShowOptionsModal(true); }}
+          className="flex flex-col items-center gap-1 text-white group cursor-pointer"
+          title="More options & Delete"
+        >
+          <div className="w-11 h-11 rounded-full bg-black/40 hover:bg-black/60 backdrop-blur-md border border-white/15 flex items-center justify-center transition-all group-active:scale-125">
+            <MoreVertical className="w-5 h-5" />
+          </div>
         </button>
       </div>
 
@@ -1808,8 +1927,29 @@ function ReelCard({
                     const img = c.commentImage || c.imageUrl || c.image || c.mediaUrl;
                     if (!img) return null;
                     return (
-                      <div className="mt-1.5 rounded-lg overflow-hidden border border-zinc-700 max-w-[200px]">
-                        <img src={img} alt="Attachment" className="w-full h-auto max-h-48 object-cover cursor-pointer hover:opacity-95" onClick={() => window.open(img, '_blank')} />
+                      <div className="mt-1.5 rounded-lg overflow-hidden border border-zinc-700 max-w-[200px] group relative shadow-md">
+                        <img 
+                          src={img} 
+                          alt="Attachment" 
+                          className="w-full h-auto max-h-48 object-cover cursor-pointer hover:opacity-95 transition-all" 
+                          onClick={() => setSelectedReelLightboxImage({
+                            url: img,
+                            user: c.user?.name || c.userName || 'Member',
+                            avatar: c.user?.avatarUrl || c.userAvatar,
+                            text: c.content
+                          })} 
+                        />
+                        <div 
+                          onClick={() => setSelectedReelLightboxImage({
+                            url: img,
+                            user: c.user?.name || c.userName || 'Member',
+                            avatar: c.user?.avatarUrl || c.userAvatar,
+                            text: c.content
+                          })}
+                          className="absolute bottom-1 right-1 bg-black/80 hover:bg-black text-white text-[9px] font-bold px-1.5 py-0.5 rounded cursor-pointer flex items-center gap-1"
+                        >
+                          <span>🔍 Preview</span>
+                        </div>
                       </div>
                     );
                   })()}
@@ -1827,20 +1967,104 @@ function ReelCard({
             )}
           </div>
 
-          <form onSubmit={handleAddComment} className="pt-2 border-t border-zinc-800 flex items-center gap-2">
+          {reelCommentImagePreview && (
+            <div className="relative w-20 h-20 mb-2 rounded-lg overflow-hidden border-2 border-blue-500 bg-black/40 group">
+              <img 
+                src={reelCommentImagePreview} 
+                alt="Preview" 
+                className="w-full h-full object-cover cursor-pointer" 
+                onClick={() => setSelectedReelLightboxImage({
+                  url: reelCommentImagePreview,
+                  user: currentUser?.name || 'You',
+                  avatar: currentUser?.avatarUrl,
+                  text: commentText
+                })}
+              />
+              <button 
+                onClick={() => setReelCommentImagePreview(null)}
+                className="absolute top-1 right-1 bg-black/80 hover:bg-red-600 text-white rounded-full p-1 transition-colors cursor-pointer"
+                title="Remove attachment"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          )}
+
+          <form 
+            onSubmit={handleAddComment} 
+            onPaste={(e) => handleClipboardMediaPaste(e, (dataUrl) => {
+              setReelCommentImagePreview(dataUrl);
+            })}
+            className="pt-2 border-t border-zinc-800 flex items-center gap-2 relative"
+          >
+            <input 
+              type="file" 
+              ref={reelCommentFileInputRef}
+              className="hidden" 
+              accept="image/*,.gif,image/gif"
+              onChange={handleReelCommentImageChange}
+            />
+            <button 
+              type="button" 
+              onClick={() => reelCommentFileInputRef.current?.click()}
+              className="p-2 text-zinc-400 hover:text-blue-400 hover:bg-zinc-800 rounded-lg transition-all cursor-pointer"
+              title="Attach photo or GIF"
+            >
+              <Camera className="w-4 h-4" />
+            </button>
+
+            <button 
+              type="button" 
+              onClick={() => setIsReelGifModalOpen(true)}
+              className="px-2 py-1 bg-pink-500/20 hover:bg-pink-500/30 text-pink-400 border border-pink-500/30 rounded-lg font-black text-[11px] transition-all cursor-pointer"
+              title="Add animated GIF"
+            >
+              <span>GIF</span>
+            </button>
+
             <input 
               type="text" 
               value={commentText}
               onChange={e => setCommentText(e.target.value)}
-              placeholder="Write a comment..."
+              placeholder="Write a comment or paste keyboard GIF..."
+              enterKeyHint="send"
               className="flex-1 bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500"
+              onPaste={(e) => handleClipboardMediaPaste(e, (dataUrl) => {
+                setReelCommentImagePreview(dataUrl);
+              })}
             />
-            <button type="submit" disabled={!commentText.trim()} className="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-3 py-2 rounded-lg disabled:opacity-40 cursor-pointer">
-              Send
+            <button 
+              type="submit" 
+              disabled={!commentText.trim() && !reelCommentImagePreview} 
+              className="bg-blue-600 hover:bg-blue-700 active:scale-95 text-white font-bold text-xs px-3.5 py-2 rounded-lg disabled:opacity-40 cursor-pointer flex items-center gap-1 shadow-sm transition-all"
+            >
+              <Send className="w-3 h-3" />
+              <span>Send</span>
             </button>
           </form>
         </div>
       )}
+
+      {/* Reel Comment Media Lightbox Modal */}
+      <CommentMediaLightbox
+        isOpen={Boolean(selectedReelLightboxImage)}
+        onClose={() => setSelectedReelLightboxImage(null)}
+        imageUrl={selectedReelLightboxImage?.url || ''}
+        userName={selectedReelLightboxImage?.user}
+        userAvatar={selectedReelLightboxImage?.avatar}
+        commentText={selectedReelLightboxImage?.text}
+      />
+
+      {/* Reel GIF Picker Modal */}
+      <GifPickerModal
+        isOpen={isReelGifModalOpen}
+        onClose={() => setIsReelGifModalOpen(false)}
+        onSelectGif={(gifUrl) => {
+          setReelCommentImagePreview(gifUrl);
+          setIsReelGifModalOpen(false);
+          toast.success('GIF attached! Send your comment.');
+        }}
+      />
 
       {/* Options Modal */}
       {showOptionsModal && (
@@ -1872,7 +2096,7 @@ function ReelCard({
               <span>Not Interested</span>
             </button>
             {isReelOwnerOrAdmin && (
-              <button onClick={handleDelete} className="w-full text-left px-4 py-3 hover:bg-zinc-800 border-b border-zinc-800 font-semibold text-red-500 cursor-pointer">
+              <button onClick={(e) => handleDelete(e)} className="w-full text-left px-4 py-3 hover:bg-zinc-800 border-b border-zinc-800 font-semibold text-red-500 cursor-pointer">
                 Delete Reel
               </button>
             )}
@@ -2423,7 +2647,6 @@ function StarRatingFeedback({
 function ReelCircleMedia({
   user,
   reel,
-  uploadingMediaThumbnail,
   altName
 }: {
   user?: any;
@@ -2433,11 +2656,7 @@ function ReelCircleMedia({
 }) {
   const [imgError, setImgError] = useState(false);
 
-  if (uploadingMediaThumbnail) {
-    return <img src={uploadingMediaThumbnail} alt="Uploading reel" className="w-full h-full object-cover" />;
-  }
-
-  const avatar = user?.avatarUrl || user?.avatar || reel?.user?.avatarUrl || reel?.user?.avatar || reel?.userAvatar || reel?.avatar;
+  const avatar = user?.avatarUrl || user?.avatar || (typeof localStorage !== 'undefined' ? localStorage.getItem('vyapar_user_avatar') : null) || reel?.user?.avatarUrl || reel?.user?.avatar || reel?.userAvatar || reel?.avatar;
 
   // Custom user profile image if available and valid
   if (avatar && !imgError) {
@@ -2445,13 +2664,13 @@ function ReelCircleMedia({
       <img
         src={avatar}
         alt={altName || user?.name || 'User profile'}
-        className="w-full h-full object-cover"
+        className="w-full h-full object-cover rounded-full"
         onError={() => setImgError(true)}
       />
     );
   }
 
-  // Fallback directly to Vyapar Bridge official logo from /icon.png
+  // Fallback directly to Vyapar Bridge official logo in full fill round shape
   return (
     <img
       src="/icon.png"
@@ -2459,7 +2678,7 @@ function ReelCircleMedia({
       onError={(e) => {
         e.currentTarget.src = BRAND_LOGO_SRC;
       }}
-      className="w-full h-full object-cover p-1 bg-white"
+      className="w-full h-full object-cover rounded-full"
     />
   );
 }
@@ -2491,16 +2710,87 @@ export function formatPostTimeAgo(createdAt: number | string | Date | undefined)
   return `${years} ${years === 1 ? 'year' : 'years'} ago`;
 }
 
+
+function FeedImageWithAudio({
+  src,
+  audioSrc
+}: {
+  src: string;
+  audioSrc: string;
+}) {
+  const audioRef = React.useRef<HTMLAudioElement>(null);
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  const [isMuted, setIsMuted] = useState(true);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || typeof IntersectionObserver === 'undefined') return;
+
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (!entry.isIntersecting || entry.intersectionRatio < 0.2) {
+          if (audioRef.current && !audioRef.current.paused) {
+            audioRef.current.pause();
+            setIsMuted(true);
+          }
+        }
+      });
+    }, { threshold: [0.1, 0.2] });
+    
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  const toggleMute = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const newMuted = !isMuted;
+    setIsMuted(newMuted);
+    
+    if (audioRef.current) {
+      audioRef.current.muted = newMuted;
+      if (!newMuted) {
+        audioRef.current.play().catch(()=>{});
+      } else {
+        audioRef.current.pause();
+      }
+    }
+  };
+
+  return (
+    <div ref={containerRef} className="relative w-full h-full">
+      <img 
+        src={src} 
+        alt="Post media" 
+        className="w-full h-full max-h-[80vh] object-contain bg-black pointer-events-none" 
+        onError={(e) => {
+          e.currentTarget.src = 'https://images.unsplash.com/photo-1615971677499-5467cbab01c0?auto=format&fit=crop&w=800&q=80';
+        }}
+      />
+      <audio ref={audioRef} src={audioSrc} loop preload="metadata" muted={isMuted} />
+      <button
+        onClick={toggleMute}
+        className="absolute bottom-3 right-3 z-20 p-2.5 rounded-full bg-black/65 hover:bg-black/85 text-white backdrop-blur-md border border-white/20 transition-transform active:scale-95 shadow-xl cursor-pointer"
+        title={isMuted ? "Unmute Music" : "Mute Music"}
+      >
+        {isMuted ? <VolumeX className="w-4 h-4 text-white" /> : <Volume2 className="w-4 h-4 text-white" />}
+      </button>
+    </div>
+  );
+}
+
 function FeedVideoPlayer({
   src,
   poster,
-  className
+  className,
+  audioSrc
 }: {
   src: string;
   poster?: string;
   className?: string;
+  audioSrc?: string;
 }) {
   const videoRef = React.useRef<HTMLVideoElement>(null);
+  const audioRef = React.useRef<HTMLAudioElement>(null);
   const containerRef = React.useRef<HTMLDivElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isMuted, setIsMuted] = useState(true);
@@ -2520,11 +2810,15 @@ function FeedVideoPlayer({
             const playPromise = video.play();
             if (playPromise !== undefined) {
               playPromise
-                .then(() => setIsPlaying(true))
+                .then(() => {
+                  setIsPlaying(true);
+                  if (audioRef.current) audioRef.current.play().catch(()=>{});
+                })
                 .catch(() => setIsPlaying(false));
             }
           } else {
             video.pause();
+            if (audioRef.current) audioRef.current.pause();
             setIsPlaying(false);
           }
         });
@@ -2545,10 +2839,14 @@ function FeedVideoPlayer({
     if (video.paused) {
       const p = video.play();
       if (p !== undefined) {
-        p.then(() => setIsPlaying(true)).catch(() => {});
+        p.then(() => {
+          setIsPlaying(true);
+          if (audioRef.current) audioRef.current.play().catch(()=>{});
+        }).catch(() => {});
       }
     } else {
       video.pause();
+      if (audioRef.current) audioRef.current.pause();
       setIsPlaying(false);
     }
   };
@@ -2557,8 +2855,15 @@ function FeedVideoPlayer({
     e.stopPropagation();
     const video = videoRef.current;
     if (!video) return;
-    video.muted = !video.muted;
-    setIsMuted(video.muted);
+    const newMuted = !isMuted;
+    video.muted = newMuted;
+    if (audioRef.current) {
+      audioRef.current.muted = newMuted;
+      if (!newMuted && isPlaying) {
+        audioRef.current.play().catch(()=>{});
+      }
+    }
+    setIsMuted(newMuted);
   };
 
   if (hasError) {
@@ -2588,6 +2893,7 @@ function FeedVideoPlayer({
         onError={() => setHasError(true)}
         className={className || "w-full h-full max-h-[80vh] object-contain bg-black transform-gpu will-change-transform"}
       />
+      {audioSrc && <audio ref={audioRef} src={audioSrc} loop preload="metadata" muted={isMuted} />}
 
       {/* Tap to play/pause overlay */}
       <div 
@@ -2636,6 +2942,7 @@ function PostItem({
   const [isSaved, setIsSaved] = useState(() => isPostSavedByUser(post, activeUserId));
 
   const mediaSrc = post.mediaUrl || post.persistentMediaUrl || post.videoUrl || post.thumbnailUrl || (post.id ? localStorage.getItem('vyapar_video_' + post.id) : null);
+  const postMusic = post.music || (post.musicTitle ? { title: post.musicTitle, artist: post.musicArtist, audioUrl: post.musicUrl } : null);
   const [isFollowing, setIsFollowing] = useState(() => isUserFollowed(post.userId));
 
   useEffect(() => {
@@ -2647,12 +2954,20 @@ function PostItem({
   }, [post.userId]);
 
   const [likesCount, setLikesCount] = useState(() => post.likesCount || post.likes || 0);
+  const [savedCount, setSavedCount] = useState(() => post.savedCount || 0);
+  const [sharesCount, setSharesCount] = useState(() => post.sharesCount || 0);
+  const [commentsCount, setCommentsCount] = useState(() => post.commentsCount || 0);
+  const [enquiriesCount, setEnquiriesCount] = useState(() => post.enquiriesCount || 0);
 
   useEffect(() => {
     setIsLiked(isPostLikedByUser(post, activeUserId));
     setIsSaved(isPostSavedByUser(post, activeUserId));
     setLikesCount(post.likesCount || post.likes || 0);
-  }, [post.id, post.isLiked, post.isSaved, post.likesCount, post.likes, post.likedBy, activeUserId]);
+    setSavedCount(post.savedCount || 0);
+    setSharesCount(post.sharesCount || 0);
+    setCommentsCount(post.commentsCount || 0);
+    setEnquiriesCount(post.enquiriesCount || 0);
+  }, [post.id, post.isLiked, post.isSaved, post.likesCount, post.likes, post.likedBy, activeUserId, post.savedCount, post.sharesCount, post.commentsCount, post.enquiriesCount]);
 
   const [showHeartOverlay, setShowHeartOverlay] = useState(false);
   const [viewsCount, setViewsCount] = useState(() => post.viewsCount || 0);
@@ -2663,6 +2978,8 @@ function PostItem({
   const [commentImage, setCommentImage] = useState<File | null>(null);
   const [commentImagePreview, setCommentImagePreview] = useState<string | null>(null);
   const [isSubmittingComment, setIsSubmittingComment] = useState(false);
+  const [isGifModalOpen, setIsGifModalOpen] = useState(false);
+  const [selectedLightboxImage, setSelectedLightboxImage] = useState<{ url: string; user?: string; avatar?: string; text?: string } | null>(null);
   const commentFileInputRef = React.useRef<HTMLInputElement>(null);
   const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
   const [editCommentText, setEditCommentText] = useState('');
@@ -2757,6 +3074,7 @@ function PostItem({
 
   const handleLike = async (e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
+    if (!isLiked) playLikeSound();
     if (!currentUser?.id) {
       toast.error('🔐 Please Login or Register to Like posts!');
       window.dispatchEvent(new CustomEvent('openAuthModal'));
@@ -2800,6 +3118,7 @@ function PostItem({
 
   const handleSave = async (e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
+    if (!isSaved) playSaveSound();
     if (!currentUser?.id) {
       toast.error('🔐 Please Login or Register to Save posts!');
       window.dispatchEvent(new CustomEvent('openAuthModal'));
@@ -2934,8 +3253,19 @@ function PostItem({
     window.dispatchEvent(new CustomEvent('notInterestedUpdated', { detail: { postId: post.id } }));
   };
 
-  const handleDeletePost = async () => {
+  const handleDeletePost = async (e?: React.MouseEvent) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
     const postId = String(post.id);
+    
+    // Immediate Optimistic UI updates
+    setShowOptions(false);
+    if (onPostDeleted) onPostDeleted(post.id);
+    window.dispatchEvent(new CustomEvent('postDeleted', { detail: { postId } }));
+    window.dispatchEvent(new CustomEvent('reelDeleted', { detail: { reelId: postId } }));
+
     try {
       // 1. Direct Firestore & LocalStorage permanent deletion
       await deletePostFromFirestore(postId);
@@ -2946,19 +3276,17 @@ function PostItem({
       } catch (e) {}
 
       toast.success('Post deleted successfully');
-      if (onPostDeleted) onPostDeleted(post.id);
-      window.dispatchEvent(new CustomEvent('postDeleted', { detail: { postId } }));
-      window.dispatchEvent(new CustomEvent('reelDeleted', { detail: { reelId: postId } }));
     } catch (e) {
       toast.success('Post deleted');
-      if (onPostDeleted) onPostDeleted(post.id);
-      window.dispatchEvent(new CustomEvent('postDeleted', { detail: { postId } }));
     }
-    setShowOptions(false);
   };
 
   const handleAddComment = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!currentUser) {
+      window.dispatchEvent(new CustomEvent('openAuthModal'));
+      return;
+    }
     if (!newComment.trim() && !commentImage && !commentImagePreview) return;
 
     const textContent = newComment.trim();
@@ -3065,6 +3393,7 @@ function PostItem({
     const file = e.target.files?.[0];
     if (file) {
       setCommentImage(file);
+      const isGif = file.type === 'image/gif' || file.name.toLowerCase().endsWith('.gif');
       
       // 1. Instant Data URL read for 100% reliable preview & persistence
       const reader = new FileReader();
@@ -3075,14 +3404,16 @@ function PostItem({
       };
       reader.readAsDataURL(file);
 
-      // 2. Mobile pre-compression (<50KB) for instant Firestore sync
-      try {
-        const compressed = await optimizeImageForPersistence(file, 640, 640, 0.72);
-        if (compressed) {
-          setCommentImagePreview(compressed);
+      // 2. Pre-compression if not GIF
+      if (!isGif) {
+        try {
+          const compressed = await optimizeImageForPersistence(file, 640, 640, 0.72);
+          if (compressed) {
+            setCommentImagePreview(compressed);
+          }
+        } catch (err) {
+          console.warn('Image optimization notice:', err);
         }
-      } catch (err) {
-        console.warn('Image optimization notice:', err);
       }
     }
   };
@@ -3235,7 +3566,7 @@ function PostItem({
                   <button onClick={() => { setIsEditModalOpen(true); setShowOptions(false); }} className="w-full text-left px-4 py-3 text-black dark:text-zinc-50 font-semibold hover:bg-slate-50 dark:hover:bg-zinc-800 border-b border-slate-100 dark:border-zinc-800">
                     Edit Post
                   </button>
-                  <button onClick={handleDeletePost} className="w-full text-left px-4 py-3 text-red-600 font-semibold hover:bg-slate-50 dark:hover:bg-zinc-800 border-b border-slate-100 dark:border-zinc-800">
+                  <button onClick={(e) => handleDeletePost(e)} className="w-full text-left px-4 py-3 text-red-600 font-semibold hover:bg-slate-50 dark:hover:bg-zinc-800 border-b border-slate-100 dark:border-zinc-800">
                     Delete Post
                   </button>
                 </>
@@ -3295,7 +3626,7 @@ function PostItem({
           {mediaSrc.includes('youtube.com') || mediaSrc.includes('youtu.be') || mediaSrc.includes('facebook.com') || mediaSrc.includes('fb.watch') ? (
             <AdMediaDisplay ad={{ type: 'video', mediaUrl: mediaSrc }} className="w-full h-full aspect-video min-h-[350px] max-h-[80vh] object-cover bg-black pointer-events-auto" />
           ) : (post.type === 'video' || mediaSrc.startsWith('data:video') || mediaSrc.includes('/uploads/') || mediaSrc.match(/\.(mp4|webm|mov|m4v|mkv|3gp)(\?.*)?$/i)) && !mediaSrc.match(/\.(jpg|jpeg|png|webp|gif|svg|avif)(\?.*)?$/i) ? (
-            <FeedVideoPlayer src={mediaSrc} poster={post.thumbnailUrl} className="w-full h-full max-h-[80vh] object-contain bg-black" />
+            <FeedVideoPlayer src={mediaSrc} poster={post.thumbnailUrl} className="w-full h-full max-h-[80vh] object-contain bg-black" audioSrc={postMusic?.audioUrl} />
           ) : post.type === 'pdf' || mediaSrc.match(/\.pdf(\?.*)?$/i) ? (
             <PdfCardViewer post={{ ...post, mediaUrl: mediaSrc }} variant="feed" />
           ) : post.type === 'audio' || mediaSrc.match(/\.(mp3|wav|ogg|m4a)(\?.*)?$/i) ? (
@@ -3306,6 +3637,8 @@ function PostItem({
                <audio src={mediaSrc} controls className="w-full max-w-[300px]" />
                <p className="mt-4 text-xs font-bold text-indigo-200 text-center uppercase tracking-widest">{post.title || 'Audio Post'}</p>
             </div>
+          ) : postMusic?.audioUrl ? (
+            <FeedImageWithAudio src={mediaSrc} audioSrc={postMusic.audioUrl} />
           ) : (
             <img 
               src={mediaSrc} 
@@ -3347,12 +3680,17 @@ function PostItem({
       <div className="p-3">
         <div className="flex justify-between items-center mb-3">
           <div className="flex gap-4">
-            <button onClick={handleLike} className="text-black dark:text-zinc-100 hover:text-black/70 dark:hover:text-zinc-300 transition-colors duration-700">
+            <button onClick={handleLike} className="flex items-center gap-1.5 text-black dark:text-zinc-100 hover:text-black/70 dark:hover:text-zinc-300 transition-colors duration-700">
               <Heart className={cn("w-6 h-6 transition-all duration-700 active:scale-95", isLiked ? "text-red-500 fill-red-500" : "")} />
+              {likesCount > 0 && <span className="text-sm font-semibold">{likesCount}</span>}
             </button>
-            <button onClick={() => setShowComments(!showComments)} className="text-black dark:text-zinc-100 hover:text-black/70 dark:hover:text-zinc-300 active:scale-95 transition-all duration-700"><MessageCircle className="w-6 h-6" /></button>
-            <button onClick={() => setIsShareModalOpen(true)} className="text-black dark:text-zinc-100 hover:text-black/70 dark:hover:text-zinc-300 active:scale-95 transition-all duration-700">
+            <button onClick={() => setShowComments(!showComments)} className="flex items-center gap-1.5 text-black dark:text-zinc-100 hover:text-black/70 dark:hover:text-zinc-300 active:scale-95 transition-all duration-700">
+              <MessageCircle className="w-6 h-6" />
+              {commentsCount > 0 && <span className="text-sm font-semibold">{commentsCount}</span>}
+            </button>
+            <button onClick={() => setIsShareModalOpen(true)} className="flex items-center gap-1.5 text-black dark:text-zinc-100 hover:text-black/70 dark:hover:text-zinc-300 active:scale-95 transition-all duration-700">
               <svg aria-label="Share Post" className="w-6 h-6" fill="currentColor" height="24" role="img" viewBox="0 0 24 24" width="24"><line fill="none" stroke="currentColor" strokeLinejoin="round" strokeWidth="2" x1="22" x2="9.218" y1="3" y2="10.083"></line><polygon fill="none" points="11.698 20.334 22 3.001 2 3.001 9.218 10.084 11.698 20.334" stroke="currentColor" strokeLinejoin="round" strokeWidth="2"></polygon></svg>
+              {sharesCount > 0 && <span className="text-sm font-semibold">{sharesCount}</span>}
             </button>
             <button 
               onClick={(e) => { 
@@ -3406,8 +3744,9 @@ function PostItem({
             <BarChart2 className="w-4 h-4 text-blue-500" />
             <span>Insights</span>
           </button>
-          <button onClick={handleSave} className="text-black dark:text-zinc-100 hover:text-black/70 dark:hover:text-zinc-300 transition-colors duration-700">
+          <button onClick={handleSave} className="flex items-center gap-1.5 text-black dark:text-zinc-100 hover:text-black/70 dark:hover:text-zinc-300 transition-colors duration-700">
             <Bookmark className={cn("w-6 h-6 transition-all duration-700 active:scale-95", isSaved ? "text-black dark:text-zinc-50 fill-slate-900 dark:fill-white" : "")} />
+            {savedCount > 0 && <span className="font-semibold">{savedCount}</span>}
           </button>
         </div>
         
@@ -3509,13 +3848,29 @@ function PostItem({
                           const commentImg = comment.commentImage || comment.imageUrl || comment.image || comment.mediaUrl;
                           if (!commentImg) return null;
                           return (
-                            <div className="mt-2 rounded-xl overflow-hidden border border-slate-200 dark:border-zinc-700 max-w-[240px] shadow-sm">
+                            <div className="mt-2 rounded-xl overflow-hidden border border-slate-200 dark:border-zinc-700 max-w-[240px] shadow-sm group relative">
                               <img 
                                 src={commentImg} 
                                 alt="Comment attachment" 
-                                className="w-full h-auto max-h-64 object-cover cursor-pointer hover:opacity-95 transition-opacity rounded-lg"
-                                onClick={() => window.open(commentImg, '_blank')}
+                                className="w-full h-auto max-h-64 object-cover cursor-pointer hover:opacity-95 transition-all rounded-lg"
+                                onClick={() => setSelectedLightboxImage({
+                                  url: commentImg,
+                                  user: comment.user?.name || comment.userName || 'Member',
+                                  avatar: comment.user?.avatarUrl || comment.userAvatar,
+                                  text: comment.content
+                                })}
                               />
+                              <div 
+                                onClick={() => setSelectedLightboxImage({
+                                  url: commentImg,
+                                  user: comment.user?.name || comment.userName || 'Member',
+                                  avatar: comment.user?.avatarUrl || comment.userAvatar,
+                                  text: comment.content
+                                })}
+                                className="absolute bottom-1.5 right-1.5 bg-black/70 hover:bg-black text-white text-[10px] font-bold px-2 py-0.5 rounded-md backdrop-blur-sm cursor-pointer opacity-90 transition-opacity flex items-center gap-1"
+                              >
+                                <span>🔍 Preview</span>
+                              </div>
                             </div>
                           );
                         })()}
@@ -3544,41 +3899,76 @@ function PostItem({
 
           <div className="mt-4">
             {commentImagePreview && (
-              <div className="relative w-20 h-20 mb-3 rounded-xl overflow-hidden border-2 border-blue-500 shadow-lg group">
-                <img src={commentImagePreview} alt="Preview" className="w-full h-full object-cover" />
+              <div className="relative w-24 h-24 mb-3 rounded-xl overflow-hidden border-2 border-blue-500 shadow-lg group bg-black/10">
+                <img 
+                  src={commentImagePreview} 
+                  alt="Preview" 
+                  className="w-full h-full object-cover cursor-pointer" 
+                  onClick={() => setSelectedLightboxImage({
+                    url: commentImagePreview,
+                    user: currentUser?.name || 'You',
+                    avatar: currentUser?.avatarUrl,
+                    text: newComment
+                  })}
+                />
+                <div className="absolute bottom-1 left-1 bg-black/70 text-white text-[9px] font-bold px-1.5 py-0.2 rounded">
+                  {commentImagePreview.includes('image/gif') || commentImagePreview.toLowerCase().includes('.gif') ? 'GIF' : 'IMG'}
+                </div>
                 <button 
                   onClick={() => { setCommentImage(null); setCommentImagePreview(null); }}
-                  className="absolute top-1 right-1 bg-black/60 text-white rounded-full p-1 hover:bg-black transition-colors"
+                  className="absolute top-1 right-1 bg-black/70 hover:bg-red-600 text-white rounded-full p-1 transition-colors cursor-pointer"
+                  title="Remove attachment"
                 >
                   <X className="w-3 h-3" />
                 </button>
               </div>
             )}
             
-            <form onSubmit={handleAddComment} className="flex items-center pt-4 border-t border-slate-100 dark:border-zinc-800 gap-3 relative">
+            <form 
+              onSubmit={handleAddComment} 
+              onPaste={(e) => handleClipboardMediaPaste(e, (dataUrl, file) => {
+                setCommentImagePreview(dataUrl);
+                if (file) setCommentImage(file as File);
+              })}
+              className="flex items-center pt-4 border-t border-slate-100 dark:border-zinc-800 gap-2 relative"
+            >
               <input
                 type="file"
                 ref={commentFileInputRef}
                 className="hidden"
-                accept="image/*"
+                accept="image/*,.gif,image/gif"
                 onChange={handleCommentImageChange}
               />
               <button 
                 type="button"
                 onClick={() => commentFileInputRef.current?.click()}
-                className="p-2 text-black/70 dark:text-zinc-300 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-full transition-all"
-                title="Add image to comment"
+                className="p-2 text-black/70 dark:text-zinc-300 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-full transition-all cursor-pointer"
+                title="Add photo or GIF file to comment"
               >
                 <Camera className="w-5 h-5" />
+              </button>
+
+              <button 
+                type="button"
+                onClick={() => setIsGifModalOpen(true)}
+                className="px-2.5 py-1 bg-gradient-to-r from-pink-500/15 to-rose-500/15 hover:from-pink-500/25 hover:to-rose-500/25 text-pink-600 dark:text-pink-400 border border-pink-500/30 rounded-lg font-black text-xs flex items-center gap-1 transition-all cursor-pointer shadow-xs"
+                title="Select animated GIF sticker"
+              >
+                <span>GIF</span>
               </button>
               
               <div className="flex-1 relative">
                 <input
                   type="text"
-                  placeholder="Add a comment..."
+                  placeholder="Add a comment or paste keyboard GIF..."
+                  enterKeyHint="send"
                   className="w-full text-sm bg-slate-50 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 text-black dark:text-white rounded-full px-4 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500/50 placeholder-slate-400 dark:placeholder-zinc-500"
                   value={newComment}
                   onChange={(e) => setNewComment(e.target.value)}
+                  onPaste={(e) => handleClipboardMediaPaste(e, (dataUrl, file) => {
+                    setCommentImagePreview(dataUrl);
+                    if (file) setCommentImage(file as File);
+                  })}
                 />
               </div>
 
@@ -3601,6 +3991,28 @@ function PostItem({
           </div>
         </div>
       )}
+
+      {/* Comment Media Lightbox Modal */}
+      <CommentMediaLightbox
+        isOpen={Boolean(selectedLightboxImage)}
+        onClose={() => setSelectedLightboxImage(null)}
+        imageUrl={selectedLightboxImage?.url || ''}
+        userName={selectedLightboxImage?.user}
+        userAvatar={selectedLightboxImage?.avatar}
+        commentText={selectedLightboxImage?.text}
+      />
+
+      {/* GIF Picker Modal */}
+      <GifPickerModal
+        isOpen={isGifModalOpen}
+        onClose={() => setIsGifModalOpen(false)}
+        onSelectGif={(gifUrl) => {
+          setCommentImage(null);
+          setCommentImagePreview(gifUrl);
+          setIsGifModalOpen(false);
+          toast.success('GIF attached! Add text and send.');
+        }}
+      />
       <ShareModal isOpen={isShareModalOpen} onClose={() => setIsShareModalOpen(false)} data={post} type="post" />
       <EditPostModal isOpen={isEditModalOpen} onClose={() => setIsEditModalOpen(false)} post={post} onSave={(p) => { if (onPostUpdated) onPostUpdated(p); }} />
       {showStatsModal && (
@@ -3894,9 +4306,6 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
     }
 
     const postMap = new Map<string, any>();
-    DEFAULT_B2B_POSTS.forEach(p => {
-      if (p && p.id) postMap.set(String(p.id), p);
-    });
     fetchedBackendPosts.forEach(p => {
       if (p && p.id) {
         const existing = postMap.get(String(p.id)) || {};
@@ -3917,11 +4326,7 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
     });
 
     const cleanPosts = filterOutHiddenContent(allCombined, user?.id);
-    setPosts(prev => {
-      const fetchedIds = new Set(cleanPosts.map(p => String(p.id)));
-      const pendingOptimistic = prev.filter(p => p && p.id && !fetchedIds.has(String(p.id)));
-      return [...pendingOptimistic, ...cleanPosts];
-    });
+    setPosts(cleanPosts);
     setLoading(false);
   };
 
@@ -3988,27 +4393,9 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
 
     // Instant real-time multi-device sync via Firestore WebSockets ($0/month on Vercel & Firebase)
     const unsubscribePosts = subscribeToPostsFromFirestore((realtimePosts) => {
-      if (Array.isArray(realtimePosts) && realtimePosts.length > 0) {
+      if (Array.isArray(realtimePosts)) {
         const cleanRealtime = filterOutHiddenContent(realtimePosts, user?.id);
-        setPosts(prevPosts => {
-          const postMap = new Map<string, any>();
-          // Preserve all baseline posts loaded by fetchPosts
-          prevPosts.forEach(p => {
-            if (p && p.id) postMap.set(String(p.id), p);
-          });
-          // Merge incoming real-time Firestore posts over baseline
-          cleanRealtime.forEach(p => {
-            if (p && p.id) {
-              const existing = postMap.get(String(p.id)) || {};
-              postMap.set(String(p.id), { ...existing, ...p });
-            }
-          });
-          return Array.from(postMap.values()).sort((a, b) => {
-            const timeA = typeof a.createdAt === 'number' ? a.createdAt : new Date(a.createdAt || 0).getTime();
-            const timeB = typeof b.createdAt === 'number' ? b.createdAt : new Date(b.createdAt || 0).getTime();
-            return timeB - timeA;
-          });
-        });
+        setPosts(cleanRealtime);
         setLoading(false);
       }
     });
@@ -4041,6 +4428,12 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
 
     fetchBrandAds();
 
+    // Auto-sync polling every 5 seconds to ensure instant multi-device cross-post & brand ad visibility
+    const syncInterval = setInterval(() => {
+      fetchPosts();
+      fetchBrandAds();
+    }, 5000);
+
     const unsubscribeBrandAds = subscribeToBrandAdsFromFirestore((fbAds) => {
       if (Array.isArray(fbAds) && fbAds.length > 0) {
         const activeAds = fbAds.filter((a: any) => a.isActive !== false);
@@ -4056,6 +4449,7 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
 
     window.addEventListener('brandAdsUpdated', handleAdsUpdated);
     return () => {
+      clearInterval(syncInterval);
       window.removeEventListener('brandAdsUpdated', handleAdsUpdated);
       if (typeof unsubscribeBrandAds === 'function') unsubscribeBrandAds();
       if (typeof unsubscribePosts === 'function') unsubscribePosts();
@@ -4318,7 +4712,7 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
       avatarUrl: authorAvatar,
       avatar: authorAvatar,
       role: authorRole,
-      isVerified: Boolean(user?.isVerified ?? true)
+      isVerified: Boolean(user?.isVerified ?? false)
     };
 
     const musicObj = selectedMusic ? {
@@ -4561,7 +4955,6 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
               <ReelCircleMedia 
                 user={user} 
                 reel={myReels[0]} 
-                uploadingMediaThumbnail={uploadingMediaThumbnail} 
                 altName={user?.name || 'Your Story'} 
               />
 
@@ -4579,13 +4972,13 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
                 reelFileInputRef.current?.click();
               }}
               title="Upload new Reel or Image Story"
-              className="absolute -bottom-0.5 -right-0.5 bg-[#0095f6] hover:bg-blue-600 text-white rounded-full p-1 border-2 border-white dark:border-black shadow-md flex items-center justify-center z-20 transition-transform active:scale-90 cursor-pointer"
+              className="absolute -bottom-0.5 -right-0.5 bg-[#0095f6] hover:bg-blue-600 text-white rounded-full p-1.5 border-2 border-white dark:border-black shadow-md flex items-center justify-center z-20 transition-transform active:scale-90 cursor-pointer"
             >
               <Plus className="w-3.5 h-3.5 stroke-[3]" />
             </button>
           </div>
           <span className="text-xs font-semibold text-black dark:text-zinc-50 truncate w-16 text-center">
-            {myReels.length > 0 ? 'Your Story' : 'Your Reel'}
+            {myReels.length > 0 ? 'Your Story' : 'Upload Reel'}
           </span>
         </div>
 
@@ -4868,8 +5261,8 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
             <PostItem 
               post={post} 
               currentUser={user} 
-              onPostDeleted={(id) => setPosts(posts.filter(p => p.id !== id))} 
-              onPostUpdated={(updatedPost) => setPosts(posts.map(p => p.id === updatedPost.id ? updatedPost : p))} 
+              onPostDeleted={(id) => setPosts(prev => prev.filter(p => p.id !== id))} 
+              onPostUpdated={(updatedPost) => setPosts(prev => prev.map(p => p.id === updatedPost.id ? updatedPost : p))} 
               onPostClick={() => {
                 setActiveStoryPosts(filteredPosts);
                 setActiveStoryIndex(idx);
@@ -5857,6 +6250,7 @@ function AdminPanel({ user }: { user: any }) {
   const [activeTab, setActiveTab] = useState<'posts' | 'reports' | 'music' | 'users' | 'payments' | 'ai_pending'>('posts');
   const [userToDelete, setUserToDelete] = useState<any>(null);
   const [isDeletingUser, setIsDeletingUser] = useState(false);
+  const [deleteFromFirebase, setDeleteFromFirebase] = useState(true);
   const [selectedPostIds, setSelectedPostIds] = useState<string[]>([]);
 
   const pendingModerationPosts = posts.filter(p => p.pending_admin_approval || p.status === 'pending' || p.status === 'pending_admin_approval');
@@ -5981,17 +6375,7 @@ function AdminPanel({ user }: { user: any }) {
 
     const unsubscribeAdminPosts = subscribeToPostsFromFirestore((realtimePosts) => {
       if (!isCancelled && Array.isArray(realtimePosts)) {
-        setPosts(prev => {
-          const pMap = new Map<string, any>();
-          prev.forEach(p => { if (p && p.id) pMap.set(String(p.id), p); });
-          realtimePosts.forEach(p => {
-            if (p && p.id) {
-              const existing = pMap.get(String(p.id)) || {};
-              pMap.set(String(p.id), { ...existing, ...p });
-            }
-          });
-          return Array.from(pMap.values());
-        });
+        setPosts(realtimePosts);
       }
     });
 
@@ -6027,17 +6411,25 @@ function AdminPanel({ user }: { user: any }) {
     window.dispatchEvent(new CustomEvent('userDeleted', { detail: { userId: uId } }));
     window.dispatchEvent(new CustomEvent('postDeleted', { detail: { userId: uId } }));
 
+    // Extract values before userToDelete becomes null
+    const username = userToDelete.username;
+    const phone = userToDelete.phone;
+    const email = userToDelete.email;
+
     const tid = toast.loading(`Deleting ${uName}...`);
     setUserToDelete(null);
     setIsDeletingUser(true);
 
     // 2. Parallel background deletion from Firestore & Backend API
     try {
-      await Promise.allSettled([
-        deleteUserFromFirestore(uId),
-        fetch(`/api/users/${uId}`, { method: 'DELETE' })
-      ]);
-      toast.success(`User "${uName}" deleted permanently from Firebase & Server`, { id: tid });
+      const promises: Promise<any>[] = [
+        fetch(`/api/users/${uId}?firebase=${deleteFromFirebase}`, { method: 'DELETE' })
+      ];
+      if (deleteFromFirebase) {
+        promises.push(deleteUserFromFirestore(uId, { username, phone, email }));
+      }
+      await Promise.allSettled(promises);
+      toast.success(`User "${uName}" deleted permanently`, { id: tid });
     } catch (err: any) {
       toast.success(`User "${uName}" deleted permanently`, { id: tid });
     } finally {
@@ -6793,8 +7185,8 @@ function AdminPanel({ user }: { user: any }) {
 
       {/* Delete User Confirmation Modal */}
       {userToDelete && (
-        <div className="fixed inset-0 z-[300] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-zinc-900 border-2 border-red-500/50 rounded-2xl p-6 max-w-md w-full shadow-2xl space-y-4 text-black dark:text-zinc-100 animate-in fade-in zoom-in-95 duration-150">
+        <div className="fixed inset-0 z-[300] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4" onClick={(e) => { e.stopPropagation(); setUserToDelete(null); }}>
+          <div className="bg-white dark:bg-zinc-900 border-2 border-red-500/50 rounded-2xl p-6 max-w-md w-full shadow-2xl space-y-4 text-black dark:text-zinc-100 animate-in fade-in zoom-in-95 duration-150" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center gap-3 text-red-600 dark:text-red-400">
               <div className="w-11 h-11 rounded-xl bg-red-100 dark:bg-red-950/80 border border-red-200 dark:border-red-800 flex items-center justify-center text-red-600 dark:text-red-400 shrink-0">
                 <Trash2 className="w-6 h-6" />
@@ -6818,31 +7210,27 @@ function AdminPanel({ user }: { user: any }) {
             </div>
 
             <p className="text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/50 p-2.5 rounded-xl leading-relaxed">
-              ⚠️ This will purge their profile, posts, reels, comments, and account data completely from Firestore and server storage.
+              ⚠️ This will purge their profile, posts, reels, comments, and account data completely from server storage.
             </p>
+            <label className="flex items-center gap-2 text-xs font-bold text-red-600 dark:text-red-400 cursor-pointer p-2 bg-red-50/50 dark:bg-red-950/20 rounded-xl border border-red-100 dark:border-red-900/30">
+              <input type="checkbox" checked={deleteFromFirebase} onChange={(e) => setDeleteFromFirebase(e.target.checked)} className="w-4 h-4 rounded text-red-600 focus:ring-0" />
+              Delete from Firebase & Storage (Irreversible)
+            </label>
 
             <div className="flex items-center justify-end gap-3 pt-2">
               <button
                 type="button"
-                onClick={() => setUserToDelete(null)}
-                disabled={isDeletingUser}
-                className="px-4 py-2.5 rounded-xl bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 dark:hover:bg-zinc-700 text-slate-700 dark:text-zinc-200 text-xs font-bold transition-colors cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
                 onClick={handleConfirmDeleteUser}
                 disabled={isDeletingUser}
-                className="px-5 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-extrabold transition-colors shadow-lg cursor-pointer flex items-center gap-1.5"
+                className="px-5 py-2.5 w-full rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-extrabold transition-colors shadow-lg cursor-pointer flex items-center justify-center gap-1.5"
               >
                 {isDeletingUser ? (
                   <>
-                    <Loader2 className="w-4 h-4 animate-spin" /> Deleting...
+                    <Loader2 className="w-4 h-4 animate-spin" /> Force Deleting...
                   </>
                 ) : (
                   <>
-                    <Trash2 className="w-4 h-4" /> Yes, Delete Profile
+                    <Trash2 className="w-4 h-4" /> Permanently Delete Profile
                   </>
                 )}
               </button>
@@ -6855,6 +7243,14 @@ function AdminPanel({ user }: { user: any }) {
 }
 
 function Chat({ user, onOpenVerify, userLocation }: { user: any; onOpenVerify?: () => void; userLocation?: {lat: number, lng: number} | null }) {
+  const navigate = useNavigate();
+  useEffect(() => {
+    if (!user) {
+      navigate('/');
+      window.dispatchEvent(new CustomEvent('openAuthModal'));
+    }
+  }, [user]);
+
   const [messages, setMessages] = useState<any[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [activeContact, setActiveContact] = useState<any>(null);
@@ -7015,7 +7411,12 @@ function Chat({ user, onOpenVerify, userLocation }: { user: any; onOpenVerify?: 
         {/* Chat List Sidebar */}
         <div className={`w-full md:w-[350px] border-r border-slate-200 flex flex-col ${activeContact ? 'hidden md:flex' : 'flex'}`}>
           <div className="h-16 flex items-center justify-between px-5 border-b border-slate-200 bg-slate-50/50">
-            <h2 className="font-bold text-lg text-slate-900">{user?.name}</h2>
+            <div className="flex items-center gap-2">
+              <button onClick={() => navigate('/')} className="md:hidden p-1.5 -ml-2 text-slate-500 hover:text-slate-800 rounded-full hover:bg-slate-200 transition-colors">
+                <ArrowLeft className="w-5 h-5" />
+              </button>
+              <h2 className="font-bold text-lg text-slate-900">{user?.name}</h2>
+            </div>
             <div className="flex items-center gap-2">
               <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" title="Your Online Status" />
               <span className="text-[11px] font-bold text-emerald-600">Online</span>
@@ -7107,6 +7508,13 @@ function Chat({ user, onOpenVerify, userLocation }: { user: any; onOpenVerify?: 
               </div>
               <h3 className="text-xl font-bold text-slate-800 mb-2">Your Messages</h3>
               <p className="text-slate-500 mb-6 text-sm max-w-xs">Connect directly with Factory owners and Dealers across India.</p>
+              <button 
+                onClick={() => navigate('/')} 
+                className="bg-[#E6C76C] text-black hover:bg-[#d6b75c] font-bold py-2.5 px-6 rounded-full flex items-center gap-2 shadow-sm transition-all active:scale-95"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                Back to Main Screen
+              </button>
             </div>
           ) : user.role === 'customer' && !user.isVerified ? (
             <div className="flex-1 flex flex-col">
@@ -7274,12 +7682,19 @@ function Chat({ user, onOpenVerify, userLocation }: { user: any; onOpenVerify?: 
                     </button>
                   </div>
                 )}
-                <form onSubmit={handleSendMessage} className="relative flex items-center gap-2">
+                <form 
+                  onSubmit={handleSendMessage} 
+                  onPaste={(e) => handleClipboardMediaPaste(e, (dataUrl, file) => {
+                    setPendingImagePreview(dataUrl);
+                    if (file) setPendingImage(file as File);
+                  })}
+                  className="relative flex items-center gap-2"
+                >
                   <input
                     type="file"
                     ref={chatFileInputRef}
                     onChange={handleImageSend}
-                    accept="image/*"
+                    accept="image/*,.gif,image/gif"
                     className="hidden"
                   />
                   <div className="relative flex-1 flex items-center">
@@ -7288,7 +7703,7 @@ function Chat({ user, onOpenVerify, userLocation }: { user: any; onOpenVerify?: 
                       onClick={() => chatFileInputRef.current?.click()}
                       disabled={uploadingImage}
                       className="absolute left-3 p-1 text-slate-400 hover:text-blue-600 transition-colors z-10"
-                      title="Send Image"
+                      title="Send Image or GIF"
                     >
                       {uploadingImage ? <Loader2 className="w-5 h-5 animate-spin" /> : <Camera className="w-5 h-5" />}
                     </button>
@@ -7296,7 +7711,12 @@ function Chat({ user, onOpenVerify, userLocation }: { user: any; onOpenVerify?: 
                       type="text"
                       value={newMessage}
                       onChange={(e) => setNewMessage(e.target.value)}
-                      placeholder="Message..."
+                      placeholder="Message or paste keyboard GIF..."
+                      enterKeyHint="send"
+                      onPaste={(e) => handleClipboardMediaPaste(e, (dataUrl, file) => {
+                        setPendingImagePreview(dataUrl);
+                        if (file) setPendingImage(file as File);
+                      })}
                       className="w-full bg-slate-50 border border-slate-200 rounded-full pl-11 pr-14 py-2.5 focus:outline-none focus:border-blue-500/50 transition-all text-sm text-slate-900 placeholder:text-slate-400"
                     />
                     <button 
@@ -7390,6 +7810,7 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
   const [isFetchingUsers, setIsFetchingUsers] = useState(false);
   const [reportsList, setReportsList] = useState<any[]>([]);
   const [userToDelete, setUserToDelete] = useState<any | null>(null);
+  const [deleteFromFirebaseM, setDeleteFromFirebaseM] = useState(true);
 
   useEffect(() => {
     if (isOpen) {
@@ -7501,36 +7922,32 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
 
       toast.success('🎉 Brand Image Banner added to Showcase Playlist!');
 
-      // 2. Server upload if file was selected
-      if (currentImageFile) {
-        try {
-          const formData = new FormData();
-          formData.append('title', currentTitle);
-          formData.append('companyName', currentCompany);
-          formData.append('linkUrl', currentLink);
-          formData.append('mediaUrl', currentExternalUrl);
-          formData.append('description', currentDesc);
-          formData.append('isActive', String(currentIsActive));
-          formData.append('type', isYoutubeOrWeb ? 'video' : 'image');
+      // 2. Server upload (handles file or direct URL)
+      try {
+        const formData = new FormData();
+        formData.append('title', currentTitle || 'Official Brand Showcase');
+        formData.append('companyName', currentCompany || 'Vyapar Bridge Partner');
+        formData.append('linkUrl', currentLink || '');
+        formData.append('mediaUrl', finalMediaUrl);
+        formData.append('description', currentDesc || '');
+        formData.append('isActive', String(currentIsActive));
+        formData.append('type', isYoutubeOrWeb ? 'video' : 'image');
+        if (currentImageFile) {
           formData.append('mediaFile', currentImageFile);
-
-          const res = await fetch('/api/admin/showcase', {
-            method: 'POST',
-            body: formData
-          });
-          const data = await res.json();
-          if (data && data.success && data.newAd?.mediaUrl) {
-            setBrandAdsList(prev => {
-              const updated = prev.map(item =>
-                item.id === newAdId ? { ...item, mediaUrl: data.newAd.mediaUrl } : item
-              );
-              syncBrandAdsLocal(updated);
-              return updated;
-            });
-          }
-        } catch (serverErr) {
-          console.warn('Server sync notice:', serverErr);
         }
+
+        const res = await fetch('/api/admin/showcase', {
+          method: 'POST',
+          body: formData
+        });
+        const data = await res.json();
+        if (data && data.success && Array.isArray(data.brandAdsList)) {
+          setBrandAdsList(data.brandAdsList);
+          syncBrandAdsLocal(data.brandAdsList);
+          window.dispatchEvent(new CustomEvent('brandAdsUpdated'));
+        }
+      } catch (serverErr) {
+        console.warn('Server sync notice:', serverErr);
       }
     } catch (err) {
       console.error('Error saving brand advertisement:', err);
@@ -8262,20 +8679,27 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
 
     // 1. Instant optimistic state update & close modal immediately
     setUsersList(prev => prev.filter(u => String(u.id) !== uId && String(u.username) !== uId));
-    setPosts(prev => prev.filter(p => String(p.userId) !== uId && String(p.user?.id) !== uId));
     window.dispatchEvent(new CustomEvent('userDeleted', { detail: { userId: uId } }));
     window.dispatchEvent(new CustomEvent('postDeleted', { detail: { userId: uId } }));
+
+    // Extract values before userToDelete becomes null
+    const username = userToDelete.username;
+    const phone = userToDelete.phone;
+    const email = userToDelete.email;
 
     const tid = toast.loading(`Deleting ${uName}...`);
     setUserToDelete(null);
 
     // 2. Fast non-blocking deletion from Firestore & Server
     try {
-      await Promise.allSettled([
-        deleteUserFromFirestore(uId),
-        fetch(`/api/users/${uId}`, { method: 'DELETE' })
-      ]);
-      toast.success(`User ${uName} deleted completely from Firebase & Server`, { id: tid });
+      const promises: Promise<any>[] = [
+        fetch(`/api/users/${uId}?firebase=${deleteFromFirebaseM}`, { method: 'DELETE' })
+      ];
+      if (deleteFromFirebaseM) {
+        promises.push(deleteUserFromFirestore(uId, { username, phone, email }));
+      }
+      await Promise.allSettled(promises);
+      toast.success(`User ${uName} deleted completely`, { id: tid });
     } catch (e) {
       toast.success(`User ${uName} deleted completely`, { id: tid });
     }
@@ -9363,15 +9787,7 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
                             className="w-full pl-9 pr-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
                           />
                         </div>
-                        <button
-                          type="button"
-                          onClick={fetchUsersAndReports}
-                          disabled={isFetchingUsers}
-                          className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl shadow-sm transition-all cursor-pointer flex items-center justify-center gap-1.5 shrink-0"
-                        >
-                          <RefreshCw className={cn("w-3.5 h-3.5", isFetchingUsers && "animate-spin")} />
-                          {isFetchingUsers ? 'Syncing...' : 'Sync Firestore'}
-                        </button>
+
                       </div>
 
                       {/* Filter Chips */}
@@ -9427,13 +9843,7 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
                               Clear Filters
                             </button>
                           ) : null}
-                          <button
-                            type="button"
-                            onClick={fetchUsersAndReports}
-                            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl shadow transition-all cursor-pointer inline-flex items-center gap-1.5"
-                          >
-                            <RefreshCw className="w-3.5 h-3.5" /> Refresh List
-                          </button>
+
                         </div>
                       </div>
                     ) : (
@@ -9520,25 +9930,17 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
             <div className="flex items-center justify-end gap-3 pt-2">
               <button
                 type="button"
-                onClick={() => setIsResetConfirmOpen(false)}
-                disabled={isResettingDb}
-                className="px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-colors cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
                 onClick={handleResetAllData}
                 disabled={isResettingDb}
-                className="px-5 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-extrabold transition-colors shadow-lg cursor-pointer flex items-center gap-1.5"
+                className="px-5 py-2.5 w-full rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-extrabold transition-colors shadow-lg cursor-pointer flex items-center justify-center gap-1.5"
               >
                 {isResettingDb ? (
                   <>
-                    <RefreshCw className="w-4 h-4 animate-spin" /> Resetting...
+                    <RefreshCw className="w-4 h-4 animate-spin" /> Resetting & Purging...
                   </>
                 ) : (
                   <>
-                    <Trash2 className="w-4 h-4" /> Yes, Purge & Reset Database
+                    <Trash2 className="w-4 h-4" /> Force Reset & Purge Database
                   </>
                 )}
               </button>
@@ -9549,8 +9951,8 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
 
       {/* Delete User Modal Confirmation Popup */}
       {userToDelete && (
-        <div className="fixed inset-0 z-[300] bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-white border-2 border-rose-500/60 rounded-2xl p-6 max-w-md w-full shadow-2xl space-y-4 text-black">
+        <div className="fixed inset-0 z-[300] bg-black/85 backdrop-blur-md flex items-center justify-center p-4" onClick={(e) => { e.stopPropagation(); setUserToDelete(null); }}>
+          <div className="bg-white border-2 border-rose-500/60 rounded-2xl p-6 max-w-md w-full shadow-2xl space-y-4 text-black" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center gap-3 text-rose-400">
               <div className="w-10 h-10 rounded-xl bg-rose-950/80 border border-rose-800 flex items-center justify-center text-rose-400 shrink-0">
                 <Trash2 className="w-5 h-5" />
@@ -9579,16 +9981,10 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
 
             <div className="flex items-center justify-end gap-3 pt-2">
               <button
-                onClick={() => setUserToDelete(null)}
-                className="px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-700 text-slate-700 text-xs font-bold transition-colors cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
                 onClick={confirmDeleteUser}
-                className="px-5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-black text-xs font-extrabold transition-colors shadow-lg cursor-pointer flex items-center gap-1.5"
+                className="px-5 py-2.5 w-full rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-extrabold transition-colors shadow-lg cursor-pointer flex items-center justify-center gap-1.5"
               >
-                <Trash2 className="w-4 h-4" /> Yes, Delete User
+                <Trash2 className="w-4 h-4" /> Permanently Delete User
               </button>
             </div>
           </div>
@@ -11423,9 +11819,6 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
       } catch (e) {}
 
       const postMap = new Map<string, any>();
-      DEFAULT_B2B_POSTS.forEach(p => {
-        if (p && p.id) postMap.set(String(p.id), p);
-      });
       backendPosts.forEach(p => {
         if (p && p.id) {
           const existing = postMap.get(String(p.id)) || {};
@@ -11454,7 +11847,7 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
     loadAllReels();
 
     const unsubscribe = subscribeToPostsFromFirestore((realtimePosts) => {
-      if (Array.isArray(realtimePosts) && realtimePosts.length > 0) {
+      if (Array.isArray(realtimePosts)) {
         const cleanRealtime = filterOutHiddenContent(realtimePosts, user?.id);
         const videoPosts = cleanRealtime.filter((p: any) => 
           p.type === 'video' || 
@@ -11462,20 +11855,7 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
           p.mediaBase64 || 
           p.video
         );
-
-        setReels(prevReels => {
-          const postMap = new Map<string, any>();
-          prevReels.forEach(r => {
-            if (r && r.id) postMap.set(String(r.id), r);
-          });
-          videoPosts.forEach(v => {
-            if (v && v.id) {
-              const existing = postMap.get(String(v.id)) || {};
-              postMap.set(String(v.id), { ...existing, ...v });
-            }
-          });
-          return sortReelsByFollowedFirst(Array.from(postMap.values()));
-        });
+        setReels(sortReelsByFollowedFirst(videoPosts));
       }
     });
 
@@ -11568,7 +11948,7 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
       role: 'dealer',
       avatarUrl: localStorage.getItem('vyapar_user_avatar') || BRAND_LOGO_SRC,
       avatar: localStorage.getItem('vyapar_user_avatar') || BRAND_LOGO_SRC,
-      isVerified: true
+      isVerified: false
     };
 
     setIsPreviewModalOpen(false);
@@ -11741,7 +12121,6 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
 
         // Update state & dispatch event immediately
         setReels(prev => [finalReel, ...prev]);
-        setPosts(prev => [finalReel, ...prev]);
         setCurrentIndex(0);
         window.dispatchEvent(new CustomEvent('postCreated', { detail: finalReel }));
 
@@ -12386,7 +12765,7 @@ function ImageCropperModal({
       ctx.drawImage(img, drawX, drawY, drawWidth, drawHeight);
       ctx.restore();
 
-      const croppedDataUrl = canvas.toDataURL('image/jpeg', 0.92);
+      const croppedDataUrl = canvas.toDataURL('image/jpeg', 0.85);
       onSave(croppedDataUrl);
     };
     img.src = imageSrc;
@@ -12528,7 +12907,7 @@ function ImageCropperModal({
             onClick={handleCropSave}
             className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 rounded-xl text-sm font-semibold text-black shadow-lg transition-colors flex items-center gap-2 cursor-pointer"
           >
-            <Check className="w-4 h-4" /> Save Cropped Cover
+            <Check className="w-4 h-4" /> Save Cover to ID (Device Cache)
           </button>
         </div>
       </div></div>
@@ -13197,9 +13576,26 @@ function ProfileSettingsDrawer({
   setDeferredPrompt?: (p: any) => void;
 }) {
   const navigate = useNavigate();
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [isDeletingId, setIsDeletingId] = useState(false);
+  const [activeView, setActiveView] = useState<'menu' | 'sounds'>('menu');
+  const [soundSettings, setSoundSettings] = useState(() => getSoundSettingsSync());
+  
+  const toggleSound = (key: keyof typeof soundSettings) => {
+    const next = { ...soundSettings, [key]: !soundSettings[key] };
+    setSoundSettings(next);
+    updateSoundSettings(next);
+  };
+  
+  // Reset view when opening/closing
+  useEffect(() => {
+    if (!isOpen) setActiveView('menu');
+  }, [isOpen]);
+
   if (!isOpen) return null;
 
   return (
+    <>
     <div className="fixed inset-0 z-[150] flex justify-end bg-black/60 backdrop-blur-sm transition-opacity" onClick={onClose}>
       <div 
         className="w-full max-w-xs sm:max-w-sm h-full bg-white dark:bg-zinc-950 text-black dark:text-zinc-50 shadow-2xl flex flex-col border-l border-slate-200 dark:border-zinc-800 overflow-y-auto animate-in slide-in-from-right duration-700"
@@ -13208,8 +13604,12 @@ function ProfileSettingsDrawer({
         {/* Drawer Header */}
         <div className="p-4 border-b border-slate-200 dark:border-zinc-800 flex items-center justify-between bg-slate-50/90 dark:bg-zinc-900/80 sticky top-0 z-10 backdrop-blur-md">
           <div className="flex items-center gap-2">
-            <Menu className="w-5 h-5 text-blue-500" />
-            <h3 className="font-bold text-base tracking-wide">Settings & Navigation</h3>
+            {activeView === 'sounds' ? (
+              <button onClick={() => setActiveView('menu')} className="p-1 hover:bg-slate-200 dark:hover:bg-zinc-800 rounded-full cursor-pointer"><ArrowLeft className="w-5 h-5 text-blue-500" /></button>
+            ) : (
+              <Menu className="w-5 h-5 text-blue-500" />
+            )}
+            <h3 className="font-bold text-base tracking-wide">{activeView === 'sounds' ? 'Sound Settings' : 'Settings & Navigation'}</h3>
           </div>
           <button 
             onClick={onClose}
@@ -13219,6 +13619,44 @@ function ProfileSettingsDrawer({
           </button>
         </div>
 
+
+        {activeView === 'sounds' ? (
+          <div className="p-4 space-y-6">
+            <p className="text-xs text-black/60 dark:text-zinc-400 mb-4">Toggle app sound effects for different interactions.</p>
+            
+            <div className="space-y-4">
+              {[
+                { key: 'likes', label: 'Like / Heart', icon: Heart, color: 'text-red-500' },
+                { key: 'comments', label: 'Comment / App Pop', icon: MessageCircle, color: 'text-emerald-500' },
+                { key: 'shares', label: 'Share', icon: Share2, color: 'text-blue-500' },
+                { key: 'saves', label: 'Save / Bookmark', icon: Bookmark, color: 'text-amber-500' },
+                { key: 'enquiries', label: 'Enquiry / Lead', icon: MessageSquare, color: 'text-emerald-600' },
+                { key: 'messages', label: 'Direct Messages & Notifications', icon: Bell, color: 'text-indigo-500' },
+              ].map(item => (
+                <div key={item.key} className="flex items-center justify-between p-3 rounded-xl bg-slate-50 dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800">
+                  <div className="flex items-center gap-3">
+                    <item.icon className={"w-5 h-5 " + item.color} />
+                    <span className="font-semibold text-sm">{item.label}</span>
+                  </div>
+                  <button 
+                    onClick={() => toggleSound(item.key as any)}
+                    className={"w-11 h-6 rounded-full transition-colors relative cursor-pointer " + (soundSettings[item.key as keyof typeof soundSettings] ? "bg-emerald-500" : "bg-slate-300 dark:bg-zinc-700")}
+                  >
+                    <div className={"w-5 h-5 bg-white rounded-full absolute top-0.5 transition-transform " + (soundSettings[item.key as keyof typeof soundSettings] ? "translate-x-5" : "translate-x-0.5")} />
+                  </button>
+                </div>
+              ))}
+            </div>
+            
+            <button 
+              onClick={() => { playEnquirySound(); playMessageSound(); }}
+              className="mt-6 w-full p-3 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400 rounded-xl font-bold text-sm hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors"
+            >
+              Test Sounds
+            </button>
+          </div>
+        ) : (
+          <>
         {/* User / Guest Mini Profile Banner */}
         {user ? (
           <div 
@@ -13273,6 +13711,20 @@ function ProfileSettingsDrawer({
 
         {/* Settings Navigation List */}
         <div className="p-3 flex-1 space-y-2">
+          {/* Sound Settings */}
+          <button 
+            onClick={() => setActiveView('sounds')}
+            className="w-full p-3 rounded-xl hover:bg-slate-100 dark:hover:bg-zinc-900 flex items-center gap-3 transition-colors text-left font-semibold text-sm cursor-pointer group"
+          >
+            <div className="p-2 rounded-lg bg-pink-50 dark:bg-pink-950 text-pink-600 dark:text-pink-400 group-hover:scale-110 transition-transform">
+              <Volume2 className="w-4 h-4" />
+            </div>
+            <div className="flex-1">
+              <div className="text-black dark:text-zinc-100">Sound & Notifications</div>
+              <div className="text-[11px] font-normal text-black/70 dark:text-zinc-400">Manage UI interaction sounds and alerts</div>
+            </div>
+          </button>
+
           {/* Vyapar Calculator */}
           <button 
             onClick={() => { onClose(); onOpenCalculator(); }}
@@ -13505,38 +13957,11 @@ function ProfileSettingsDrawer({
 
               {/* Delete My ID / Account Button right below Log Out */}
               <button 
-                onClick={async () => {
-                  const confirmDelete = window.confirm(
-                    `⚠️ DELETE ID CONFIRMATION:\n\nAre you sure you want to permanently delete your Vyapar Bridge ID (${user?.name || 'User'})?\n\nThis will permanently delete your account, posts, profile details, and business listings from the database. This action CANNOT be undone.`
-                  );
-                  if (!confirmDelete) return;
-
-                  try {
-                    const userIdToDelete = user.id || user.uid;
-                    if (userIdToDelete) {
-                      await deleteUserFromFirestore(userIdToDelete);
-                    }
-                    
-                    // Delete Auth User if authenticated via Firebase Auth
-                    if (auth.currentUser) {
-                      try {
-                        await auth.currentUser.delete();
-                      } catch (authErr) {
-                        console.warn('Firebase auth delete notice:', authErr);
-                      }
-                    }
-
-                    localStorage.removeItem('user');
-                    localStorage.removeItem('Vyapar Bridge_user');
-                    localStorage.removeItem('vyapar_user');
-
-                    toast.success('Your Vyapar Bridge ID & Account have been permanently deleted.');
-                    onClose();
-                    onLogout();
-                  } catch (err: any) {
-                    console.error('Failed to delete user ID:', err);
-                    toast.error('Failed to delete ID: ' + (err?.message || 'Server error'));
-                  }
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setShowDeleteModal(true);
                 }}
                 className="w-full p-3.5 rounded-xl bg-red-50 hover:bg-red-600 hover:text-white dark:bg-red-950/30 dark:hover:bg-red-600 border border-red-200 dark:border-red-900/40 text-red-600 dark:text-red-400 flex items-center gap-3 transition-all text-left font-bold text-sm cursor-pointer group shadow-sm active:scale-98"
               >
@@ -13551,7 +13976,113 @@ function ProfileSettingsDrawer({
             </div>
           )}
         </div>
-      </div></div>
+        </>
+        )}
+      </div>
+    </div>
+
+    {/* Custom Interactive Delete My ID Confirmation Modal */}
+    {showDeleteModal && (
+      <div 
+        className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-in fade-in duration-200" 
+        onClick={() => !isDeletingId && setShowDeleteModal(false)}
+      >
+        <div 
+          className="bg-white dark:bg-zinc-900 border border-red-500/40 rounded-2xl p-6 max-w-sm w-full shadow-2xl space-y-4" 
+          onClick={e => e.stopPropagation()}
+        >
+          <div className="w-14 h-14 mx-auto rounded-full bg-red-100 dark:bg-red-950/60 border border-red-500/30 flex items-center justify-center text-red-600 dark:text-red-400 shadow-inner">
+            <Trash2 className="w-7 h-7 animate-bounce" />
+          </div>
+          
+          <div className="text-center space-y-2">
+            <h3 className="text-lg font-black text-black dark:text-zinc-50">
+              Delete Vyapar Bridge ID?
+            </h3>
+            <p className="text-xs text-black/70 dark:text-zinc-400 leading-relaxed">
+              Are you sure you want to permanently delete your account <strong className="text-black dark:text-zinc-100 font-bold">({user?.name || 'User'})</strong>?
+              <br /><br />
+              This will <span className="text-red-600 dark:text-red-400 font-bold">permanently erase</span> all your uploaded posts, reels, products, catalog designs, profile listings, and chat inquiries from Firebase and server. This action <span className="underline font-semibold">cannot be undone</span>.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 pt-2">
+            <button
+              type="button"
+              disabled={isDeletingId}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setShowDeleteModal(false);
+              }}
+              className="w-full py-2.5 px-4 rounded-xl border border-slate-300 dark:border-zinc-700 hover:bg-slate-100 dark:hover:bg-zinc-800 text-black dark:text-zinc-200 font-bold text-xs cursor-pointer transition-all disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={isDeletingId}
+              onClick={async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsDeletingId(true);
+                try {
+                  const userIdToDelete = user.id || user.uid;
+                  if (userIdToDelete) {
+                    await Promise.allSettled([
+                      deleteUserFromFirestore(userIdToDelete, { username: user.username, phone: user.phone, email: user.email }),
+                      fetch(`/api/users/${userIdToDelete}`, { method: 'DELETE' })
+                    ]);
+                  }
+                  
+                  // Delete Auth User if authenticated via Firebase Auth
+                  if (auth.currentUser) {
+                    try {
+                      await auth.currentUser.delete();
+                    } catch (authErr) {
+                      console.warn('Firebase auth delete notice:', authErr);
+                    }
+                  }
+
+                  localStorage.removeItem('user');
+                  localStorage.removeItem('Vyapar Bridge_user');
+                  localStorage.removeItem('vyapar_user');
+                  localStorage.removeItem('vyapar_user_id');
+                  localStorage.removeItem('vyapar_user_name');
+                  localStorage.removeItem('vyapar_user_avatar');
+
+                  window.dispatchEvent(new CustomEvent('userDeleted', { detail: { userId: userIdToDelete } }));
+                  window.dispatchEvent(new CustomEvent('postDeleted', { detail: { userId: userIdToDelete } }));
+
+                  toast.success('Your Vyapar Bridge ID & Account have been permanently deleted.');
+                  setShowDeleteModal(false);
+                  onClose();
+                  onLogout();
+                } catch (err: any) {
+                  console.error('Failed to delete user ID:', err);
+                  toast.error('Failed to delete ID: ' + (err?.message || 'Server error'));
+                  setIsDeletingId(false);
+                }
+              }}
+              className="w-full py-2.5 px-4 rounded-xl bg-red-600 hover:bg-red-700 text-white font-black text-xs cursor-pointer transition-all shadow-md active:scale-95 flex items-center justify-center gap-1.5 disabled:opacity-50"
+            >
+              {isDeletingId ? (
+                <>
+                  <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  <span>Deleting...</span>
+                </>
+              ) : (
+                <>
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Yes, Delete ID</span>
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 }
 
@@ -14205,99 +14736,50 @@ function ProfilePage({
             />
           )
         ) : (
-          <div className="w-full h-full bg-gradient-to-r from-slate-900 via-zinc-800 to-slate-900 flex flex-col items-center justify-center text-black/60 gap-2">
-            <Camera className="w-8 h-8 opacity-60" />
-            <span className="text-sm font-medium">
-              {isOwnProfile ? 'Add a cover photo for your profile' : `${userToDisplay.name}'s Profile Banner`}
-            </span>
+          <div className="w-full h-full bg-gradient-to-tr from-[#1a1a1a] via-[#101010] to-black flex items-center justify-center relative overflow-hidden group">
+            {/* Glowing orb animations in background */}
+            <div className="absolute inset-0 opacity-30 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-amber-500/20 via-transparent to-transparent animate-pulse" />
+            <div className="absolute top-0 right-0 w-64 h-64 bg-amber-500/10 rounded-full blur-3xl" />
+            <div className="absolute bottom-0 left-0 w-64 h-64 bg-yellow-600/10 rounded-full blur-3xl" />
+            
+            <div className="relative z-10 flex flex-col items-center">
+              <span className="text-4xl sm:text-5xl font-black tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-yellow-200 via-yellow-400 to-amber-600 drop-shadow-[0_0_15px_rgba(251,191,36,0.6)] group-hover:drop-shadow-[0_0_25px_rgba(251,191,36,0.8)] transition-all duration-700">
+                Vyapar Bridge
+              </span>
+              <span className="mt-2 text-[10px] sm:text-xs font-bold tracking-[0.3em] uppercase text-amber-500/80 drop-shadow-[0_0_5px_rgba(251,191,36,0.3)]">
+                {userToDisplay.role === 'admin' ? 'Admin Portal' : 'Premium Member'}
+              </span>
+            </div>
+            {isOwnProfile && (
+              <div className="absolute bottom-4 left-1/2 -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+                <span className="px-3 py-1.5 bg-black/60 backdrop-blur-md rounded-full text-[10px] text-amber-200/80 border border-amber-500/20">
+                  Click camera icon top right to add cover
+                </span>
+              </div>
+            )}
           </div>
         )}
 
-        {/* Back Button on Top Left of Cover */}
-        <div className="absolute top-3 left-3 z-20">
-          <button 
-            onClick={() => navigate('/')}
-            className="px-3 py-2 rounded-full bg-black/60 hover:bg-black/80 text-black backdrop-blur-md transition-all shadow-md flex items-center gap-1.5 text-xs font-bold cursor-pointer"
-            title="Back to Feed"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            <span className="hidden sm:inline">Back</span>
-          </button>
-        </div>
-
-        {/* 3-Dots Cover Button */}
-        <div className="absolute top-3 right-3 z-20">
-          <button 
-            onClick={() => setShowCoverMenu(!showCoverMenu)}
-            className="p-2 rounded-full bg-black/60 hover:bg-black/80 text-black backdrop-blur-md transition-all shadow-md flex items-center justify-center cursor-pointer"
-            title="Cover options"
-          >
-            <MoreHorizontal className="w-5 h-5" />
-          </button>
-          
-          {showCoverMenu && (
-            <div className="absolute right-0 mt-2 w-56 bg-white dark:bg-zinc-900 rounded-xl shadow-2xl z-30 border border-slate-200 dark:border-zinc-800 overflow-hidden text-black dark:text-zinc-100 text-sm font-medium">
-              {userToDisplay.coverUrl && (
-                <button 
-                  onClick={() => { setIsSeeCoverOpen(true); setShowCoverMenu(false); }}
-                  className="w-full text-left px-4 py-3 hover:bg-slate-50 dark:hover:bg-zinc-800 flex items-center gap-2.5 border-b border-slate-100 dark:border-zinc-800 transition-colors cursor-pointer"
-                >
-                  <Eye className="w-4 h-4 text-blue-500" />
-                  See cover image
-                </button>
-              )}
-              {isOwnProfile && (
-                <>
-                  {userToDisplay.coverUrl && (
-                    <>
-                      <button 
-                        onClick={() => {
-                          setImageToCrop(userToDisplay.coverUrl);
-                          setIsCropModalOpen(true);
-                          setShowCoverMenu(false);
-                        }}
-                        className="w-full text-left px-4 py-3 hover:bg-slate-50 dark:hover:bg-zinc-800 flex items-center gap-2.5 border-b border-slate-100 dark:border-zinc-800 transition-colors cursor-pointer"
-                      >
-                        <Crop className="w-4 h-4 text-emerald-500" />
-                        Crop & Adjust Cover
-                      </button>
-                      <button 
-                        onClick={handleToggleCoverFit}
-                        className="w-full text-left px-4 py-3 hover:bg-slate-50 dark:hover:bg-zinc-800 flex items-center gap-2.5 border-b border-slate-100 dark:border-zinc-800 transition-colors cursor-pointer"
-                      >
-                        <Maximize2 className="w-4 h-4 text-amber-500" />
-                        {userToDisplay.coverFit === 'contain' ? 'Banner Crop (Fill Mode)' : 'Full Image (Fit Mode)'}
-                      </button>
-                    </>
-                  )}
-                  <button 
-                    onClick={() => { coverFileRef.current?.click(); setShowCoverMenu(false); }}
-                    className="w-full text-left px-4 py-3 hover:bg-slate-50 dark:hover:bg-zinc-800 flex items-center gap-2.5 border-b border-slate-100 dark:border-zinc-800 transition-colors cursor-pointer"
-                  >
-                    <Camera className="w-4 h-4 text-emerald-500" />
-                    {userToDisplay.coverUrl ? 'Change cover image' : 'Choose cover image'}
-                  </button>
-                  <button 
-                    onClick={() => { setIsEditModalOpen(true); setShowCoverMenu(false); }}
-                    className="w-full text-left px-4 py-3 hover:bg-slate-50 dark:hover:bg-zinc-800 flex items-center gap-2.5 border-b border-slate-100 dark:border-zinc-800 transition-colors cursor-pointer"
-                  >
-                    <Upload className="w-4 h-4 text-indigo-500" />
-                    Edit profile details
-                  </button>
-                  {userToDisplay.coverUrl && (
-                    <button 
-                      onClick={handleRemoveCover}
-                      className="w-full text-left px-4 py-3 text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 flex items-center gap-2.5 transition-colors cursor-pointer"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                      Remove cover photo
-                    </button>
-                  )}
-                </>
-              )}
-            </div>
-          )}
-        </div>
+        {isOwnProfile && (
+          <div className="absolute top-3 right-3 z-20 flex items-center gap-2">
+            <button 
+              onClick={() => coverFileRef.current?.click()}
+              className="p-2.5 rounded-full bg-black/60 hover:bg-black/80 text-white backdrop-blur-md transition-all shadow-md flex items-center justify-center cursor-pointer border border-white/10"
+              title="Upload Cover Photo"
+            >
+              <Camera className="w-5 h-5" />
+            </button>
+            {userToDisplay.coverUrl && (
+              <button 
+                onClick={handleRemoveCover}
+                className="p-2.5 rounded-full bg-red-600/80 hover:bg-red-700 text-white backdrop-blur-md transition-all shadow-md flex items-center justify-center cursor-pointer border border-red-500/30"
+                title="Remove Cover Photo"
+              >
+                <Trash2 className="w-5 h-5" />
+              </button>
+            )}
+          </div>
+        )}
 
         {isOwnProfile && (
           <input 
@@ -14978,51 +15460,23 @@ function ProfilePage({
             </div>
           )}
 
-          {/* Posts Wall Grid */}
-          <div className="grid grid-cols-3 gap-1 sm:gap-4">
+          {/* Posts Wall Feed */}
+          <div className="flex flex-col gap-4">
             {userPosts.map((post, idx) => (
-              <div 
-                key={post.id} 
-                onClick={() => setActiveProfilePostIndex(idx)}
-                className="relative aspect-square bg-slate-100 dark:bg-zinc-800 rounded-lg overflow-hidden group cursor-pointer shadow-sm"
-              >
-                {post.type === 'video' && post.mediaUrl ? (
-                  <div className="relative w-full h-full">
-                    <img 
-                      src={post.thumbnailUrl || 'https://images.unsplash.com/photo-1615971677499-5467cbab01c0?auto=format&fit=crop&w=400&q=80'} 
-                      alt={post.title || 'Post'} 
-                      className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" 
-                      loading="lazy"
-                      onError={(e) => {
-                        e.currentTarget.src = 'https://images.unsplash.com/photo-1615971677499-5467cbab01c0?auto=format&fit=crop&w=400&q=80';
-                      }}
-                    />
-                    <div className="absolute top-2 right-2 p-1 rounded-full bg-black/60 text-white backdrop-blur-sm">
-                      <Film className="w-3.5 h-3.5" />
-                    </div>
-                  </div>
-                ) : post.mediaUrl ? (
-                  <img src={post.mediaUrl} alt={post.title || 'Post'} className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />
-                ) : (
-                  <div className="w-full h-full p-3 bg-gradient-to-br from-blue-500/10 via-indigo-500/5 to-slate-500/10 flex flex-col justify-center items-center text-center">
-                    <Sparkles className="w-6 h-6 text-blue-500 mb-1" />
-                    <p className="text-[11px] font-bold text-black dark:text-zinc-100 line-clamp-2 px-1">{post.title || post.content || 'Vyapar Post'}</p>
-                    <span className="text-[9px] text-black/60 dark:text-zinc-400 mt-1 uppercase tracking-wider">{post.userRole || 'Member'}</span>
-                  </div>
-                )}
-                <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-6 text-black font-bold text-sm">
-                  <span className="flex items-center gap-1.5"><Heart className="w-5 h-5 fill-white" /> {post.likesCount || 0}</span>
-                  <span className="flex items-center gap-1.5"><MessageCircle className="w-5 h-5 fill-white" /> {post.commentsCount || 0}</span>
-                </div>
-                {post.type === 'video' && (
-                  <div className="absolute top-2 right-2 text-black drop-shadow-md">
-                    <Film className="w-4 h-4" />
-                  </div>
-                )}
-              </div>
+              <PostItem
+                key={post.id}
+                post={post}
+                currentUser={currentUser}
+                onPostDeleted={(id) => {
+                  setUserPosts(prev => prev.filter(p => String(p.id) !== String(id)));
+                  setSavedPosts(prev => prev.filter(p => String(p.id) !== String(id)));
+                }}
+                onPostClick={() => setActiveProfilePostIndex(idx)}
+                onReelClick={() => setActiveProfilePostIndex(idx)}
+              />
             ))}
             {userPosts.length === 0 && (
-              <div className="col-span-3 py-16 text-center text-black/60 font-medium">
+              <div className="py-16 text-center text-black/60 font-medium">
                 No posts found on this profile wall yet.
               </div>
             )}
@@ -15540,10 +15994,49 @@ function RightSidebar({
 }
 
 function AppContent() {
+  const { isDark, toggleDark } = React.useContext(ThemeContext);
   const [user, setUser] = useState<any>(null);
   const [unreadNotifs, setUnreadNotifs] = useState(0);
+
+
+  useEffect(() => {
+    if (!user?.id) return;
+    let isInitialLoad = true;
+    const q = query(
+      collection(firestoreDb, 'users', String(user.id), 'notifications'),
+      where('read', '==', false)
+    );
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      let currentUnread = snapshot.docs.length;
+      setUnreadNotifs(currentUnread);
+      
+      // If it's not the initial load and we have new notifications
+      if (!isInitialLoad) {
+        snapshot.docChanges().forEach((change) => {
+          if (change.type === 'added') {
+            const data = change.doc.data();
+            playMessageSound();
+            toast(data.message || 'You have a new notification', {
+              icon: '🔔',
+              style: {
+                borderRadius: '10px',
+                background: isDark ? '#18181b' : '#fff',
+                color: isDark ? '#fff' : '#000',
+              },
+            });
+          }
+        });
+      }
+      isInitialLoad = false;
+    }, (error) => {
+      console.log('Notifs listener error:', error);
+    });
+
+    return () => unsubscribe();
+  }, [user?.id, isDark]);
+
   const [userLocation, setUserLocation] = useState<{lat: number, lng: number} | null>(null);
-  const { isDark, toggleDark } = React.useContext(ThemeContext);
+
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -15752,7 +16245,7 @@ function AppContent() {
     { icon: MapIcon, label: 'Roadmap', path: '/roadmap' },
     { icon: MessageCircle, label: 'Messages', path: '/chat' },
     { icon: Heart, label: 'Notifications', path: '/notifications' },
-    ...(user?.role !== 'customer' ? [{ icon: PlusSquare, label: 'Create', path: '/create' }] : []),
+    { icon: PlusSquare, label: 'Create', path: '/create' },
   ];
 
   if (user?.role === 'admin') {
@@ -15779,6 +16272,7 @@ function AppContent() {
     setIsSettingsDrawerOpen(false);
     setUser(null);
     localStorage.removeItem('user');
+    localStorage.removeItem('Vyapar Bridge_user');
     toast.success('Logged out successfully');
   };
 
@@ -15944,6 +16438,10 @@ function AppContent() {
 
         {/* Right Actions */}
         <div className="flex items-center gap-2 shrink-0 z-10 relative">
+          <Link to="/chat" title="Messages" className="p-1 relative flex items-center justify-center">
+            <MessageCircle className="w-5 h-5 text-black dark:text-zinc-50 hover:scale-105 transition-transform" />
+            {/* You could add unread message count here if available */}
+          </Link>
           <Link to="/notifications" title="Notifications" className="p-1 relative flex items-center justify-center">
             <Heart className="w-5.5 h-5.5 text-black dark:text-zinc-50 hover:scale-105 transition-transform" />
             {unreadNotifs > 0 && <span className="absolute top-0 right-0 w-2 h-2 bg-red-500 rounded-full border-2 border-white dark:border-black"></span>}
@@ -16192,23 +16690,47 @@ function AppContent() {
       
       {/* Mobile Bottom Navigation */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 w-full bg-[#E6C76C] dark:bg-black border-t border-slate-200 dark:border-zinc-800 h-14 flex items-center justify-around z-50 px-2 max-w-full">
-        <Link to="/"><Home className={cn("w-6 h-6", location.pathname === '/' && "stroke-[2.5px]")} /></Link>
-        <Link to="/community"><Users className={cn("w-6 h-6", location.pathname === '/community' && "stroke-[2.5px]")} /></Link>
-        <Link to="/roadmap"><MapIcon className={cn("w-6 h-6", location.pathname === '/roadmap' && "stroke-[2.5px]")} /></Link>
+        <Link to="/" title="Home" className="p-2 text-black dark:text-zinc-50 hover:opacity-80 transition-opacity">
+          <Home className={cn("w-6 h-6", location.pathname === '/' && "stroke-[2.5px] text-blue-600 dark:text-blue-400")} />
+        </Link>
+        <Link to="/community" title="Community" className="p-2 text-black dark:text-zinc-50 hover:opacity-80 transition-opacity">
+          <Users className={cn("w-6 h-6", location.pathname === '/community' && "stroke-[2.5px] text-blue-600 dark:text-blue-400")} />
+        </Link>
+        
+        {/* Direct Upload & Create Button */}
+        <Link 
+          to={user ? "/create" : "#"} 
+          onClick={(e) => {
+            if (!user) {
+              e.preventDefault();
+              setIsAuthModalOpen(true);
+            }
+          }}
+          className="flex items-center justify-center -mt-3 group cursor-pointer"
+          title="Create & Upload Post"
+        >
+          <div className="w-11 h-11 rounded-full bg-gradient-to-tr from-blue-600 via-blue-500 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white flex items-center justify-center shadow-lg shadow-blue-500/30 border-2 border-white dark:border-zinc-900 transition-transform active:scale-90">
+            <Plus className="w-6 h-6 stroke-[3]" />
+          </div>
+        </Link>
+
+        <Link to="/roadmap" title="Roadmap" className="p-2 text-black dark:text-zinc-50 hover:opacity-80 transition-opacity">
+          <MapIcon className={cn("w-6 h-6", location.pathname === '/roadmap' && "stroke-[2.5px] text-blue-600 dark:text-blue-400")} />
+        </Link>
         {user ? (
-          <Link to="/profile">
-            <div className="w-6 h-6 rounded-full bg-slate-200 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 flex items-center justify-center overflow-hidden">
+          <Link to="/profile" title="Profile" className="p-1">
+            <div className="w-7 h-7 rounded-full bg-slate-200 dark:bg-zinc-800 border-2 border-slate-300 dark:border-zinc-700 flex items-center justify-center overflow-hidden">
                {user.avatarUrl ? (
                  <img src={user.avatarUrl} alt={user.name} className="w-full h-full object-cover" />
                ) : (
-                 <span className="text-[10px] font-bold text-black/80 dark:text-zinc-300">{user.name?.charAt(0) || 'U'}</span>
+                 <span className="text-xs font-bold text-black/80 dark:text-zinc-300">{user.name?.charAt(0) || 'U'}</span>
                )}
             </div>
           </Link>
         ) : (
           <button 
             onClick={() => setIsAuthModalOpen(true)}
-            className="w-6 h-6 rounded-full bg-blue-600 text-white flex items-center justify-center text-[10px] font-black cursor-pointer shadow-sm"
+            className="w-7 h-7 rounded-full bg-blue-600 text-white flex items-center justify-center text-[10px] font-black cursor-pointer shadow-sm"
           >
             Log
           </button>

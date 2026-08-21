@@ -10,6 +10,20 @@ export async function optimizeImageForPersistence(
   maxHeight = 1080,
   quality = 0.82
 ): Promise<string> {
+  // If it's a GIF file, read directly to preserve animation
+  if (fileOrUrl instanceof File && (fileOrUrl.type === 'image/gif' || fileOrUrl.name.toLowerCase().endsWith('.gif'))) {
+    try {
+      return await fileToDataURL(fileOrUrl);
+    } catch (e) {
+      console.warn('GIF read error:', e);
+    }
+  }
+
+  // If it's already a GIF data URL or web URL, preserve directly
+  if (typeof fileOrUrl === 'string' && (fileOrUrl.startsWith('data:image/gif') || fileOrUrl.toLowerCase().includes('.gif'))) {
+    return fileOrUrl;
+  }
+
   // If it's already a short web URL or doesn't need canvas conversion
   if (typeof fileOrUrl === 'string' && (fileOrUrl.startsWith('http') || (fileOrUrl.startsWith('data:image') && fileOrUrl.length < 300000))) {
     return fileOrUrl;

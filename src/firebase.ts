@@ -2,6 +2,26 @@ import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import { initializeFirestore, getFirestore, setLogLevel } from 'firebase/firestore';
 
+// Intercept console.error to suppress the Firestore idle stream warning
+const originalConsoleError = console.error;
+console.error = (...args) => {
+  // Suppress harmless internal Firestore warnings and expected quota exhaustion spam
+  if (args[0] && typeof args[0] === 'string') {
+    if (args[0].includes('CANCELLED: Disconnecting idle stream')) return;
+    if (args[0].includes('RESOURCE_EXHAUSTED')) return;
+    if (args[0].includes('Quota limit exceeded')) return;
+    if (args[0].includes('code=resource-exhausted')) return;
+  }
+  
+  if (args[0] && args[0].message) {
+    if (args[0].message.includes('RESOURCE_EXHAUSTED')) return;
+    if (args[0].message.includes('Quota limit exceeded')) return;
+    if (args[0].message.includes('code=resource-exhausted')) return;
+  }
+
+  originalConsoleError(...args);
+};
+
 // Suppress internal Firestore gRPC/WebChannel idle stream disconnect messages
 try {
   setLogLevel('silent');

@@ -1,4 +1,6 @@
+import fs from 'fs';
 
+const content = `
 const getSoundSettings = () => {
   try {
     const raw = localStorage.getItem('vyapar_sound_settings');
@@ -7,13 +9,13 @@ const getSoundSettings = () => {
   return { likes: true, comments: true, shares: true, saves: true, enquiries: true, messages: true };
 };
 
-export const updateSoundSettings = (settings: any) => {
+export const updateSoundSettings = (settings) => {
   localStorage.setItem('vyapar_sound_settings', JSON.stringify(settings));
 };
 
 export const getSoundSettingsSync = getSoundSettings;
 
-function playOscillator(ctx: any, type: OscillatorType, startFreq: number, endFreq: number, startTime: number, duration: number, vol: number) {
+function playOscillator(ctx, type, startFreq, endFreq, startTime, duration, vol) {
   const osc = ctx.createOscillator();
   const gain = ctx.createGain();
   osc.type = type;
@@ -95,3 +97,6 @@ export function playMessageSound(): void {
   playOscillator(ctx, 'sine', 600, 900, now, 0.1, 0.6);
   playOscillator(ctx, 'sine', 900, 1200, now + 0.15, 0.2, 0.6);
 }
+`;
+
+fs.writeFileSync('src/utils/audioEffects.ts', content);

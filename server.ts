@@ -72,7 +72,9 @@ async function uploadToFirebaseOrLocal(file: Express.Multer.File): Promise<strin
     try {
       const usersSnap = await getDocs(collection(firestoreDb, 'users'));
       if (!usersSnap.empty) {
-        const fbUsers = usersSnap.docs.map(d => ({ ...d.data(), id: d.id }));
+        let fbUsers = usersSnap.docs.map(d => ({ ...d.data(), id: d.id }));
+        // Ignore users that have been explicitly deleted locally
+        fbUsers = fbUsers.filter(u => !(db.deletedUserIds || []).includes(String(u.id)));
         const fbUserMap = new Map(fbUsers.map(u => [String(u.id), u]));
         db.users = db.users.filter(u => u.role === 'admin' || String(u.id) === '1' || fbUserMap.has(String(u.id)));
         for (const u of fbUsers) {
@@ -83,18 +85,18 @@ async function uploadToFirebaseOrLocal(file: Express.Multer.File): Promise<strin
       }
 
       const postsSnap = await getDocs(collection(firestoreDb, 'posts'));
-      const fbPosts = postsSnap.docs.map(d => ({ ...d.data(), id: d.id }));
-      const fbPostIds = new Set(fbPosts.map(p => String(p.id)));
-      
-      const now = Date.now();
-      db.posts = db.posts.filter(p => fbPostIds.has(String(p.id)) || (p.createdAt && (now - new Date(p.createdAt).getTime()) < 30000));
-      
-      for (const p of fbPosts) {
-        const idx = db.posts.findIndex(ex => String(ex.id) === String(p.id));
-        if (idx !== -1) {
-          db.posts[idx] = { ...db.posts[idx], ...p };
-        } else {
-          db.posts.push(p);
+      if (!postsSnap.empty) {
+        const fbPosts = postsSnap.docs.map(d => ({ ...d.data(), id: d.id }));
+        for (const p of fbPosts) {
+          if ((db.deletedPostIds || []).includes(String(p.id))) continue;
+          const pUid = String(p.userId || p.user?.id || '');
+          if ((db.deletedUserIds || []).includes(pUid)) continue;
+          const idx = db.posts.findIndex(ex => String(ex.id) === String(p.id));
+          if (idx !== -1) {
+            db.posts[idx] = { ...db.posts[idx], ...p };
+          } else {
+            db.posts.push(p);
+          }
         }
       }
       db.posts.sort((a, b) => {
@@ -280,7 +282,7 @@ function saveAdminSettings() {
   try {
     fs.writeFileSync(ADMIN_SETTINGS_FILE, JSON.stringify(db.adminSettings, null, 2), 'utf-8');
     console.log('💾 Persisted Admin Settings to disk');
-    if (firestoreDb) {
+    if (firestoreDb && isFirebaseDelete) {
       setDoc(doc(firestoreDb, 'system', 'adminSettings'), db.adminSettings, { merge: true }).catch(e => {
         console.warn('Firestore sync adminSettings note:', e);
       });
@@ -328,6 +330,7 @@ function loadDatabase() {
         if (!db.shares) db.shares = [];
         if (!db.notInterested) db.notInterested = [];
         if (!db.savedCatalogues) db.savedCatalogues = [];
+        if (!db.deletedUserIds) db.deletedUserIds = [];
         if (!(db as any).ratings) (db as any).ratings = [];
         if (!(db as any).feedbacks) (db as any).feedbacks = [];
         // Sanitize any existing user avatars with ui-avatars text
@@ -904,17 +907,10 @@ Return ONLY a valid raw JSON object (NO markdown, NO \`\`\`json backticks, NO ex
         db.users.push(user);
       }
 
-      if (!userId || !user) {
+      if (!userId && !req.body.userName) {
         return res.status(401).json({ 
           success: false, 
-          error: '🔐 Login required! Please log in as a Factory or Dealer to post content.' 
-        });
-      }
-
-      if (user.role === 'customer') {
-        return res.status(403).json({ 
-          success: false, 
-          error: '🚫 Local area customers are not allowed to create posts or upload reels. Post creation is reserved for Factories and Dealers only.' 
+          error: '🔐 Login required! Please log in to post content.' 
         });
       }
 
@@ -1585,6 +1581,7 @@ Return ONLY a valid raw JSON object (NO markdown, NO \`\`\`json backticks, NO ex
     const userId = String(req.body.userId);
     
     if (!db.savedCatalogues) db.savedCatalogues = [];
+        if (!db.deletedUserIds) db.deletedUserIds = [];
     
     const existingIdx = db.savedCatalogues.findIndex(
       s => String(s.userId) === userId && String(s.targetUserId) === targetUserId
@@ -2531,44 +2528,75 @@ Sitemap: ${baseUrl}/sitemap.xml`;
 
   // Delete user profile and all associated data
   app.delete('/api/users/:id', async (req, res) => {
-    const userId = String(req.params.id);
-    const userIndex = db.users.findIndex(u => String(u.id) === userId || (u.username && String(u.username) === userId));
-    
-    if (userIndex > -1) {
-      db.users.splice(userIndex, 1);
-    }
-    
+    const isFirebaseDelete = req.query.firebase === 'true';
+    const rawParam = String(req.params.id || '').trim();
+    const userId = rawParam;
+    const lowerParam = rawParam.toLowerCase();
+
+    // Find and remove matching user(s)
+    db.users = db.users.filter(u => {
+      const uId = String(u.id || '').toLowerCase();
+      const uUname = String(u.username || '').toLowerCase();
+      const uPhone = String(u.phone || '').trim();
+      const uEmail = String(u.email || '').toLowerCase();
+      const match = uId === lowerParam || uUname === lowerParam || uPhone === rawParam || (uEmail && uEmail === lowerParam);
+      if (match) {
+        if (!db.deletedUserIds) db.deletedUserIds = [];
+        if (!db.deletedUserIds.includes(String(u.id))) db.deletedUserIds.push(String(u.id));
+      }
+      return !match;
+    });
+
     // Remove associated posts
-    db.posts = db.posts.filter(p => String(p.userId) !== userId && String(p.user?.id) !== userId);
-    // Remove likes
-    db.likes = db.likes.filter(l => String(l.userId) !== userId);
-    // Remove saves
-    db.saves = db.saves.filter(s => String(s.userId) !== userId);
-    // Remove views
-    db.views = db.views.filter(v => String(v.userId) !== userId);
-    // Remove comments
-    db.comments = db.comments.filter(c => String(c.userId) !== userId);
-    // Remove follows
-    db.follows = db.follows.filter(f => String(f.followerId) !== userId && String(f.followingId) !== userId);
-    // Remove blocks
-    db.blocks = db.blocks.filter(b => String(b.blockerId) !== userId && String(b.blockedId) !== userId);
-    // Remove reports
-    db.reports = db.reports.filter(r => String(r.reporterId) !== userId);
+    db.posts = db.posts.filter(p => {
+      const pUid = String(p.userId || p.user?.id || '').toLowerCase();
+      const pUname = String(p.userName || p.user?.username || '').toLowerCase();
+      return pUid !== lowerParam && pUname !== lowerParam;
+    });
+
+    // Remove likes, saves, views, comments, follows, blocks, reports
+    db.likes = db.likes.filter(l => String(l.userId || '').toLowerCase() !== lowerParam);
+    db.saves = db.saves.filter(s => String(s.userId || '').toLowerCase() !== lowerParam);
+    db.views = db.views.filter(v => String(v.userId || '').toLowerCase() !== lowerParam);
+    db.comments = db.comments.filter(c => String(c.userId || '').toLowerCase() !== lowerParam);
+    db.follows = db.follows.filter(f => String(f.followerId || '').toLowerCase() !== lowerParam && String(f.followingId || '').toLowerCase() !== lowerParam);
+    db.blocks = db.blocks.filter(b => String(b.blockerId || '').toLowerCase() !== lowerParam && String(b.blockedId || '').toLowerCase() !== lowerParam);
+    db.reports = db.reports.filter(r => String(r.reporterId || '').toLowerCase() !== lowerParam);
 
     if (firestoreDb) {
       try {
-        await deleteDoc(doc(firestoreDb, 'users', userId));
-        const postsSnap = await getDocs(query(collection(firestoreDb, 'posts'), where('userId', '==', userId)));
+        // Direct delete
+        await deleteDoc(doc(firestoreDb, 'users', userId)).catch(() => {});
+        // Query delete
+        const usersSnap = await getDocs(collection(firestoreDb, 'users'));
+        for (const uDoc of usersSnap.docs) {
+          const data = uDoc.data();
+          if (
+            uDoc.id.toLowerCase() === lowerParam ||
+            String(data.id || '').toLowerCase() === lowerParam ||
+            String(data.username || '').toLowerCase() === lowerParam ||
+            String(data.phone || '').trim() === rawParam
+          ) {
+            await deleteDoc(uDoc.ref).catch(() => {});
+          }
+        }
+
+        const postsSnap = await getDocs(collection(firestoreDb, 'posts'));
         for (const pDoc of postsSnap.docs) {
-          await deleteDoc(pDoc.ref);
+          const data = pDoc.data();
+          const pUid = String(data.userId || data.user?.id || '').toLowerCase();
+          const pUname = String(data.userName || data.user?.username || '').toLowerCase();
+          if (pUid === lowerParam || pUname === lowerParam) {
+            await deleteDoc(pDoc.ref).catch(() => {});
+          }
         }
       } catch (e) {
-        console.error('Firestore delete user error:', e);
+        console.error('Firestore server delete user error:', e);
       }
     }
 
     saveDatabase();
-    res.json({ success: true, message: 'User and all associated data deleted successfully' });
+    res.json({ success: true, message: `User ${userId} and all associated data deleted permanently` });
   });
 
   // Update user profile
@@ -2960,6 +2988,14 @@ Sitemap: ${baseUrl}/sitemap.xml`;
   app.post('/api/admin/reset-database', async (req, res) => {
     try {
       // Keep Master Admin user '1', wipe posts and non-admin users
+      if (!db.deletedUserIds) db.deletedUserIds = [];
+      if (!db.deletedPostIds) db.deletedPostIds = [];
+      
+      db.users.forEach(u => {
+        if (u.role !== 'admin' && String(u.id) !== '1') db.deletedUserIds.push(String(u.id));
+      });
+      db.posts.forEach(p => db.deletedPostIds.push(String(p.id)));
+
       db.users = db.users.filter(u => u.role === 'admin' || String(u.id) === '1');
       db.posts = [];
       db.comments = [];

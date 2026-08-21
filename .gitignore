@@ -5,3 +5,5 @@ dist
 database3.json
 database2.json
 database.json
+admin_settings.json
+admin_settings*.json

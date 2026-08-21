@@ -278,30 +278,16 @@ export async function syncPostToFirestore(postData: any): Promise<boolean> {
 
 export async function fetchPostsFromFirestore(): Promise<any[]> {
   const postsMap = new Map<string, any>();
+  const activeUserId = localStorage.getItem('vyapar_user_id') || '';
 
-  // 1. Load from local cache first for zero-latency display
-  try {
-    const localStr = localStorage.getItem(LOCAL_POSTS_CACHE_KEY);
-    if (localStr) {
-      const localList = JSON.parse(localStr);
-      if (Array.isArray(localList)) {
-        localList.forEach(p => {
-          if (p && p.id) postsMap.set(String(p.id), p);
-        });
-      }
-    }
-  } catch (e) {}
-
-  // 2. Load latest real-time documents from Firestore (All Posts & Members Uncapped)
+  // 1. Fetch latest real-time documents from Firestore (All Posts & Members Uncapped)
   try {
     const postsQuery = query(collection(db, 'posts'));
     const snap = await getDocs(postsQuery);
-    const activeUserId = localStorage.getItem('vyapar_user_id') || '';
     snap.forEach((docSnap) => {
       const data = docSnap.data();
       if (data && docSnap.id) {
-        const existing = postsMap.get(String(docSnap.id)) || {};
-        const merged = { ...existing, ...data, id: docSnap.id };
+        const merged = { ...data, id: docSnap.id };
         
         // Clean up blob URLs if present
         if (merged.mediaUrl && merged.mediaUrl.startsWith('blob:')) {
@@ -324,6 +310,18 @@ export async function fetchPostsFromFirestore(): Promise<any[]> {
     } else {
       console.warn('Firestore fetchPosts note:', error);
     }
+    // Only fall back to local cache if network/quota failed
+    try {
+      const localStr = localStorage.getItem(LOCAL_POSTS_CACHE_KEY);
+      if (localStr) {
+        const localList = JSON.parse(localStr);
+        if (Array.isArray(localList)) {
+          localList.forEach(p => {
+            if (p && p.id) postsMap.set(String(p.id), p);
+          });
+        }
+      }
+    } catch (e) {}
   }
 
   let deletedPostsSet = new Set<string>();
@@ -352,7 +350,7 @@ export async function fetchPostsFromFirestore(): Promise<any[]> {
       return timeB - timeA;
     });
 
-  // Update local cache with merged freshest state
+  // Update local cache with freshest authoritative state
   try {
     localStorage.setItem(LOCAL_POSTS_CACHE_KEY, JSON.stringify(result.slice(0, 100)));
   } catch (e) {}
@@ -366,41 +364,20 @@ export function subscribeToPostsFromFirestore(callback: (posts: any[]) => void):
     const postsQuery = query(collection(db, 'posts'));
     return onSnapshot(postsQuery, (snapshot) => {
       const postsMap = new Map<string, any>();
-
-      // Load baseline from local cache
-      try {
-        const localStr = localStorage.getItem(LOCAL_POSTS_CACHE_KEY);
-        if (localStr) {
-          const localList = JSON.parse(localStr);
-          if (Array.isArray(localList)) {
-            localList.forEach(p => {
-              if (p && p.id) postsMap.set(String(p.id), p);
-            });
-          }
-        }
-      } catch (e) {}
-
-      // Deep merge real-time snapshot documents over baseline
       const activeUserId = localStorage.getItem('vyapar_user_id') || '';
+
+      // Direct snapshot mapping - authoritative source of truth
       snapshot.forEach((docSnap) => {
         const data = docSnap.data();
         if (data && docSnap.id) {
-          const existing = postsMap.get(String(docSnap.id)) || {};
           const localStoredVideo = localStorage.getItem('vyapar_video_' + docSnap.id);
-          const existingMedia = existing.mediaUrl || existing.persistentMediaUrl || existing.videoUrl || localStoredVideo;
-          const incomingMedia = data.mediaUrl || data.persistentMediaUrl || data.videoUrl || data.thumbnailUrl;
-
-          let finalMedia = incomingMedia || existingMedia || '';
-          if ((!finalMedia || finalMedia === '' || (finalMedia.startsWith('data:image') && (existing.type === 'video' || data.type === 'video'))) && existingMedia && (existingMedia.startsWith('data:video') || existingMedia.includes('/uploads/') || existingMedia.match(/\.(mp4|webm|mov|m4v|mkv|3gp)(\?.*)?$/i))) {
-            finalMedia = existingMedia;
-          }
+          const incomingMedia = data.mediaUrl || data.persistentMediaUrl || data.videoUrl || data.thumbnailUrl || localStoredVideo;
 
           const merged = { 
-            ...existing, 
             ...data, 
             id: docSnap.id, 
-            mediaUrl: finalMedia || existingMedia || data.mediaUrl || data.thumbnailUrl || '',
-            thumbnailUrl: data.thumbnailUrl || existing.thumbnailUrl || finalMedia || ''
+            mediaUrl: incomingMedia || data.mediaUrl || data.thumbnailUrl || '',
+            thumbnailUrl: data.thumbnailUrl || incomingMedia || ''
           };
 
           // Clean up blob URLs if present
@@ -450,9 +427,10 @@ export function subscribeToPostsFromFirestore(callback: (posts: any[]) => void):
           return timeB - timeA;
         });
 
-      if (result.length > 0) {
-        try { localStorage.setItem(LOCAL_POSTS_CACHE_KEY, JSON.stringify(result.slice(0, 100))); } catch (e) {}
-      }
+      try { 
+        localStorage.setItem(LOCAL_POSTS_CACHE_KEY, JSON.stringify(result.slice(0, 100))); 
+      } catch (e) {}
+      
       callback(result);
     }, (error: any) => {
       if (error?.message?.includes('Quota') || error?.code === 'resource-exhausted') {
@@ -1209,10 +1187,13 @@ export async function syncUserToFirestore(userData: any): Promise<boolean> {
     // FIRESTORE SAFEGUARD: Keep user document size < 750 KB
     let jsonStr = JSON.stringify(cleanData);
     if (jsonStr.length > 750000) {
-      console.warn(`⚠️ User profile payload size (${jsonStr.length} bytes) exceeds safe limit. Compressing avatar...`);
-      const compressedAvatar = await optimizeImageForPersistence(cleanData.avatarUrl || cleanData.avatar || BRAND_LOGO_SRC, 400, 400, 0.7);
+      console.warn(`⚠️ User profile payload size (${jsonStr.length} bytes) exceeds safe limit. Compressing images...`);
+      const compressedAvatar = await optimizeImageForPersistence(cleanData.avatarUrl || cleanData.avatar || "", 400, 400, 0.7);
       cleanData.avatar = compressedAvatar;
       cleanData.avatarUrl = compressedAvatar;
+      if (cleanData.coverUrl) {
+        cleanData.coverUrl = await optimizeImageForPersistence(cleanData.coverUrl, 1000, 333, 0.6);
+      }
       delete cleanData.rawCatalogue;
       delete cleanData.rawPDF;
     }
@@ -1243,34 +1224,53 @@ export async function syncUserToFirestore(userData: any): Promise<boolean> {
   }
 }
 
-export async function fetchAllUsersFromFirestore(): Promise<any[]> {
-  const usersMap = new Map<string, any>();
+export const DELETED_USERS_KEY = 'VyaparBridge_deleted_users';
 
-  // 1. Load from local cache first
+export function getDeletedUserIds(): Set<string> {
   try {
-    const localStr = localStorage.getItem(LOCAL_USERS_CACHE_KEY);
-    if (localStr) {
-      const localList = JSON.parse(localStr);
-      if (Array.isArray(localList)) {
-        localList.forEach(u => {
-          if (u && (u.id || u.username) && (u.name || u.username)) {
-            const uId = String(u.id || u.username);
-            usersMap.set(uId, u);
-          }
-        });
+    const raw = localStorage.getItem(DELETED_USERS_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) return new Set(arr.map(String));
+    }
+  } catch (e) {}
+  return new Set();
+}
+
+export function markUserDeletedLocally(userId: string | number) {
+  try {
+    const uId = String(userId);
+    const set = getDeletedUserIds();
+    set.add(uId);
+    localStorage.setItem(DELETED_USERS_KEY, JSON.stringify(Array.from(set)));
+
+    // Clean from local users cache
+    const existingStr = localStorage.getItem(LOCAL_USERS_CACHE_KEY);
+    if (existingStr) {
+      const list = JSON.parse(existingStr);
+      if (Array.isArray(list)) {
+        const filtered = list.filter(u => String(u?.id) !== uId && String(u?.username) !== uId);
+        localStorage.setItem(LOCAL_USERS_CACHE_KEY, JSON.stringify(filtered));
       }
     }
-    const curUserStr = localStorage.getItem('user') || localStorage.getItem('Vyapar Bridge_user');
-    if (curUserStr) {
-      const curUser = JSON.parse(curUserStr);
-      if (curUser && (curUser.id || curUser.username) && (curUser.name || curUser.username)) {
-        const uId = String(curUser.id || curUser.username);
-        usersMap.set(uId, curUser);
+
+    // Clean current session if matching
+    const curStr = localStorage.getItem('user') || localStorage.getItem('Vyapar Bridge_user');
+    if (curStr) {
+      const curUser = JSON.parse(curStr);
+      if (String(curUser?.id) === uId || String(curUser?.username) === uId) {
+        localStorage.removeItem('user');
+        localStorage.removeItem('Vyapar Bridge_user');
       }
     }
   } catch (e) {}
+}
 
-  // 2. Fetch from Firestore 'users' collection (All Members Uncapped)
+export async function fetchAllUsersFromFirestore(): Promise<any[]> {
+  const usersMap = new Map<string, any>();
+  const deletedSet = getDeletedUserIds();
+
+  // 1. Fetch from Firestore 'users' collection (All Members Uncapped)
   try {
     const usersQuery = query(collection(db, 'users'));
     const snap = await getDocs(usersQuery);
@@ -1278,8 +1278,10 @@ export async function fetchAllUsersFromFirestore(): Promise<any[]> {
       const data = docSnap.data();
       if (data && docSnap.id !== 'undefined') {
         const uId = String(data.id || docSnap.id);
-        const existing = usersMap.get(uId) || {};
-        usersMap.set(uId, { ...existing, ...data, id: uId });
+        const uUsername = String(data.username || '');
+        if (!deletedSet.has(uId) && !deletedSet.has(uUsername) && !deletedSet.has(docSnap.id)) {
+          usersMap.set(uId, { ...data, id: uId });
+        }
       }
     });
   } catch (error: any) {
@@ -1288,9 +1290,41 @@ export async function fetchAllUsersFromFirestore(): Promise<any[]> {
     } else {
       console.warn('Firestore fetchAllUsers note:', error);
     }
+    // Only fall back to local cache if network/quota failed
+    try {
+      const localStr = localStorage.getItem(LOCAL_USERS_CACHE_KEY);
+      if (localStr) {
+        const localList = JSON.parse(localStr);
+        if (Array.isArray(localList)) {
+          localList.forEach(u => {
+            if (u && (u.id || u.username) && (u.name || u.username)) {
+              const uId = String(u.id || u.username);
+              if (!deletedSet.has(uId) && !deletedSet.has(String(u.username || '')) && !deletedSet.has(String(u.id || ''))) {
+                usersMap.set(uId, u);
+              }
+            }
+          });
+        }
+      }
+    } catch (e) {}
   }
 
-  // 3. Fallback to API if available
+  // Current logged in user
+  try {
+    const curUserStr = localStorage.getItem('user') || localStorage.getItem('Vyapar Bridge_user');
+    if (curUserStr) {
+      const curUser = JSON.parse(curUserStr);
+      if (curUser && (curUser.id || curUser.username) && (curUser.name || curUser.username)) {
+        const uId = String(curUser.id || curUser.username);
+        if (!deletedSet.has(uId) && !deletedSet.has(String(curUser.username || '')) && !deletedSet.has(String(curUser.id || ''))) {
+          const existing = usersMap.get(uId) || {};
+          usersMap.set(uId, { ...existing, ...curUser });
+        }
+      }
+    }
+  } catch (e) {}
+
+  // 2. Fallback to API if available
   try {
     const res = await fetch('/api/users');
     if (res.ok) {
@@ -1301,8 +1335,11 @@ export async function fetchAllUsersFromFirestore(): Promise<any[]> {
           apiUsers.forEach(u => {
             if (u && (u.id || u.username) && (u.name || u.username)) {
               const uId = String(u.id || u.username);
-              const existing = usersMap.get(uId) || {};
-              usersMap.set(uId, { ...existing, ...u, id: uId });
+              const uUsername = String(u.username || '');
+              if (!deletedSet.has(uId) && !deletedSet.has(uUsername)) {
+                const existing = usersMap.get(uId) || {};
+                usersMap.set(uId, { ...existing, ...u, id: uId });
+              }
             }
           });
         }
@@ -1310,7 +1347,12 @@ export async function fetchAllUsersFromFirestore(): Promise<any[]> {
     }
   } catch (e) {}
 
-  const result = Array.from(usersMap.values());
+  const result = Array.from(usersMap.values()).filter(u => {
+    const uId = String(u.id || '');
+    const uUname = String(u.username || '');
+    return !deletedSet.has(uId) && !deletedSet.has(uUname);
+  });
+
   try {
     localStorage.setItem(LOCAL_USERS_CACHE_KEY, JSON.stringify(result));
   } catch (e) {}
@@ -1355,58 +1397,94 @@ export async function deletePostFromFirestore(postId: string | number): Promise<
   }
 }
 
-export async function deleteUserFromFirestore(userId: string | number): Promise<boolean> {
+export async function deleteUserFromFirestore(userId: string | number, extraIdentifiers?: { username?: string; phone?: string; email?: string }): Promise<boolean> {
   try {
     const uId = String(userId);
-    
-    // 1. Fast parallel deletion of user doc
+    const uUname = extraIdentifiers?.username ? String(extraIdentifiers.username).toLowerCase() : '';
+    const uPhone = extraIdentifiers?.phone ? String(extraIdentifiers.phone).trim() : '';
+
+    // 1. Immediately mark deleted locally to protect UI & cache
+    markUserDeletedLocally(uId);
+    if (uUname) markUserDeletedLocally(uUname);
+
+    // 2. Direct deletion of user doc by ID
     const userRef = doc(db, 'users', uId);
     const deleteUserDocPromise = deleteDoc(userRef).catch(err => {
       console.warn('deleteDoc user error:', err);
     });
 
-    // 2. Parallel deletion of user posts
+    // 3. Scan & delete any user docs matching id, username, or phone
+    const deleteUserQueryPromise = (async () => {
+      try {
+        const usersSnap = await getDocs(collection(db, 'users'));
+        const matchedUserDocs = usersSnap.docs.filter(d => {
+          if (d.id === uId || d.id === uUname) return true;
+          const data = d.data();
+          const dId = String(data.id || '');
+          const dUname = String(data.username || '').toLowerCase();
+          const dPhone = String(data.phone || '').trim();
+          return dId === uId || (uUname && dUname === uUname) || (uPhone && dPhone === uPhone);
+        });
+        await Promise.all(matchedUserDocs.map(d => deleteDoc(d.ref)));
+      } catch (err) {
+        console.warn('Firestore scan users delete error:', err);
+      }
+    })();
+
+    // 4. Parallel deletion of user posts & reels
     const deletePostsPromise = (async () => {
       try {
-        const postsSnap = await getDocs(query(collection(db, 'posts'), where('userId', '==', uId)));
-        if (!postsSnap.empty) {
-          await Promise.all(postsSnap.docs.map(pDoc => deleteDoc(pDoc.ref)));
-        }
-      } catch (e) {
-        try {
-          const postsSnap = await getDocs(collection(db, 'posts'));
-          const userPosts = postsSnap.docs.filter(pDoc => {
-            const data = pDoc.data();
-            return String(data.userId || data.user?.id) === uId;
-          });
-          await Promise.all(userPosts.map(pDoc => deleteDoc(pDoc.ref)));
-        } catch (err) {}
+        const postsSnap = await getDocs(collection(db, 'posts'));
+        const userPosts = postsSnap.docs.filter(pDoc => {
+          const data = pDoc.data();
+          const pUserId = String(data.userId || data.user?.id || '');
+          const pUserName = String(data.userName || data.user?.username || '').toLowerCase();
+          return pUserId === uId || (uUname && pUserName === uUname);
+        });
+        await Promise.all(userPosts.map(pDoc => deleteDoc(pDoc.ref)));
+      } catch (err) {
+        console.warn('Firestore user posts delete error:', err);
       }
     })();
 
-    // 3. Parallel deletion of user pending payments
+    // 5. Parallel deletion of user pending payments
     const deletePaymentsPromise = (async () => {
       try {
-        const paySnap = await getDocs(query(collection(db, 'payments'), where('userId', '==', uId)));
-        if (!paySnap.empty) {
-          await Promise.all(paySnap.docs.map(pDoc => deleteDoc(pDoc.ref)));
-        }
-      } catch (e) {
-        try {
-          const paySnap = await getDocs(collection(db, 'payments'));
-          const userPays = paySnap.docs.filter(pDoc => String(pDoc.data().userId) === uId);
-          await Promise.all(userPays.map(pDoc => deleteDoc(pDoc.ref)));
-        } catch (err) {}
-      }
+        const paySnap = await getDocs(collection(db, 'payments'));
+        const userPays = paySnap.docs.filter(pDoc => {
+          const data = pDoc.data();
+          const payUserId = String(data.userId || data.user?.id || '');
+          return payUserId === uId || (uUname && String(data.username || '').toLowerCase() === uUname);
+        });
+        await Promise.all(userPays.map(pDoc => deleteDoc(pDoc.ref)));
+      } catch (err) {}
     })();
 
-    // 4. Max 1.2s timeout race guard so the UI never hangs or buffers
+    // 6. Parallel deletion of user comments & feedbacks
+    const deleteCommentsPromise = (async () => {
+      try {
+        const commentsSnap = await getDocs(collection(db, 'comments'));
+        const userComments = commentsSnap.docs.filter(cDoc => {
+          const data = cDoc.data();
+          return String(data.userId || '') === uId || (uUname && String(data.username || '').toLowerCase() === uUname);
+        });
+        await Promise.all(userComments.map(cDoc => deleteDoc(cDoc.ref)));
+      } catch (err) {}
+    })();
+
+    // 7. Non-blocking parallel execution
     await Promise.race([
-      Promise.all([deleteUserDocPromise, deletePostsPromise, deletePaymentsPromise]),
-      new Promise(resolve => setTimeout(resolve, 1200))
+      Promise.all([
+        deleteUserDocPromise,
+        deleteUserQueryPromise,
+        deletePostsPromise,
+        deletePaymentsPromise,
+        deleteCommentsPromise
+      ]),
+      new Promise(resolve => setTimeout(resolve, 3000))
     ]);
 
-    console.log(`⚡ Fast deleted user ${uId} and all associated records from Firestore`);
+    console.log(`⚡ Permanently purged user ${uId} and all records from Firestore & local storage`);
     return true;
   } catch (err) {
     console.warn('Firestore deleteUser error:', err);
@@ -1827,3 +1905,43 @@ export function getUserLastActiveFormatted(userData: any): string {
 
 
 
+
+
+export async function recordEnquiryInFirestore(postId: string, userId: string, userName: string) {
+  if (isFirestoreQuotaExhausted) return null;
+  try {
+    const postRef = doc(db, 'posts', String(postId));
+    
+    // Use a transaction or direct update (we will just use setDoc with merge to be safe)
+    // Actually just tracking count and saving notification for the user
+    // To make it simple we'll just update the enquiriesCount field on the post
+    const postDoc = await getDoc(postRef);
+    let currentEnquiries = 0;
+    if (postDoc.exists()) {
+      currentEnquiries = postDoc.data().enquiriesCount || 0;
+      await updateDoc(postRef, { enquiriesCount: currentEnquiries + 1 });
+      
+      // Also notify the post owner (create a notification document)
+      const postOwnerId = postDoc.data().userId;
+      if (postOwnerId && postOwnerId !== userId) {
+        const notifRef = doc(collection(db, 'users', String(postOwnerId), 'notifications'));
+        await setDoc(notifRef, {
+          type: 'enquiry',
+          fromUserId: userId,
+          fromUserName: userName,
+          postId: postId,
+          createdAt: serverTimestamp(),
+          read: false,
+          message: `${userName} inquired about your post.`
+        });
+      }
+      return currentEnquiries + 1;
+    } else {
+      await setDoc(postRef, { id: String(postId), enquiriesCount: 1 }, { merge: true });
+      return 1;
+    }
+  } catch (err) {
+    handleFirestoreError('recordEnquiryInFirestore', err);
+    return null;
+  }
+}
