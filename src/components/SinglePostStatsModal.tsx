@@ -25,17 +25,8 @@ export function SinglePostStatsModal({ postId, onClose }: SinglePostStatsModalPr
   }, [postId]);
 
   const getActorAvatar = (act: any) => {
-    if (failedAvatars[act.id] || !act.actorAvatar || (typeof act.actorAvatar === 'string' && act.actorAvatar.includes('ui-avatars.com'))) {
-      const defaultAvatars = [
-        'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&h=150',
-        'https://images.unsplash.com/photo-1570295999919-56ceb5ecca61?auto=format&fit=crop&w=150&h=150',
-        'https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=150&h=150',
-        'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=150&h=150'
-      ];
-      const key = String(act.actorId || act.actorName || '0');
-      let hash = 0;
-      for (let i = 0; i < key.length; i++) hash += key.charCodeAt(i);
-      return defaultAvatars[hash % defaultAvatars.length];
+    if (failedAvatars[act.id] || !act.actorAvatar) {
+      return '';
     }
     return act.actorAvatar;
   };

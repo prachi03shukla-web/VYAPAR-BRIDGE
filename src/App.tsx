@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { BrowserRouter, Routes, Route, Link, useNavigate, useLocation, useParams } from 'react-router-dom';
-import { Facebook, Twitter, Instagram, Home, Shield, Moon, Sun, PlusSquare, MessageCircle, MessageSquare, Menu, LogOut, LogIn, Check, X, XCircle, Search, Compass, Film, Heart, Calculator, Bookmark, Info, MoreHorizontal, MoreVertical, Music, Image, ImageIcon, ImagePlus, Eye, EyeOff, Camera, Upload, Trash2, Plus, ShieldCheck, Sparkles, QrCode, CheckCircle, CheckCircle2, Award, Smile, Volume2, VolumeX, Play, Pause, ChevronUp, ChevronDown, ArrowLeft, ChevronLeft, ChevronRight, UserPlus, UserCheck, Share2, Phone, Mail, Globe, Building2, Store, MapPin, Locate, Navigation, Tag, Filter, ShieldAlert, UserX, Lock, Key, Clock, FileText, FileCheck, Maximize2, Crop, Loader2, Send, BarChart2, Users, Map as MapIcon, Hash, Pencil, Rocket, ExternalLink, Star, Scale, Video, TrendingUp, ClipboardList, Bell, CreditCard, Calendar, Copy, RefreshCw, AlertTriangle } from 'lucide-react';
+import { Facebook, Twitter, Instagram, Home, Shield, Moon, Sun, PlusSquare, MessageCircle, MessageSquare, Menu, LogOut, LogIn, Check, X, XCircle, Search, Compass, Film, Heart, Calculator, Bookmark, Info, MoreHorizontal, MoreVertical, Music, Image, ImageIcon, ImagePlus, Eye, EyeOff, Camera, Upload, Trash2, Plus, ShieldCheck, Sparkles, QrCode, CheckCircle, CheckCircle2, Award, Smile, Volume2, VolumeX, Play, Pause, ChevronUp, ChevronDown, ArrowLeft, ChevronLeft, ChevronRight, UserPlus, UserCheck, Share2, Phone, Mail, Globe, Building2, Store, MapPin, Locate, Navigation, Tag, Filter, ShieldAlert, UserX, Lock, Key, Clock, FileText, FileCheck, Maximize2, Crop, Loader2, Send, BarChart2, Users, Map as MapIcon, Hash, Pencil, Rocket, ExternalLink, Star, Scale, Video, TrendingUp, ClipboardList, Bell, CreditCard, Calendar, Copy, RefreshCw, AlertTriangle, Gift, Fingerprint, Megaphone } from 'lucide-react';
 import toast, { Toaster } from 'react-hot-toast';
 
 if (typeof (toast as any).info !== 'function') {
@@ -28,7 +28,7 @@ import { BRAND_LOGO_SRC, BRAND_NAME } from './constants/brandLogo';
 import { auth, db as firestoreDb } from './firebase';
 import { collection, doc, setDoc, getDocs, getDoc, query, where, deleteDoc, orderBy, limit, onSnapshot } from 'firebase/firestore';
 import { DEFAULT_B2B_POSTS } from './data/defaultPosts';
-import { fetchPostsFromFirestore, syncPostToFirestore, subscribeToPostsFromFirestore, subscribeToUsersFromFirestore, subscribeToPaymentsFromFirestore, submitPaymentUTRToFirestore, getAdminSettingsFromFirestore, saveAdminSettingsToFirestore, subscribeToAdminSettingsFromFirestore, saveBrandAdsToFirestore, subscribeToBrandAdsFromFirestore, likePostInFirestore, savePostInFirestore, recordEnquiryInFirestore, addCommentToFirestore, fetchCommentsFromFirestore, subscribeToCommentsFromFirestore, followUserInFirestore, recordViewInFirestore, recordShareInFirestore, authenticateUserInFirestore, blockUserInFirestore, markPostNotInterestedInFirestore, getUsersBlockedAndNotInterestedFromFirestore, clearDefaultDataFromFirestore, deleteUserFromFirestore, deletePostFromFirestore, syncUserToFirestore, fetchAllUsersFromFirestore, sanitizeForFirestore, updateUserVerificationInFirestore, subscribeToPlatformStatsFromFirestore, startPresenceHeartbeat, updateUserPresence, isUserActiveOnline, getUserLastActiveFormatted } from './services/firebaseDataSync';
+import { fetchPostsFromFirestore, syncPostToFirestore, subscribeToPostsFromFirestore, subscribeToUsersFromFirestore, subscribeToPaymentsFromFirestore, submitPaymentUTRToFirestore, getAdminSettingsFromFirestore, saveAdminSettingsToFirestore, subscribeToAdminSettingsFromFirestore, saveBrandAdsToFirestore, subscribeToBrandAdsFromFirestore, likePostInFirestore, savePostInFirestore, recordEnquiryInFirestore, addCommentToFirestore, fetchCommentsFromFirestore, subscribeToCommentsFromFirestore, followUserInFirestore, recordViewInFirestore, recordShareInFirestore, authenticateUserInFirestore, adminResetUserPassword, userChangeOwnPassword, blockUserInFirestore, markPostNotInterestedInFirestore, getUsersBlockedAndNotInterestedFromFirestore, clearDefaultDataFromFirestore, deleteUserFromFirestore, deletePostFromFirestore, syncUserToFirestore, fetchAllUsersFromFirestore, sanitizeForFirestore, updateUserVerificationInFirestore, subscribeToPlatformStatsFromFirestore, startPresenceHeartbeat, updateUserPresence, isUserActiveOnline, getUserLastActiveFormatted } from './services/firebaseDataSync';
 import { ConnectUserModal } from './components/ConnectUserModal';
 import { suggestHashtagsWithAI } from './services/aiService';
 import { optimizeImageForPersistence, fileToDataURL, generateVideoThumbnail } from './utils/imageOptimizer';
@@ -39,6 +39,10 @@ import { CommentMediaLightbox } from './components/CommentMediaLightbox';
 import { GifPickerModal } from './components/GifPickerModal';
 import { handleClipboardMediaPaste } from './utils/clipboardHelper';
 import { isPostLikedByUser, isPostSavedByUser, setPostLikedInLocalStorage, setPostSavedInLocalStorage } from './utils/likeSaveHelpers';
+import { ReferralRewardsModal } from './components/ReferralRewardsModal';
+import { BoostBusinessModal } from './components/BoostBusinessModal';
+import { AdminUserDetailModal } from './components/AdminUserDetailModal';
+import { captureReferralCodeFromUrl, recordNewUserReferral, checkAndUpdateReferralOnPost, getOrCreateFingerprint, getReferralStats, getUserReferralLink } from './utils/referralManager';
 
 export function renderSafeCommentText(content: string, isAuthorOrAdmin = false): { text: string; masked: boolean } {
   if (!content) return { text: '', masked: false };
@@ -1112,7 +1116,7 @@ function ReelCard({
     ) && !rawVideoSrc.startsWith('data:image') && !rawVideoSrc.match(/\.(jpg|jpeg|png|webp|gif|svg|avif)(\?.*)?$/i)
   );
 
-  const posterSrc = reel?.thumbnailUrl || (reel?.mediaUrl && reel.mediaUrl.startsWith('data:image') ? reel.mediaUrl : '') || reel?.persistentMediaUrl || 'https://images.unsplash.com/photo-1615971677499-5467cbab01c0?auto=format&fit=crop&w=800&q=80';
+  const posterSrc = reel?.thumbnailUrl || (reel?.mediaUrl && reel.mediaUrl.startsWith('data:image') ? reel.mediaUrl : '') || reel?.persistentMediaUrl || '';
   const mediaSrc = isPlayableVideo ? rawVideoSrc : posterSrc;
   const isVideo = isPlayableVideo;
   const authorName = reel?.user?.name || reel?.name || 'User';
@@ -1701,7 +1705,7 @@ function ReelCard({
             alt={reel?.title || 'Reel media'} 
             className="relative z-10 w-full h-full object-contain transition-all duration-300 m-auto"
             onError={(e) => {
-              e.currentTarget.src = 'https://images.unsplash.com/photo-1615971677499-5467cbab01c0?auto=format&fit=crop&w=800&q=80';
+              e.currentTarget.style.display = 'none';
             }}
           />
         )}
@@ -1791,6 +1795,27 @@ function ReelCard({
             <MessageSquare className="w-6 h-6" />
           </div>
           <span className="text-xs font-semibold drop-shadow-md text-white">{enquiriesCount}</span>
+        </button>
+
+        {/* Animated Golden Round Boost Your Business Button with Speaker Icon */}
+        <button 
+          onClick={(e) => {
+            e.stopPropagation();
+            window.dispatchEvent(new CustomEvent('open_boost_business_modal', { 
+              detail: { post: reel, user: currentUser } 
+            }));
+          }}
+          className="flex flex-col items-center gap-1 text-amber-400 group cursor-pointer"
+          title="Boost Your Business & Reels across India"
+        >
+          <div className="w-11 h-11 rounded-full bg-gradient-to-tr from-amber-500 via-yellow-400 to-amber-500 text-slate-950 flex items-center justify-center transition-all group-active:scale-125 shadow-lg shadow-amber-500/40 relative border-2 border-amber-300 transform group-hover:scale-110">
+            <Megaphone className="w-5 h-5 animate-bounce text-slate-950" />
+            <span className="absolute -top-1 -right-1 flex h-3 w-3">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-3 w-3 bg-amber-500"></span>
+            </span>
+          </div>
+          <span className="text-[10px] font-black drop-shadow-md text-amber-300 uppercase tracking-tighter">Boost</span>
         </button>
 
         {/* Options / More Button */}
@@ -2763,7 +2788,7 @@ function FeedImageWithAudio({
         alt="Post media" 
         className="w-full h-full max-h-[80vh] object-contain bg-black pointer-events-none" 
         onError={(e) => {
-          e.currentTarget.src = 'https://images.unsplash.com/photo-1615971677499-5467cbab01c0?auto=format&fit=crop&w=800&q=80';
+          e.currentTarget.style.display = 'none';
         }}
       />
       <audio ref={audioRef} src={audioSrc} loop preload="metadata" muted={isMuted} />
@@ -2867,12 +2892,17 @@ function FeedVideoPlayer({
   };
 
   if (hasError) {
-    return (
+    return poster ? (
       <img
-        src={poster || 'https://images.unsplash.com/photo-1615971677499-5467cbab01c0?auto=format&fit=crop&w=800&q=80'}
+        src={poster}
         alt="Video thumbnail"
         className={className || "w-full h-full max-h-[80vh] object-contain bg-black"}
       />
+    ) : (
+      <div className="w-full min-h-[250px] bg-zinc-950 flex flex-col items-center justify-center text-zinc-500 gap-2">
+        <Film className="w-10 h-10 text-zinc-600" />
+        <span className="text-xs font-semibold">Video unavailable</span>
+      </div>
     );
   }
 
@@ -3645,7 +3675,7 @@ function PostItem({
               alt="Post media" 
               className="w-full h-full max-h-[80vh] object-contain bg-black pointer-events-none" 
               onError={(e) => {
-                e.currentTarget.src = 'https://images.unsplash.com/photo-1615971677499-5467cbab01c0?auto=format&fit=crop&w=800&q=80';
+                e.currentTarget.style.display = 'none';
               }}
             />
           )}
@@ -3660,15 +3690,7 @@ function PostItem({
             </div>
           )}
         </div>
-      ) : (
-        <div className="relative w-full bg-slate-900 min-h-[260px] max-h-[80vh] flex items-center justify-center overflow-hidden border-y border-slate-800">
-          <img 
-            src="https://images.unsplash.com/photo-1615971677499-5467cbab01c0?auto=format&fit=crop&w=800&q=80" 
-            alt="Tiles Business Post" 
-            className="w-full h-full object-cover opacity-90" 
-          />
-        </div>
-      )}
+      ) : null}
       
       {/* Post Creation Time - Right above Heart / Actions Bar */}
       <div className="px-3 pt-2.5 pb-0.5 flex items-center gap-1.5 text-[11px] font-bold text-black/70 dark:text-zinc-400">
@@ -3717,6 +3739,27 @@ function PostItem({
             >
               <MessageSquare className="w-4 h-4" />
               <span className="text-[10px] font-black uppercase">Inquiry</span>
+            </button>
+
+            {/* Animated Golden Round Boost Your Business Button with Speaker Icon */}
+            <button 
+              onClick={(e) => {
+                e.stopPropagation();
+                window.dispatchEvent(new CustomEvent('open_boost_business_modal', { 
+                  detail: { post, user: currentUser } 
+                }));
+              }}
+              className="relative flex items-center gap-1.5 px-2.5 sm:px-3 py-0.5 sm:py-1 rounded-full bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 hover:from-amber-300 hover:to-yellow-300 text-slate-950 font-black text-xs shadow-md hover:shadow-amber-500/50 border border-amber-300/80 transition-all transform hover:scale-105 active:scale-95 cursor-pointer group shrink-0"
+              title="Boost Your Business & Reels across India"
+            >
+              <span className="relative flex h-5 w-5 items-center justify-center rounded-full bg-slate-950 text-amber-400 shadow-inner group-hover:rotate-12 transition-transform shrink-0">
+                <Megaphone className="w-3 h-3 animate-bounce" />
+                <span className="absolute -top-0.5 -right-0.5 flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                </span>
+              </span>
+              <span className="text-[10px] sm:text-[11px] font-black uppercase tracking-tight whitespace-nowrap">Boost Business</span>
             </button>
             {currentUser?.role === 'customer' && (post?.user?.role === 'dealer' || post?.user?.role === 'factory') && (
               <button
@@ -5091,17 +5134,17 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
                   </div>
                 )}
 
-                {/* Highly Visible Skip Ad Button */}
+                {/* Highly Visible Skip Ad Button - Compact Red Cross on Mobile, Full text on desktop */}
                 <button 
                   onClick={() => {
                     setIsBrandAdDismissed(true);
                     toast('Ad showcase skipped for this session', { icon: '👁️' });
                   }}
-                  className="flex items-center gap-1.5 px-3 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded-full text-xs font-black border border-rose-400/50 shadow-md transition-all cursor-pointer hover:scale-105 active:scale-95 shrink-0"
+                  className="flex items-center justify-center gap-1 sm:gap-1.5 p-1.5 sm:px-3 sm:py-1 bg-rose-600 hover:bg-rose-700 text-white rounded-full text-xs font-black border border-rose-400/50 shadow-md transition-all cursor-pointer hover:scale-105 active:scale-95 shrink-0"
                   title="Skip / Close Advertisement (विज्ञापन हटाएं)"
                 >
-                  <X className="w-3.5 h-3.5 stroke-[3]" />
-                  <span>Skip Ad (विज्ञापन हटाएं)</span>
+                  <X className="w-4 h-4 stroke-[3]" />
+                  <span className="hidden sm:inline">Skip Ad (विज्ञापन हटाएं)</span>
                 </button>
               </div>
             </div>
@@ -5636,9 +5679,11 @@ function CreatePost({ user }: { user: any }) {
     const authorAvatar = user?.avatarUrl || user?.avatar || localStorage.getItem('vyapar_user_avatar') || BRAND_LOGO_SRC;
     const authorRole = user?.role || 'factory';
 
-    // Optimize image to persistent Base64 Data URL before navigating for zero loss
+    // Optimize image or video for persistent state before navigating
     let persistentMediaUrl = '';
     let persistentThumbnailUrl = '';
+    let videoStreamUrl = filePreview || (file ? URL.createObjectURL(file) : '');
+
     if (file && !isVideo && !isPdf) {
       try {
         persistentMediaUrl = await optimizeImageForPersistence(file);
@@ -5646,15 +5691,36 @@ function CreatePost({ user }: { user: any }) {
       } catch (e) {
         console.warn('Image optimization note:', e);
       }
+    } else if (file && isVideo) {
+      try {
+        persistentThumbnailUrl = await generateVideoThumbnail(file);
+        if (file.size <= 3.5 * 1024 * 1024) {
+          try {
+            const videoBase64 = await fileToDataURL(file);
+            if (videoBase64 && videoBase64.startsWith('data:video')) {
+              videoStreamUrl = videoBase64;
+              persistentMediaUrl = videoBase64;
+            }
+          } catch (e) {}
+        }
+        if (videoStreamUrl) {
+          try {
+            localStorage.setItem('vyapar_video_' + generatedId, videoStreamUrl);
+          } catch (e) {}
+        }
+      } catch (e) {
+        console.warn('Video thumbnail generation note:', e);
+      }
     }
+
     if (thumbnailFile) {
       try {
         persistentThumbnailUrl = await optimizeImageForPersistence(thumbnailFile);
       } catch (e) {}
     }
 
-    const resolvedMediaUrl = persistentMediaUrl || filePreview || '';
-    const resolvedThumbUrl = persistentThumbnailUrl || persistentMediaUrl || filePreview || '';
+    const resolvedMediaUrl = isVideo ? (videoStreamUrl || persistentThumbnailUrl || filePreview || '') : (persistentMediaUrl || filePreview || '');
+    const resolvedThumbUrl = persistentThumbnailUrl || (isVideo ? persistentThumbnailUrl : (persistentMediaUrl || filePreview || ''));
 
     const instantPost = {
       id: generatedId,
@@ -5667,6 +5733,8 @@ function CreatePost({ user }: { user: any }) {
       hashtags: hashtags || '#vyaparbridge #tiles #business',
       type: postMediaType,
       mediaUrl: resolvedMediaUrl,
+      videoUrl: isVideo ? (videoStreamUrl || resolvedMediaUrl) : undefined,
+      video: isVideo ? (videoStreamUrl || resolvedMediaUrl) : undefined,
       thumbnailUrl: resolvedThumbUrl,
       persistentMediaUrl: resolvedMediaUrl,
       category: 'Commercial Wholesale',
@@ -5700,18 +5768,18 @@ function CreatePost({ user }: { user: any }) {
     // 2. Non-blocking asynchronous background processing (Base64 conversion, AI Moderation & Firestore/Server Sync)
     (async () => {
       try {
-        let persistentMediaUrl = '';
-        let persistentThumbnailUrl = '';
+        let bgMediaUrl = persistentMediaUrl;
+        let bgThumbUrl = persistentThumbnailUrl;
         if (file) {
           try {
             if (!isVideo && !isPdf) {
-              persistentMediaUrl = await optimizeImageForPersistence(file);
-              persistentThumbnailUrl = persistentMediaUrl;
+              bgMediaUrl = await optimizeImageForPersistence(file);
+              bgThumbUrl = bgMediaUrl;
             } else if (isVideo) {
-              persistentThumbnailUrl = await generateVideoThumbnail(file);
-              persistentMediaUrl = persistentThumbnailUrl;
+              bgThumbUrl = await generateVideoThumbnail(file);
+              bgMediaUrl = videoStreamUrl || filePreview;
             } else {
-              persistentMediaUrl = filePreview && !filePreview.startsWith('blob:') ? filePreview : '';
+              bgMediaUrl = filePreview && !filePreview.startsWith('blob:') ? filePreview : '';
             }
           } catch (e) {
             console.warn('Media persistence conversion note:', e);
@@ -5719,7 +5787,7 @@ function CreatePost({ user }: { user: any }) {
         }
         if (thumbnailFile) {
           try {
-            persistentThumbnailUrl = await optimizeImageForPersistence(thumbnailFile);
+            bgThumbUrl = await optimizeImageForPersistence(thumbnailFile);
           } catch (e) {}
         }
 
@@ -5778,23 +5846,33 @@ function CreatePost({ user }: { user: any }) {
           console.warn('Backend API note, using direct Firestore sync:', networkErr);
         }
 
-        const finalMedia = persistentMediaUrl || (filePreview && !filePreview.startsWith('blob:') ? filePreview : '');
-        const finalThumb = persistentThumbnailUrl || finalMedia;
+        const finalMedia = (savedPost?.mediaUrl && !savedPost.mediaUrl.startsWith('blob:')) 
+          ? savedPost.mediaUrl 
+          : (isVideo ? (savedPost?.videoUrl || videoStreamUrl || filePreview) : (bgMediaUrl || filePreview));
+        const finalThumb = savedPost?.thumbnailUrl || bgThumbUrl || finalMedia;
 
         const finalPostData = savedPost ? {
           ...savedPost,
+          id: generatedId,
+          type: postMediaType,
           userName: savedPost.userName || authorName,
           userRole: savedPost.userRole || authorRole,
-          mediaUrl: (savedPost.mediaUrl && !savedPost.mediaUrl.startsWith('blob:') ? savedPost.mediaUrl : (persistentMediaUrl || finalMedia)),
-          thumbnailUrl: (savedPost.thumbnailUrl && !savedPost.thumbnailUrl.startsWith('blob:') ? savedPost.thumbnailUrl : (persistentThumbnailUrl || persistentMediaUrl || finalThumb)),
+          mediaUrl: finalMedia,
+          videoUrl: isVideo ? finalMedia : undefined,
+          video: isVideo ? finalMedia : undefined,
+          thumbnailUrl: finalThumb,
+          persistentMediaUrl: finalMedia,
           status: isPendingApproval ? 'pending' : (savedPost.status || 'approved'),
           pending_admin_approval: isPendingApproval,
           aiFlagReason: aiFlagReason || null
         } : {
           ...instantPost,
+          type: postMediaType,
           mediaUrl: finalMedia || instantPost.mediaUrl,
+          videoUrl: isVideo ? (finalMedia || instantPost.mediaUrl) : undefined,
+          video: isVideo ? (finalMedia || instantPost.mediaUrl) : undefined,
           thumbnailUrl: finalThumb || instantPost.thumbnailUrl,
-          persistentMediaUrl: persistentMediaUrl || instantPost.persistentMediaUrl,
+          persistentMediaUrl: finalMedia || instantPost.persistentMediaUrl,
           status: isPendingApproval ? 'pending' : 'approved',
           pending_admin_approval: isPendingApproval,
           aiFlagReason: aiFlagReason || null
@@ -5802,6 +5880,11 @@ function CreatePost({ user }: { user: any }) {
 
         await syncPostToFirestore(finalPostData);
         window.dispatchEvent(new CustomEvent('postCreated', { detail: finalPostData }));
+
+        // Track referral qualification: user has posted content
+        if (user?.id) {
+          recordUserFirstPost(user.id).catch(refErr => console.warn('Referral post track note:', refErr));
+        }
 
         if (isPendingApproval) {
           toast.info(moderation?.userNotice || '⏳ Business Verification: Aapka post Admin Review ke liye bhej diya gaya hai. Business network security ke liye moderation team link aur content verify karegi.');
@@ -7059,16 +7142,18 @@ function AdminPanel({ user }: { user: any }) {
                 <div className="w-full md:w-48 h-48 bg-slate-100 dark:bg-zinc-950 rounded-xl overflow-hidden shrink-0 flex items-center justify-center relative group">
                   {post.mediaUrl && post.mediaUrl.trim() !== '' ? (
                     post.type === 'video' || post.mediaUrl.match(/\.(mp4|webm|mov|m4v)(\?.*)?$/i) ? (
-                      <div className="relative w-full h-full">
-                        <img 
-                          src={post.thumbnailUrl || 'https://images.unsplash.com/photo-1615971677499-5467cbab01c0?auto=format&fit=crop&w=400&q=80'} 
-                          alt="Video thumbnail" 
-                          className="w-full h-full object-cover" 
-                          loading="lazy" 
-                          onError={(e) => {
-                            e.currentTarget.src = 'https://images.unsplash.com/photo-1615971677499-5467cbab01c0?auto=format&fit=crop&w=400&q=80';
-                          }}
-                        />
+                      <div className="relative w-full h-full bg-zinc-900 flex items-center justify-center">
+                        {post.thumbnailUrl ? (
+                          <img 
+                            src={post.thumbnailUrl} 
+                            alt="Video thumbnail" 
+                            className="w-full h-full object-cover" 
+                            loading="lazy" 
+                            onError={(e) => {
+                              e.currentTarget.style.display = 'none';
+                            }}
+                          />
+                        ) : null}
                         <div className="absolute inset-0 bg-black/30 flex items-center justify-center">
                           <Film className="w-8 h-8 text-white drop-shadow-md" />
                         </div>
@@ -8646,6 +8731,31 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
 
   const [isResetConfirmOpen, setIsResetConfirmOpen] = useState(false);
   const [isResettingDb, setIsResettingDb] = useState(false);
+  const [generatedMasterPasswordUser, setGeneratedMasterPasswordUser] = useState<{ user: any; password: string } | null>(null);
+  const [isGeneratingPass, setIsGeneratingPass] = useState(false);
+  const [selectedUserForDetailModal, setSelectedUserForDetailModal] = useState<any | null>(null);
+
+  const handleGenerateMasterPassword = async (usr: any) => {
+    setIsGeneratingPass(true);
+    const randomSuffix = Math.floor(100000 + Math.random() * 900000);
+    const newMasterPass = `VB${randomSuffix}`;
+    const tid = toast.loading(`Generating Master Password for ${usr.name || usr.username}...`);
+
+    try {
+      const res = await adminResetUserPassword(usr.id, newMasterPass);
+      if (res.success) {
+        setUsersList(prev => prev.map(u => String(u.id) === String(usr.id) ? { ...u, password: newMasterPass } : u));
+        setGeneratedMasterPasswordUser({ user: usr, password: newMasterPass });
+        toast.success(`🔑 Master Password generated for ${usr.name || usr.username}!`, { id: tid });
+      } else {
+        toast.error(res.error || 'Failed to update master password', { id: tid });
+      }
+    } catch (err: any) {
+      toast.error('Password generation note: ' + (err?.message || 'Error'), { id: tid });
+    } finally {
+      setIsGeneratingPass(false);
+    }
+  };
 
   const handleResetAllData = async () => {
     setIsResettingDb(true);
@@ -9866,16 +9976,38 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
                                 <div className="text-[11px] text-black/60 truncate">
                                   @{usr.username || 'user'} • <span className="capitalize font-semibold text-slate-700">{usr.role || 'Member'}</span> • {usr.city || 'Morbi'}
                                 </div>
-                                {(usr.phone || usr.gstNumber) && (
+                                {(usr.phone || usr.gstNumber || usr.fingerprintId || usr.referralCode) && (
                                   <div className="text-[10px] text-slate-500 flex flex-wrap items-center gap-2 mt-0.5">
                                     {usr.phone && <span>📞 {usr.phone}</span>}
                                     {usr.gstNumber && <span>🏛️ GST: {usr.gstNumber}</span>}
+                                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-950/70 text-blue-700 dark:text-blue-300 font-bold border border-blue-200 dark:border-blue-800">
+                                      🎁 Referrals: {usr.referrals?.filter((r: any) => r.hasPosted)?.length || usr.qualifiedReferralCount || 0}/10
+                                    </span>
                                   </div>
                                 )}
                               </div>
                             </div>
 
-                            <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+                            <div className="flex items-center gap-2 shrink-0 self-end sm:self-center flex-wrap justify-end">
+                              <button
+                                type="button"
+                                onClick={() => setSelectedUserForDetailModal(usr)}
+                                className="text-xs font-bold px-3 py-1.5 rounded-xl border border-blue-500/60 bg-blue-600 hover:bg-blue-700 text-white transition-all cursor-pointer flex items-center gap-1.5 shadow-sm active:scale-95"
+                                title="View User Dashboard - Password reset, Fingerprint ID, Referral stats & Verification"
+                              >
+                                <Eye className="w-3.5 h-3.5" />
+                                <span>View User</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleGenerateMasterPassword(usr)}
+                                disabled={isGeneratingPass}
+                                className="text-xs font-bold px-3 py-1.5 rounded-xl border border-amber-500/60 bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/60 transition-all cursor-pointer flex items-center gap-1.5 shadow-sm"
+                                title="Generate random Master Password for account recovery"
+                              >
+                                <Key className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                                <span>Master Password</span>
+                              </button>
                               <button 
                                 type="button"
                                 onClick={() => handleToggleUserVerification(usr.id, usr.isVerified)}
@@ -9989,7 +10121,100 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
             </div>
           </div>
         </div>
-      )}</div>
+      )}
+
+      {/* Generated Master Password Share Modal */}
+      {generatedMasterPasswordUser && (
+        <div className="fixed inset-0 z-[320] bg-black/85 backdrop-blur-md flex items-center justify-center p-4" onClick={() => setGeneratedMasterPasswordUser(null)}>
+          <div className="bg-white border-2 border-amber-400 rounded-3xl p-6 max-w-md w-full shadow-2xl space-y-5 text-slate-900" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 rounded-2xl bg-amber-100 border border-amber-300 flex items-center justify-center text-amber-600 shrink-0">
+                <Key className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="font-black text-lg text-slate-900">New Master Password Generated</h3>
+                <p className="text-xs text-slate-600 font-medium">Temporary login key assigned for account recovery</p>
+              </div>
+            </div>
+
+            <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-2 text-xs">
+              <div className="flex justify-between items-center text-slate-600">
+                <span>Account Name:</span>
+                <span className="font-bold text-slate-900">{generatedMasterPasswordUser.user.name || generatedMasterPasswordUser.user.username}</span>
+              </div>
+              <div className="flex justify-between items-center text-slate-600">
+                <span>Username / ID:</span>
+                <span className="font-bold font-mono text-slate-900">{generatedMasterPasswordUser.user.username || generatedMasterPasswordUser.user.id}</span>
+              </div>
+              {generatedMasterPasswordUser.user.phone && (
+                <div className="flex justify-between items-center text-slate-600">
+                  <span>Registered Mobile:</span>
+                  <span className="font-bold text-slate-900">{generatedMasterPasswordUser.user.phone}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="bg-amber-50 border-2 border-amber-300 rounded-2xl p-4 text-center space-y-1">
+              <p className="text-[11px] font-bold text-amber-800 uppercase tracking-wider">Temporary Master Password</p>
+              <div className="text-2xl font-black font-mono tracking-widest text-slate-900 select-all py-1">
+                {generatedMasterPasswordUser.password}
+              </div>
+              <p className="text-[10px] text-amber-700">Randomly generated. User can login with this password instantly.</p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard.writeText(generatedMasterPasswordUser.password);
+                  toast.success('📋 Password copied to clipboard!');
+                }}
+                className="px-4 py-2.5 rounded-xl border border-slate-300 bg-white hover:bg-slate-100 text-slate-800 text-xs font-bold transition-all shadow-sm flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <Copy className="w-4 h-4 text-slate-600" /> Copy Password
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const uName = generatedMasterPasswordUser.user.name || generatedMasterPasswordUser.user.username || 'Partner';
+                  const uLogin = generatedMasterPasswordUser.user.username || generatedMasterPasswordUser.user.phone || generatedMasterPasswordUser.user.email;
+                  const message = `Namaste ${uName},\n\nVyapar Bridge Admin dwara aapka account login password reset kar diya gaya hai:\n\n🔑 Username: ${uLogin}\n🔐 Master Password: ${generatedMasterPasswordUser.password}\n\nAap abhi is Master Password se Vyapar Bridge par login kar sakte hain.`;
+                  const phoneParam = generatedMasterPasswordUser.user.phone ? `phone=${generatedMasterPasswordUser.user.phone.replace(/[^0-9]/g, '')}&` : '';
+                  window.open(`https://api.whatsapp.com/send?${phoneParam}text=${encodeURIComponent(message)}`, '_blank');
+                }}
+                className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-all shadow-sm flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <Share2 className="w-4 h-4" /> Share WhatsApp
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setGeneratedMasterPasswordUser(null)}
+              className="w-full py-2 text-xs font-semibold text-slate-500 hover:text-slate-700 text-center cursor-pointer"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* User Management & Fingerprint Detail Modal */}
+      <AdminUserDetailModal 
+        isOpen={Boolean(selectedUserForDetailModal)}
+        onClose={() => setSelectedUserForDetailModal(null)}
+        user={selectedUserForDetailModal}
+        onUpdateUser={(updated) => {
+          setUsersList(prev => prev.map(u => String(u.id) === String(updated.id) ? { ...u, ...updated } : u));
+          setSelectedUserForDetailModal((prev: any) => prev ? { ...prev, ...updated } : null);
+        }}
+        onDeleteUser={(delUser) => {
+          handleDeleteUser(delUser);
+          setSelectedUserForDetailModal(null);
+        }}
+      />
+    </div>
   );
 }
 
@@ -10247,6 +10472,7 @@ function ApprovalCenterModal({
 function AuthPage({ onLogin }: { onLogin: (user: any) => void }) {
   const [selectedRole, setSelectedRole] = useState<'factory' | 'dealer' | 'customer'>('factory');
   const [isLogin, setIsLogin] = useState(true);
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
   
   // Common Form States
   const [username, setUsername] = useState('');
@@ -10255,7 +10481,8 @@ function AuthPage({ onLogin }: { onLogin: (user: any) => void }) {
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
   const [gstNumber, setGstNumber] = useState('');
-  const [selectedCategories, setSelectedCategories] = useState<string[]>([ALL_CATEGORY_OPTIONS[0] || 'GST Billing, POS & ERP Software']);
+  const [customCategoryInput, setCustomCategoryInput] = useState('');
+  const [selectedCategories, setSelectedCategories] = useState<string[]>([ALL_CATEGORY_OPTIONS[0] || 'Builders & Civil Contractors (बिल्डर, ठेकेदार व कंस्ट्रक्शन)']);
   
   // Customer Specific Registration States
   const [customerType, setCustomerType] = useState('General Customer');
@@ -10460,14 +10687,29 @@ function AuthPage({ onLogin }: { onLogin: (user: any) => void }) {
     const finalAddress = address.trim() || 'Trade Industrial Area';
     const googleMapsUrl = `https://maps.google.com/?q=${fallbackGps.lat},${fallbackGps.lng}`;
 
-    const userProfile = {
+    // Calculate user's primary trade category
+    let finalCategory = 'Building Materials Merchant';
+    if (selectedRole === 'customer') {
+      finalCategory = customerType || 'Individual Customer';
+    } else {
+      const activeCats = [...selectedCategories];
+      if (customCategoryInput && customCategoryInput.trim()) {
+        const customClean = customCategoryInput.trim();
+        if (!activeCats.includes(customClean)) {
+          activeCats.unshift(customClean);
+        }
+      }
+      finalCategory = activeCats.length > 0 ? activeCats.join(', ') : (customCategoryInput.trim() || 'General Trade Merchant');
+    }
+
+    const userProfile: any = {
       id: `usr_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       username: cleanUsername,
       password: cleanPassword,
       name: companyName.trim() || cleanUsername,
       role: selectedRole,
-      category: selectedRole === 'customer' ? (customerType || 'Individual Customer') : (selectedCategories.length > 0 ? selectedCategories.join(', ') : 'Building Materials Merchant'),
-      customerRequirements: selectedRole === 'customer' ? (customerRequirements || 'General Tiles & Sanitaryware Inquiry') : undefined,
+      category: finalCategory,
+      customerRequirements: selectedRole === 'customer' ? (customerRequirements || 'General Inquiry & Quotes') : undefined,
       gstNumber: selectedRole === 'customer' ? '' : (gstNumber || ''),
       phone: phone || '',
       email: email || '',
@@ -10483,6 +10725,13 @@ function AuthPage({ onLogin }: { onLogin: (user: any) => void }) {
       createdAt: new Date().toISOString()
     };
 
+    // Deterministic system fingerprint ID & Referral tracking attributes
+    userProfile.fingerprintId = getOrCreateFingerprint({ id: userProfile.id, username: cleanUsername, phone, email });
+    userProfile.referralCode = cleanUsername.toLowerCase();
+    userProfile.referrals = [];
+    userProfile.qualifiedReferralCount = 0;
+    userProfile.referralRewardEligible = false;
+
     if (!isLogin) {
       // INSTANT REGISTRATION FLOW: Save to local storage & log in immediately (0ms UI lag)
       localStorage.setItem('user', JSON.stringify(userProfile));
@@ -10490,6 +10739,9 @@ function AuthPage({ onLogin }: { onLogin: (user: any) => void }) {
       toast.success(`🎉 Registered successfully as ${selectedRole === 'factory' ? 'Company / Factory' : (selectedRole === 'customer' ? 'Local Customer' : 'Dealer / Distributor')}!`);
       onLogin(userProfile);
       setLoading(false);
+
+      // Trigger referral linking if this user joined via a referral link
+      recordNewUserReferral(userProfile).catch(refErr => console.warn('Referral registration linking note:', refErr));
 
       // Asynchronous background sync to Firestore & Express Server (non-blocking)
       syncUserToFirestore(userProfile).catch((fErr) => {
@@ -10786,26 +11038,57 @@ function AuthPage({ onLogin }: { onLogin: (user: any) => void }) {
                   </div>
 
                   {/* Primary Industry & Business Sector Selector */}
-                  <div>
+                  <div className="space-y-2">
                     <label className="block text-xs font-bold text-black dark:text-zinc-300 mb-1 flex items-center justify-between">
                       <span>Business & Trade Sector / व्यापार श्रेणी *</span>
-                      <span className="text-[10px] text-blue-500 font-semibold">Select your industry</span>
+                      <span className="text-[10px] text-blue-600 dark:text-blue-400 font-bold">Select or Type Category</span>
                     </label>
                     <select
                       value={selectedCategories[0] || ALL_CATEGORY_OPTIONS[0]}
                       onChange={(e) => {
                         const chosen = e.target.value;
+                        if (chosen === 'CUSTOM_INPUT') {
+                          // Prompt or focus on custom category input field
+                          return;
+                        }
                         if (!selectedCategories.includes(chosen)) {
                           setSelectedCategories([chosen, ...selectedCategories.filter(c => c !== chosen)]);
                         }
                       }}
-                      className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-xs font-bold text-black dark:text-white outline-none focus:border-blue-500 mb-2 cursor-pointer"
+                      className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-xs font-bold text-black dark:text-white outline-none focus:border-blue-500 cursor-pointer"
                     >
-                      <optgroup label="🏗️ Builders, Contractors & Construction">
-                        <option value="Builders & Civil Contractors (बिल्डर, ठेकेदार व कंस्ट्रक्शन)">Builders & Civil Contractors (बिल्डर, ठेकेदार व रियल एस्टेट)</option>
+                      <optgroup label="🛠️ Karigar, Plumbers, Electricians & Skilled Mistri (कारीगर व मिस्त्री)">
+                        <option value="Plumbers & Sanitary Fitting Experts (प्लंबर व फिटिंग मिस्त्री)">Plumbers & Sanitary Fitting Experts (प्लंबर व फिटिंग मिस्त्री)</option>
+                        <option value="Electricians & Wiring Experts (इलेक्ट्रीशियन व वायरिंग)">Electricians & House Wiring Experts (इलेक्ट्रीशियन व हाउस वायरिंग)</option>
+                        <option value="Tile, Marble & Granite Masons (टाइल्स व मार्बल मिस्त्री)">Tile, Marble & Granite Masons (टाइल्स, मार्बल व ग्रेनाइट मिस्त्री)</option>
+                        <option value="Carpenters & Modular Wood Experts (बढ़ई व लकड़ी कारीगर)">Carpenters & Modular Wood Experts (बढ़ई, किचन व फर्नीचर कारीगर)</option>
+                        <option value="Painters & Wall Putty Contractors (पेंटर व पुट्टी कारीगर)">Painters & Wall Putty Contractors (पेंटर, पुट्टी व पीओपी)</option>
+                        <option value="AC, Fridge & Appliance Technicians (AC व फ्रिज मैकेनिक)">AC, Fridge & Appliance Technicians (AC, फ्रिज व RO मैकेनिक)</option>
+                        <option value="Welders & Iron Shed Fabricators (वेल्डर व फैब्रिकेटर)">Welders & Iron Shed Fabricators (वेल्डर, गेट व फैब्रिकेटर)</option>
+                        <option value="CCTV, Network & Security Setup (CCTV व सिक्योरिटी)">CCTV, Camera & Network Technicians (CCTV कैमरा व नेटवर्किंग)</option>
+                      </optgroup>
+                      <optgroup label="🏗️ Builders, Civil Contractors & Construction">
+                        <option value="Builders & Civil Contractors (बिल्डर, ठेकेदार व कंस्ट्रक्शन)">Builders & Civil Contractors (बिल्डर, ठेकेदार व कंस्ट्रक्शन)</option>
+                        <option value="Civil Infrastructure, Roads & Structural Works">Civil Infra, Roads & Structural Contracting (सड़क, पुल व स्ट्रक्चर ठेकेदार)</option>
                         <option value="Commercial Buildings, Malls & Shops">Commercial Buildings & Malls (मॉल, दुकानें व ऑफिस)</option>
                         <option value="Residential Apartments, Villas & Plots">Residential Apartments & Villas (फ्लैट्स, विला व प्लॉट्स)</option>
-                        <option value="Civil Infrastructure, Roads & Structural Works">Civil Infra & Structural Contracting (सिविल ठेकेदार व स्ट्रक्चर)</option>
+                        <option value="Interior Designers, Plumbers & Electricians">Interior Designers, Plumbers & Electricians (इंटीरियर, प्लंबर व इलेक्ट्रिशियन)</option>
+                      </optgroup>
+                      <optgroup label="🏥 Doctors, Clinics, Hospitals & Healthcare">
+                        <option value="Doctors, Clinics & Hospitals (डॉक्टर, क्लीनिक व अस्पताल)">Doctors, Clinics & Hospitals (डॉक्टर, क्लीनिक व अस्पताल)</option>
+                        <option value="Pharmacy, Chemists & Surgical Equipment (दवा दुकान व सर्जिकल)">Pharmacy, Chemists & Surgical Goods (दवा दुकान व सर्जिकल सामान)</option>
+                        <option value="Diagnostic Labs & Pathology Centers (पैथोलॉजी व डायग्नोस्टिक)">Diagnostic Labs & Pathology (पैथोलॉजी लैब व टेस्ट सेंटर)</option>
+                      </optgroup>
+                      <optgroup label="🏨 Hotels, Resorts, Guest Houses & Food">
+                        <option value="Hotels, Resorts & Guest Houses (होटल, गेस्ट हाउस व रिसॉर्ट)">Hotels, Resorts & Guest Houses (होटल, गेस्ट हाउस व रिसॉर्ट)</option>
+                        <option value="Restaurants, Cafes & Catering Services (रेस्टोरेंट व कैटरिंग)">Restaurants, Cafes & Catering (रेस्टोरेंट, कैफे व कैटरर्स)</option>
+                        <option value="Banquet Halls & Marriage Lawns (मैरिज लॉन व बैंक्वेट हॉल)">Banquet Halls & Marriage Lawns (मैरिज लॉन व बैंक्वेट हॉल)</option>
+                      </optgroup>
+                      <optgroup label="🔧 Garages, Mechanics & Auto Workshops">
+                        <option value="Automobile Garages, Mechanics & Car Service (गैरेज, मैकेनिक व सर्विस सेंटर)">Automobile Garages, Mechanics & Car Service (गैरेज, मैकेनिक व कार सर्विस)</option>
+                        <option value="Car Wash, Detailing & Wheel Alignment (कार वॉश व अलाइनमेंट)">Car Wash, Detailing & Wheel Alignment (कार वॉश व अलाइनमेंट)</option>
+                        <option value="Truck & Commercial Fleet Repair Workshop (ट्रक रिपेयरिंग वर्कशॉप)">Truck & Commercial Fleet Repair Workshop (ट्रक व कमर्शियल वर्कशॉप)</option>
+                        <option value="Auto Spares, Tyres & Lubricants">Auto Spares, Tyres & Lubricants (ऑटो पार्ट्स व टायर)</option>
                       </optgroup>
                       <optgroup label="💻 IT, Computers, Mobiles & Software">
                         <option value="Computers, Laptops & IT Hardware">Computers, Laptops & Assembly PCs (कंप्यूटर, लैपटॉप व हार्डवेयर)</option>
@@ -10822,7 +11105,6 @@ function AuthPage({ onLogin }: { onLogin: (user: any) => void }) {
                         <option value="Commercial Trucks & Heavy Loader Vehicles">Commercial Trucks & Cargo Vehicles (ट्रक व कमर्शियल लोडर)</option>
                         <option value="Cars, SUVs & Preowned Vehicle Dealers">Cars, SUVs & Preowned Vehicle Dealers (कार व सेकेंड हैंड कार शोरूम)</option>
                         <option value="Bikes, Scooters & EV Electric Vehicles">Bikes, Scooters & EV Showrooms (बाइक, स्कूटी व EV)</option>
-                        <option value="Auto Spares, Tyres & Lubricants">Auto Spares, Tyres & Lubricants (ऑटो पार्ट्स व टायर)</option>
                       </optgroup>
                       <optgroup label="⚙️ Hardware, Tools & Machinery">
                         <option value="Power Tools, Hardware & Industrial Machinery">Power Tools, Hardware & Industrial Machinery (पावर टूल्स व मशीनरी)</option>
@@ -10855,7 +11137,28 @@ function AuthPage({ onLogin }: { onLogin: (user: any) => void }) {
                         <option value="Spices & Dry Fruits (मसाले/मेवे)">Spices & Dry Fruits (मसाले/मेवे)</option>
                         <option value="Edible Oils & Desi Ghee (तेल/घी)">Edible Oils & Desi Ghee (तेल/घी)</option>
                       </optgroup>
+                      <optgroup label="✨ Custom / Other Trade">
+                        <option value="Other Business / Custom Trade Category (अन्य कोई भी व्यापार)">Other Business / Custom (अन्य कोई भी व्यापार)</option>
+                      </optgroup>
                     </select>
+
+                    {/* Custom Specific Category Input Field */}
+                    <div className="bg-blue-50/70 dark:bg-blue-950/40 p-2.5 rounded-xl border border-blue-200 dark:border-blue-800 space-y-1">
+                      <label className="block text-[11px] font-bold text-blue-900 dark:text-blue-200 flex items-center gap-1.5">
+                        <Tag className="w-3.5 h-3.5 text-blue-600" />
+                        <span>Specify Your Exact Profession / Category (अपना सटीक व्यापार लिखें):</span>
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Civil Contractor / Heart Specialist Doctor / Grand Palace Hotel / Royal Car Garage"
+                        value={customCategoryInput}
+                        onChange={(e) => setCustomCategoryInput(e.target.value)}
+                        className="w-full bg-white dark:bg-zinc-900 border border-blue-300 dark:border-blue-700 rounded-lg px-3 py-1.5 text-xs text-black dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                      />
+                      <p className="text-[10px] text-blue-700 dark:text-blue-300">
+                        💡 Yeh category aapki profile aur posts par highlight hogi (Jaise: Doctor, Hotel Owner, Garage, Civil Contractor aadi).
+                      </p>
+                    </div>
 
                     <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto scrollbar-thin p-1 bg-slate-100 dark:bg-zinc-800/60 rounded-xl border border-slate-200 dark:border-zinc-800">
                       {availableCategories.map(cat => (
@@ -11049,6 +11352,55 @@ function AuthPage({ onLogin }: { onLogin: (user: any) => void }) {
               onChange={e => setPassword(e.target.value)}
             />
           </div>
+
+          {isLogin && (
+            <div className="flex flex-col gap-2 pt-0.5">
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setShowForgotPassword(prev => !prev)}
+                  className="text-xs font-bold text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer flex items-center gap-1"
+                >
+                  <Key className="w-3.5 h-3.5" />
+                  <span>{showForgotPassword ? 'Hide Reset Options' : 'Forgot Password? (पासवर्ड भूल गए?)'}</span>
+                </button>
+              </div>
+
+              {showForgotPassword && (
+                <div className="bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700/60 rounded-2xl p-3.5 space-y-2.5">
+                  <div className="flex items-start gap-2">
+                    <div className="w-7 h-7 rounded-lg bg-amber-100 dark:bg-amber-900/60 flex items-center justify-center text-amber-700 dark:text-amber-300 shrink-0 mt-0.5">
+                      <Lock className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h4 className="text-xs font-bold text-slate-900 dark:text-slate-100">
+                        Admin Master Password Recovery
+                      </h4>
+                      <p className="text-[11px] text-slate-600 dark:text-slate-300 mt-0.5 leading-relaxed">
+                        Agar aap password bhool gaye hain toh Admin direct ek temporary master password generate karke share kar sakta hai.
+                      </p>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const resetMsg = `Namaste Vyapar Bridge Admin,\nMain Vyapar Bridge login password bhool gaya hu.\n\n👤 Username/Mobile: ${username.trim() || 'Nahi pata'}\n\nKripya mera temporary master password generate karke share karein.`;
+                      window.open(`https://api.whatsapp.com/send?phone=919889104477&text=${encodeURIComponent(resetMsg)}`, '_blank');
+                    }}
+                    className="w-full py-2.5 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-extrabold flex items-center justify-center gap-1.5 shadow-sm transition-all cursor-pointer"
+                  >
+                    <Share2 className="w-4 h-4" />
+                    <span>Request Master Password on WhatsApp</span>
+                  </button>
+
+                  <p className="text-[10px] text-slate-500 text-center">
+                    📞 Helpline: +91 98891 04477
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
 
           {error && <p className="text-red-500 text-xs font-semibold text-center">{error}</p>}
 
@@ -11587,7 +11939,7 @@ function CommunityPage({ user }: { user?: any }) {
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold text-black dark:text-zinc-50">Community Tab</h1>
-          <p className="text-sm text-black/70 dark:text-zinc-400">Exclusive visual directory of Tile & Sanitaryware products</p>
+          <p className="text-sm font-semibold text-black/75 dark:text-zinc-300">Exclusive visual directory for local businesses, manufacturers, and buyers</p>
         </div>
         <Users className="w-8 h-8 text-blue-500" />
       </div>
@@ -11599,26 +11951,40 @@ function CommunityPage({ user }: { user?: any }) {
           ))}
         </div>
       ) : posts.length > 0 ? (
-        <div className="grid grid-cols-3 gap-1 md:gap-4">
+        <div className="grid grid-cols-3 gap-1.5 md:gap-4">
           {posts.map(post => (
             <Link 
               key={post.id} 
               to={`/profile/${post.userId}`}
-              className="group relative aspect-square bg-slate-100 dark:bg-zinc-900 overflow-hidden rounded-lg"
+              className="group relative aspect-square bg-slate-100 dark:bg-zinc-900 overflow-hidden rounded-lg sm:rounded-xl border border-slate-200/60 dark:border-zinc-800 shadow-xs"
             >
               <img 
                 src={post.mediaUrl} 
-                alt={post.title} 
-                className="w-full h-full object-cover transition-transform group-hover:scale-110" 
+                alt={post.title || post.userName || 'Visual directory post'} 
+                className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105" 
+                loading="lazy"
               />
-              <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-4 text-black">
+              
+              {/* Creator Name on Top of Small Post Block */}
+              <div className="absolute top-0 inset-x-0 p-1.5 sm:p-2 bg-gradient-to-b from-black/85 via-black/45 to-transparent z-10 flex items-center justify-between gap-1 pointer-events-none">
+                <div className="flex items-center gap-1 min-w-0">
+                  <span className="text-[10px] sm:text-xs font-black text-white drop-shadow-[0_1px_3px_rgba(0,0,0,0.95)] truncate tracking-tight">
+                    {post.user?.name || post.userName || post.user?.companyName || 'Member'}
+                  </span>
+                  {(post.user?.isVerified || post.isVerified) && (
+                    <VerifiedBadge size="sm" />
+                  )}
+                </div>
+              </div>
+
+              <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-3 text-white">
                 <div className="flex items-center gap-1">
-                  <Heart className="w-5 h-5 fill-white" />
-                  <span className="font-bold">{post.likesCount || 0}</span>
+                  <Heart className="w-4 h-4 sm:w-5 sm:h-5 fill-white text-white" />
+                  <span className="font-bold text-xs sm:text-sm">{post.likesCount || 0}</span>
                 </div>
                 <div className="flex items-center gap-1">
-                  <MessageCircle className="w-5 h-5 fill-white" />
-                  <span className="font-bold">{post.commentsCount || 0}</span>
+                  <MessageCircle className="w-4 h-4 sm:w-5 sm:h-5 fill-white text-white" />
+                  <span className="font-bold text-xs sm:text-sm">{post.commentsCount || 0}</span>
                 </div>
               </div>
             </Link>
@@ -11700,25 +12066,39 @@ function ExplorePage({ user, userLocation }: { user?: any, userLocation?: {lat: 
   return (
     <div className="max-w-4xl mx-auto w-full pt-4 md:pt-8 pb-20 md:pb-8 px-1 md:px-4">
       {posts.length > 0 ? (
-        <div className="grid grid-cols-3 gap-1 md:gap-4">
+        <div className="grid grid-cols-3 gap-1.5 md:gap-4">
           {posts.map((post, idx) => (
             <div 
               key={post.id} 
               onClick={() => setActiveExploreIndex(idx)}
-              className="aspect-square bg-slate-200 dark:bg-zinc-800 group relative overflow-hidden cursor-pointer rounded-lg"
+              className="aspect-square bg-slate-200 dark:bg-zinc-800 group relative overflow-hidden cursor-pointer rounded-lg sm:rounded-xl border border-slate-200/60 dark:border-zinc-800 shadow-xs"
             >
+              {/* Creator Name on Top of Small Post Block */}
+              <div className="absolute top-0 inset-x-0 p-1.5 sm:p-2 bg-gradient-to-b from-black/85 via-black/45 to-transparent z-10 flex items-center justify-between gap-1 pointer-events-none">
+                <div className="flex items-center gap-1 min-w-0">
+                  <span className="text-[10px] sm:text-xs font-black text-white drop-shadow-[0_1px_3px_rgba(0,0,0,0.95)] truncate tracking-tight">
+                    {post.user?.name || post.userName || post.user?.companyName || 'Member'}
+                  </span>
+                  {(post.user?.isVerified || post.isVerified) && (
+                    <VerifiedBadge size="sm" />
+                  )}
+                </div>
+              </div>
+
               {post.mediaUrl && post.mediaUrl.trim() !== '' ? (
                 post.type === 'video' || post.mediaUrl.match(/\.(mp4|webm|mov|m4v)(\?.*)?$/i) ? (
-                  <div className="relative w-full h-full">
-                    <img 
-                      src={post.thumbnailUrl || 'https://images.unsplash.com/photo-1615971677499-5467cbab01c0?auto=format&fit=crop&w=400&q=80'} 
-                      alt="Video explore" 
-                      className="w-full h-full object-cover transition-transform group-hover:scale-105" 
-                      loading="lazy" 
-                      onError={(e) => {
-                        e.currentTarget.src = 'https://images.unsplash.com/photo-1615971677499-5467cbab01c0?auto=format&fit=crop&w=400&q=80';
-                      }}
-                    />
+                  <div className="relative w-full h-full bg-zinc-900 flex items-center justify-center">
+                    {post.thumbnailUrl ? (
+                      <img 
+                        src={post.thumbnailUrl} 
+                        alt="Video explore" 
+                        className="w-full h-full object-cover transition-transform group-hover:scale-105" 
+                        loading="lazy" 
+                        onError={(e) => {
+                          e.currentTarget.style.display = 'none';
+                        }}
+                      />
+                    ) : null}
                     <div className="absolute top-2 right-2 p-1 rounded-full bg-black/60 text-white backdrop-blur-sm">
                       <Film className="w-3.5 h-3.5" />
                     </div>
@@ -12946,6 +13326,14 @@ function EditProfileModal({ isOpen, onClose, user, onSave, onOpenVerify }: { isO
   const [catalogueName, setCatalogueName] = useState(user?.catalogueName || '');
   const [loading, setLoading] = useState(false);
 
+  // Change Password States
+  const [showPasswordSection, setShowPasswordSection] = useState(false);
+  const [currentPasswordInput, setCurrentPasswordInput] = useState('');
+  const [newPasswordInput, setNewPasswordInput] = useState('');
+  const [confirmPasswordInput, setConfirmPasswordInput] = useState('');
+  const [isChangingPass, setIsChangingPass] = useState(false);
+  const [showPassText, setShowPassText] = useState(false);
+
   const coverFileInputRef = React.useRef<HTMLInputElement>(null);
   const avatarFileInputRef = React.useRef<HTMLInputElement>(null);
   const catalogueFileInputRef = React.useRef<HTMLInputElement>(null);
@@ -12975,8 +13363,51 @@ function EditProfileModal({ isOpen, onClose, user, onSave, onOpenVerify }: { isO
       setHideAddress(user?.hideAddress || false);
       setHideEmail(user?.hideEmail || false);
       setHideGst(user?.hideGst || false);
+      setShowPasswordSection(false);
+      setCurrentPasswordInput('');
+      setNewPasswordInput('');
+      setConfirmPasswordInput('');
     }
   }, [isOpen, user]);
+
+  const handleChangePassword = async () => {
+    if (!newPasswordInput.trim()) {
+      toast.error('Please enter a new password (नया पासवर्ड दर्ज करें)!');
+      return;
+    }
+    if (newPasswordInput.trim().length < 4) {
+      toast.error('Password must be at least 4 characters long!');
+      return;
+    }
+    if (newPasswordInput.trim() !== confirmPasswordInput.trim()) {
+      toast.error('New Password and Confirm Password do not match (दोनों पासवर्ड समान होने चाहिए)!');
+      return;
+    }
+
+    setIsChangingPass(true);
+    const toastId = toast.loading('Updating your password...');
+
+    try {
+      const res = await userChangeOwnPassword(user?.id || '1', currentPasswordInput, newPasswordInput);
+      if (res.success) {
+        toast.success('🔒 Password updated successfully! Ab aap apne naye password se login kar sakte hain.', { id: toastId });
+        setCurrentPasswordInput('');
+        setNewPasswordInput('');
+        setConfirmPasswordInput('');
+        setShowPasswordSection(false);
+        if (user) {
+          const updatedUserWithPass = { ...user, password: newPasswordInput.trim() };
+          onSave(updatedUserWithPass);
+        }
+      } else {
+        toast.error(res.error || 'Failed to update password', { id: toastId });
+      }
+    } catch (err: any) {
+      toast.error(err?.message || 'Error updating password', { id: toastId });
+    } finally {
+      setIsChangingPass(false);
+    }
+  };
 
   if (!isOpen) return null;
 
@@ -13507,6 +13938,94 @@ function EditProfileModal({ isOpen, onClose, user, onSave, onOpenVerify }: { isO
             </div>
           </div>
 
+          {/* Password & Security Settings (Change Password) */}
+          <div className="p-3.5 bg-slate-50 dark:bg-zinc-800/80 rounded-xl border border-slate-200 dark:border-zinc-700 space-y-2.5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-black dark:text-zinc-100 font-bold text-xs">
+                <Key className="w-4 h-4 text-amber-500" />
+                <span>Password & Security (पासवर्ड बदलें)</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowPasswordSection(prev => !prev)}
+                className="text-xs font-bold text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer"
+              >
+                {showPasswordSection ? 'Cancel' : 'Change Password'}
+              </button>
+            </div>
+
+            {showPasswordSection ? (
+              <div className="space-y-3 pt-2 border-t border-slate-200 dark:border-zinc-700">
+                <p className="text-[11px] text-slate-600 dark:text-zinc-400">
+                  Master Password se login hone ke baad aap yahan se apna manpasand naya password set kar sakte hain:
+                </p>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 dark:text-zinc-300 mb-1">
+                    Current / Master Password (वर्तमान पासवर्ड)
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showPassText ? "text" : "password"}
+                      value={currentPasswordInput}
+                      onChange={e => setCurrentPasswordInput(e.target.value)}
+                      placeholder="Enter current or master password"
+                      className="w-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-xs focus:outline-none focus:border-amber-500 pr-9"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassText(prev => !prev)}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-zinc-200 cursor-pointer"
+                    >
+                      {showPassText ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-700 dark:text-zinc-300 mb-1">
+                      New Password *
+                    </label>
+                    <input
+                      type={showPassText ? "text" : "password"}
+                      value={newPasswordInput}
+                      onChange={e => setNewPasswordInput(e.target.value)}
+                      placeholder="Min 4 characters"
+                      className="w-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:border-amber-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-700 dark:text-zinc-300 mb-1">
+                      Confirm New Password *
+                    </label>
+                    <input
+                      type={showPassText ? "text" : "password"}
+                      value={confirmPasswordInput}
+                      onChange={e => setConfirmPasswordInput(e.target.value)}
+                      placeholder="Repeat new password"
+                      className="w-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:border-amber-500"
+                    />
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleChangePassword}
+                  disabled={isChangingPass}
+                  className="w-full py-2 px-3 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm transition-all cursor-pointer disabled:opacity-50"
+                >
+                  <Lock className="w-3.5 h-3.5" />
+                  <span>{isChangingPass ? 'Updating Password...' : 'Save New Password (नया पासवर्ड सुरक्षित करें)'}</span>
+                </button>
+              </div>
+            ) : (
+              <p className="text-[11px] text-slate-500 dark:text-zinc-400">
+                Aap jab chahein apna login password badal sakte hain.
+              </p>
+            )}
+          </div>
+
           {/* Vyapar Bridge Verification Badge Option */}
           <div className="bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-950/40 dark:to-indigo-950/40 p-3.5 rounded-xl border border-blue-200 dark:border-blue-800/60 flex items-center justify-between">
             <div className="flex items-center gap-2.5">
@@ -13555,6 +14074,7 @@ function ProfileSettingsDrawer({
   onOpenVerify, 
   onOpenApprovalCenter,
   onOpenCalculator,
+  onOpenReferrals,
   onToggleTheme, 
   isDark,
   onOpenMasterConsole,
@@ -13569,6 +14089,7 @@ function ProfileSettingsDrawer({
   onOpenVerify: () => void; 
   onOpenApprovalCenter?: () => void;
   onOpenCalculator: () => void;
+  onOpenReferrals?: () => void;
   onToggleTheme: () => void; 
   isDark: boolean; 
   onOpenMasterConsole?: () => void;
@@ -13741,18 +14262,33 @@ function ProfileSettingsDrawer({
 
           {/* Edit Profile */}
           {user && (
-            <button 
-              onClick={() => { onClose(); onOpenEditProfile(); }}
-              className="w-full p-3 rounded-xl hover:bg-slate-100 dark:hover:bg-zinc-900 flex items-center gap-3 transition-colors text-left font-semibold text-sm cursor-pointer group"
-            >
-              <div className="p-2 rounded-lg bg-blue-50 dark:bg-blue-950 text-blue-600 dark:text-blue-600 group-hover:scale-110 transition-transform">
-                <Camera className="w-4 h-4" />
-              </div>
-              <div className="flex-1">
-                <div className="text-black dark:text-zinc-100">Edit Profile Details</div>
-                <div className="text-[11px] font-normal text-black/70 dark:text-zinc-400">Change business name, logo, categories & address</div>
-              </div>
-            </button>
+            <>
+              <button 
+                onClick={() => { onClose(); onOpenEditProfile(); }}
+                className="w-full p-3 rounded-xl hover:bg-slate-100 dark:hover:bg-zinc-900 flex items-center gap-3 transition-colors text-left font-semibold text-sm cursor-pointer group"
+              >
+                <div className="p-2 rounded-lg bg-blue-50 dark:bg-blue-950 text-blue-600 dark:text-blue-600 group-hover:scale-110 transition-transform">
+                  <Camera className="w-4 h-4" />
+                </div>
+                <div className="flex-1">
+                  <div className="text-black dark:text-zinc-100">Edit Profile Details</div>
+                  <div className="text-[11px] font-normal text-black/70 dark:text-zinc-400">Change business name, logo, categories & address</div>
+                </div>
+              </button>
+
+              <button 
+                onClick={() => { onClose(); onOpenEditProfile(); }}
+                className="w-full p-3 rounded-xl hover:bg-slate-100 dark:hover:bg-zinc-900 flex items-center gap-3 transition-colors text-left font-semibold text-sm cursor-pointer group"
+              >
+                <div className="p-2 rounded-lg bg-amber-50 dark:bg-amber-950 text-amber-600 dark:text-amber-400 group-hover:scale-110 transition-transform">
+                  <Key className="w-4 h-4" />
+                </div>
+                <div className="flex-1">
+                  <div className="text-black dark:text-zinc-100">Password & Security (पासवर्ड बदलें)</div>
+                  <div className="text-[11px] font-normal text-black/70 dark:text-zinc-400">Update your login password anytime</div>
+                </div>
+              </button>
+            </>
           )}
 
           {/* Saved Tile Posts */}
@@ -13766,6 +14302,25 @@ function ProfileSettingsDrawer({
             <div className="flex-1">
               <div className="text-black dark:text-zinc-100">Saved Posts & Designs</div>
               <div className="text-[11px] font-normal text-black/70 dark:text-zinc-400">View bookmarks & saved catalogue designs</div>
+            </div>
+          </button>
+
+          {/* Refer & Earn 1-Month Free Blue Badge */}
+          <button 
+            onClick={() => { onClose(); if (onOpenReferrals) onOpenReferrals(); else if (!user) window.dispatchEvent(new CustomEvent('openAuthModal')); }}
+            className="w-full p-3 rounded-xl bg-gradient-to-r from-amber-500/10 via-blue-500/10 to-indigo-500/10 hover:from-amber-500/20 hover:via-blue-500/20 hover:to-indigo-500/20 border border-amber-400/40 flex items-center gap-3 transition-all text-left font-semibold text-sm cursor-pointer group shadow-xs"
+          >
+            <div className="p-2 rounded-lg bg-gradient-to-br from-amber-400 to-amber-600 text-white group-hover:scale-110 transition-transform shadow-xs">
+              <Gift className="w-4 h-4 animate-bounce" />
+            </div>
+            <div className="flex-1">
+              <div className="text-black dark:text-zinc-100 flex items-center gap-1.5 font-bold">
+                <span>Refer & Earn Free Blue Badge</span>
+                <span className="text-[9px] bg-amber-500 text-white font-black px-1.5 py-0.5 rounded-full uppercase">1 Mo Free</span>
+              </div>
+              <div className="text-[11px] font-normal text-black/70 dark:text-zinc-400">
+                Refer 10 members (join + post) to get 1-Month Blue Checkmark!
+              </div>
             </div>
           </button>
 
@@ -14091,13 +14646,15 @@ function ProfilePage({
   onLogout, 
   onUpdateUser,
   onOpenSettingsDrawer,
-  onOpenVerify
+  onOpenVerify,
+  onOpenReferrals
 }: { 
   user: any; 
   onLogout: () => void; 
   onUpdateUser: (u: any) => void;
   onOpenSettingsDrawer?: () => void;
   onOpenVerify?: () => void;
+  onOpenReferrals?: () => void;
 }) {
   const { userId } = useParams<{ userId?: string }>();
   const navigate = useNavigate();
@@ -15144,6 +15701,42 @@ function ProfilePage({
         </div>
       </div>
 
+      {/* Refer & Earn 1-Month Free Blue Badge Banner */}
+      {isOwnProfile && (
+        <div 
+          onClick={() => {
+            if (onOpenReferrals) onOpenReferrals();
+            else window.dispatchEvent(new CustomEvent('openReferralModal'));
+          }}
+          className="mb-6 bg-gradient-to-r from-amber-500/15 via-blue-500/15 to-indigo-500/15 hover:from-amber-500/25 hover:via-blue-500/25 hover:to-indigo-500/25 border border-amber-400/50 dark:border-amber-500/30 p-4 rounded-2xl cursor-pointer shadow-sm hover:shadow-md transition-all flex items-center justify-between gap-3 group"
+        >
+          <div className="flex items-center gap-3.5 min-w-0">
+            <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-amber-400 to-amber-600 text-white flex items-center justify-center shrink-0 shadow-sm group-hover:scale-105 transition-transform">
+              <Gift className="w-5 h-5 animate-bounce" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h4 className="font-black text-xs sm:text-sm text-slate-900 dark:text-zinc-100 flex items-center gap-1.5">
+                  <span>Refer 10 Members & Get 1 Month FREE Blue Badge!</span>
+                  <Sparkles className="w-3.5 h-3.5 text-amber-500 fill-amber-500" />
+                </h4>
+                <span className="text-[10px] font-extrabold bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-800 px-2 py-0.5 rounded-full">
+                  {currentUser?.referrals?.filter((r: any) => r.hasPosted)?.length || 0}/10 Complete
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-600 dark:text-zinc-400 truncate">
+                Share your referral link on WhatsApp. When 10 members join & post, your 30-day Free Blue Badge unlocks!
+              </p>
+            </div>
+          </div>
+
+          <div className="shrink-0 flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold px-3.5 py-2 rounded-xl shadow-xs transition-colors">
+            <span>Invite</span>
+            <ChevronRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
+          </div>
+        </div>
+      )}
+
       {/* Tabs Navigation Bar */}
       <div className="border-t border-slate-200 dark:border-zinc-800 flex justify-center gap-12 mb-6 text-xs uppercase font-semibold tracking-wider">
         <button 
@@ -15560,16 +16153,18 @@ function ProfilePage({
                 className="relative aspect-square bg-slate-100 dark:bg-zinc-800 rounded-lg overflow-hidden group cursor-pointer shadow-sm border border-slate-200 dark:border-zinc-800/50"
               >
                 {post.type === 'video' && post.mediaUrl ? (
-                  <div className="relative w-full h-full">
-                    <img 
-                      src={post.thumbnailUrl || 'https://images.unsplash.com/photo-1615971677499-5467cbab01c0?auto=format&fit=crop&w=400&q=80'} 
-                      alt={post.title || 'Saved Video'} 
-                      className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" 
-                      loading="lazy"
-                      onError={(e) => {
-                        e.currentTarget.src = 'https://images.unsplash.com/photo-1615971677499-5467cbab01c0?auto=format&fit=crop&w=400&q=80';
-                      }}
-                    />
+                  <div className="relative w-full h-full bg-zinc-900 flex items-center justify-center">
+                    {post.thumbnailUrl ? (
+                      <img 
+                        src={post.thumbnailUrl} 
+                        alt={post.title || 'Saved Video'} 
+                        className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" 
+                        loading="lazy"
+                        onError={(e) => {
+                          e.currentTarget.style.display = 'none';
+                        }}
+                      />
+                    ) : null}
                     <div className="absolute top-2 left-2 p-1 rounded-full bg-black/60 text-white backdrop-blur-sm">
                       <Film className="w-3.5 h-3.5" />
                     </div>
@@ -16028,8 +16623,12 @@ function AppContent() {
         });
       }
       isInitialLoad = false;
-    }, (error) => {
-      console.log('Notifs listener error:', error);
+    }, (error: any) => {
+      if (error?.code === 'cancelled' || error?.message?.includes('CANCELLED') || error?.message?.includes('Disconnecting idle stream')) {
+        // Normal gRPC stream lifecycle event when idle, ignore
+        return;
+      }
+      console.warn('Notifs listener note:', error?.message || error);
     });
 
     return () => unsubscribe();
@@ -16101,6 +16700,18 @@ function AppContent() {
   const [isGlobalEditModalOpen, setIsGlobalEditModalOpen] = useState(false);
   const [isGlobalVerifyModalOpen, setIsGlobalVerifyModalOpen] = useState(false);
   const [isGlobalApprovalCenterOpen, setIsGlobalApprovalCenterOpen] = useState(false);
+  const [isReferralModalOpen, setIsReferralModalOpen] = useState(false);
+
+  useEffect(() => {
+    // Capture referral code if opened with ?ref=username
+    const refCode = captureReferralCodeFromUrl();
+    if (refCode) {
+      console.log('🎁 Referral code detected from link:', refCode);
+    }
+    const handleOpen = () => setIsReferralModalOpen(true);
+    window.addEventListener('openReferralModal', handleOpen);
+    return () => window.removeEventListener('openReferralModal', handleOpen);
+  }, []);
 
   useEffect(() => {
     if (user?.id) {
@@ -16257,11 +16868,26 @@ function AppContent() {
   const [isLogoMenuOpen, setIsLogoMenuOpen] = useState(false);
   const [isLogoLightboxOpen, setIsLogoLightboxOpen] = useState(false);
   const [isCalculatorOpen, setIsCalculatorOpen] = useState(false);
+  const [isBoostModalOpen, setIsBoostModalOpen] = useState(false);
+  const [boostTargetPost, setBoostTargetPost] = useState<any>(null);
 
   useEffect(() => {
     const handleOpenAuth = () => setIsAuthModalOpen(true);
     window.addEventListener('openAuthModal', handleOpenAuth);
     return () => window.removeEventListener('openAuthModal', handleOpenAuth);
+  }, []);
+
+  useEffect(() => {
+    const handleOpenBoost = (e: any) => {
+      setBoostTargetPost(e.detail?.post || null);
+      setIsBoostModalOpen(true);
+    };
+    window.addEventListener('open_boost_business_modal', handleOpenBoost);
+    window.addEventListener('openBoostBusinessModal', handleOpenBoost);
+    return () => {
+      window.removeEventListener('open_boost_business_modal', handleOpenBoost);
+      window.removeEventListener('openBoostBusinessModal', handleOpenBoost);
+    };
   }, []);
 
   if (isLockedOut) {
@@ -16362,54 +16988,8 @@ function AppContent() {
       
       {/* Mobile Header (Instagram style with Centered Branding, Top Left Theme Toggle & Right Menu) */}
       <header className="md:hidden bg-[#E6C76C] dark:bg-black border-b border-slate-200 dark:border-zinc-800 px-3 h-14 flex items-center justify-between sticky top-0 z-50 w-full max-w-full overflow-hidden">
-        {/* Top Left Menu */}
-        <div className="flex items-center shrink-0 z-10 relative">
-          <button 
-            onClick={() => setIsLogoMenuOpen(!isLogoMenuOpen)}
-            className="p-1 text-black/70 dark:text-zinc-300 hover:bg-slate-100 dark:hover:bg-zinc-800 rounded-full transition-colors flex items-center justify-center overflow-hidden"
-          >
-            <img src={BRAND_LOGO_SRC} alt={BRAND_NAME} className="w-7 h-7 object-cover rounded-full" />
-          </button>
-          {isLogoMenuOpen && (
-            <>
-              <div className="fixed inset-0 z-40" onClick={(e) => { e.stopPropagation(); setIsLogoMenuOpen(false); }} />
-              <div className="absolute top-12 left-0 w-60 bg-white dark:bg-zinc-900 rounded-xl shadow-2xl border border-slate-200 dark:border-zinc-800 overflow-hidden z-50 flex flex-col py-1 animate-in fade-in zoom-in duration-200">
-                <button 
-                  onClick={(e) => { e.stopPropagation(); setIsLogoMenuOpen(false); setIsGlobalApprovalCenterOpen(true); }}
-                  className="w-full px-4 py-3 text-left flex items-center gap-3 hover:bg-slate-50 dark:hover:bg-zinc-800 transition-colors"
-                >
-                  <ShieldCheck className="w-5 h-5 text-blue-500" />
-                  <div className="flex flex-col">
-                    <span className="text-[13px] font-bold text-black dark:text-zinc-100 leading-tight">Payment Mode</span>
-                    <span className="text-[10px] text-black/60 dark:text-zinc-400">Verification & Setup</span>
-                  </div>
-                </button>
-                <div className="border-t border-slate-100 dark:border-zinc-800" />
-                <button 
-                  onClick={(e) => { e.stopPropagation(); setIsLogoMenuOpen(false); navigate('/terms'); }}
-                  className="w-full px-4 py-3 text-left flex items-center gap-3 hover:bg-slate-50 dark:hover:bg-zinc-800 transition-colors"
-                >
-                  <Scale className="w-5 h-5 text-indigo-500" />
-                  <div className="flex flex-col">
-                    <span className="text-[13px] font-bold text-black dark:text-zinc-100 leading-tight">Terms and Services</span>
-                    <span className="text-[10px] text-black/60 dark:text-zinc-400">Platform Policies</span>
-                  </div>
-                </button>
-                <div className="border-t border-slate-100 dark:border-zinc-800" />
-                <button 
-                  onClick={(e) => { e.stopPropagation(); setIsLogoMenuOpen(false); window.open('https://wa.me/919889104477', '_blank'); }}
-                  className="w-full px-4 py-3 text-left flex items-center gap-3 hover:bg-slate-50 dark:hover:bg-zinc-800 transition-colors"
-                >
-                  <Phone className="w-5 h-5 text-green-500" />
-                  <div className="flex flex-col">
-                    <span className="text-[13px] font-bold text-black dark:text-zinc-100 leading-tight">Vyapar Bridge Support</span>
-                    <span className="text-[10px] text-black/60 dark:text-zinc-400">Contact via WhatsApp</span>
-                  </div>
-                </button>
-              </div>
-            </>
-          )}
-        </div>
+        {/* Left balanced spacer for centered branding */}
+        <div className="w-8 shrink-0" />
 
         {/* Centered Header Title */}
         <div className="flex-1 flex flex-col items-center justify-center cursor-pointer min-w-0 px-2 group z-0 pointer-events-auto overflow-hidden" onClick={() => navigate('/')}>
@@ -16602,6 +17182,7 @@ function AppContent() {
                 onUpdateUser={handleUpdateUser} 
                 onOpenSettingsDrawer={() => setIsSettingsDrawerOpen(true)}
                 onOpenVerify={() => setIsGlobalVerifyModalOpen(true)}
+                onOpenReferrals={() => setIsReferralModalOpen(true)}
               />
             } />
             <Route path="/profile/:userId" element={
@@ -16611,6 +17192,7 @@ function AppContent() {
                 onUpdateUser={handleUpdateUser} 
                 onOpenSettingsDrawer={() => setIsSettingsDrawerOpen(true)}
                 onOpenVerify={() => setIsGlobalVerifyModalOpen(true)}
+                onOpenReferrals={() => setIsReferralModalOpen(true)}
               />
             } />
             <Route path="/create" element={<CreatePost user={user} />} />
@@ -16638,11 +17220,36 @@ function AppContent() {
         onOpenVerify={() => setIsGlobalVerifyModalOpen(true)}
         onOpenApprovalCenter={() => setIsGlobalApprovalCenterOpen(true)}
         onOpenCalculator={() => setIsCalculatorOpen(true)}
+        onOpenReferrals={() => setIsReferralModalOpen(true)}
         onToggleTheme={toggleDark}
         isDark={isDark}
         onOpenMasterConsole={() => setIsMasterModalOpen(true)}
         deferredPrompt={deferredPrompt}
         setDeferredPrompt={setDeferredPrompt}
+      />
+
+      {/* Referral System & Free Blue Badge Modal */}
+      <ReferralRewardsModal 
+        isOpen={isReferralModalOpen}
+        onClose={() => setIsReferralModalOpen(false)}
+        user={user}
+        onRewardUnlocked={(updatedUser) => {
+          handleUpdateUser(updatedUser);
+        }}
+      />
+
+      {/* Boost Your Business & Reels Multi-Step Onboarding / VIP Active Modal */}
+      <BoostBusinessModal
+        isOpen={isBoostModalOpen}
+        onClose={() => {
+          setIsBoostModalOpen(false);
+          setBoostTargetPost(null);
+        }}
+        user={user}
+        targetPost={boostTargetPost}
+        onUpdateUser={(updatedUser) => {
+          handleUpdateUser(updatedUser);
+        }}
       />
 
       {/* Global VYAPAR BRIDGE Approval Center Modal */}

@@ -165,23 +165,26 @@ export async function syncPostToFirestore(postData: any): Promise<boolean> {
     delete cleanData.pendingReelFile;
 
     // FIRESTORE SAFEGUARD: Limit document size to < 500 KB (Firestore max limit is 1MB)
-    const videoStreamCandidate = cleanData.videoUrl || cleanData.video || (cleanData.mediaUrl?.startsWith('data:video') ? cleanData.mediaUrl : '');
+    const videoStreamCandidate = cleanData.videoUrl || cleanData.video || (cleanData.mediaUrl?.startsWith('data:video') ? cleanData.mediaUrl : '') || (cleanData.type === 'video' ? (cleanData.mediaUrl || cleanData.persistentMediaUrl) : '');
     if (videoStreamCandidate && (videoStreamCandidate.startsWith('data:video') || videoStreamCandidate.startsWith('blob:'))) {
       try {
         localStorage.setItem('vyapar_video_' + postId, videoStreamCandidate);
       } catch (e) {}
     }
 
-    if (cleanData.mediaUrl && cleanData.mediaUrl.startsWith('data:video')) {
-      if (cleanData.mediaUrl.length > 300000) {
-        console.warn(`⚠️ Video base64 payload is large (${cleanData.mediaUrl.length} bytes). Preserving poster image for Firestore document...`);
+    if (cleanData.type === 'video' || (cleanData.mediaUrl && cleanData.mediaUrl.startsWith('data:video'))) {
+      cleanData.type = 'video';
+      if (cleanData.mediaUrl && cleanData.mediaUrl.length > 500000) {
+        console.warn(`⚠️ Video base64 payload is large (${cleanData.mediaUrl.length} bytes). Storing locally & keeping thumbnail for Firestore...`);
         let safeVideoThumb = cleanData.thumbnailUrl && cleanData.thumbnailUrl.startsWith('data:image') ? cleanData.thumbnailUrl : '';
         if (!safeVideoThumb) {
-          safeVideoThumb = 'https://images.unsplash.com/photo-1615971677499-5467cbab01c0?auto=format&fit=crop&w=800&q=80';
+          safeVideoThumb = cleanData.posterUrl || cleanData.thumbnail || '';
         }
-        cleanData.mediaUrl = safeVideoThumb;
-        cleanData.persistentMediaUrl = safeVideoThumb;
         cleanData.thumbnailUrl = safeVideoThumb;
+        // Keep video reference or local stream indicator
+        cleanData.videoUrl = cleanData.mediaUrl.length < 800000 ? cleanData.mediaUrl : '';
+        cleanData.persistentMediaUrl = safeVideoThumb || cleanData.mediaUrl;
+        cleanData.mediaUrl = safeVideoThumb || cleanData.mediaUrl;
       }
     } else if (cleanData.mediaUrl && cleanData.mediaUrl.startsWith('data:image') && cleanData.mediaUrl.length > 500000) {
       console.warn(`⚠️ Image base64 payload is large (${cleanData.mediaUrl.length} bytes). Optimizing image for Firestore...`);
@@ -191,13 +194,13 @@ export async function syncPostToFirestore(postData: any): Promise<boolean> {
     }
 
     if (!cleanData.mediaUrl || cleanData.mediaUrl.startsWith('blob:')) {
-      cleanData.mediaUrl = cleanData.thumbnailUrl || cleanData.persistentMediaUrl || 'https://images.unsplash.com/photo-1615971677499-5467cbab01c0?auto=format&fit=crop&w=800&q=80';
+      cleanData.mediaUrl = cleanData.thumbnailUrl || cleanData.persistentMediaUrl || cleanData.videoUrl || '';
     }
     if (!cleanData.thumbnailUrl || cleanData.thumbnailUrl.startsWith('blob:')) {
-      cleanData.thumbnailUrl = cleanData.mediaUrl;
+      cleanData.thumbnailUrl = cleanData.mediaUrl || '';
     }
     if (!cleanData.persistentMediaUrl || cleanData.persistentMediaUrl.startsWith('blob:')) {
-      cleanData.persistentMediaUrl = cleanData.mediaUrl;
+      cleanData.persistentMediaUrl = cleanData.mediaUrl || '';
     }
 
     // 1. Instant Local Storage Backup (survives tab/page refresh immediately)
@@ -390,8 +393,8 @@ export function subscribeToPostsFromFirestore(callback: (posts: any[]) => void):
           }
 
           // Fallback image if mediaUrl is missing on an image/video post
-          if (!merged.mediaUrl && (merged.type === 'image' || merged.type === 'video')) {
-            merged.mediaUrl = merged.thumbnailUrl || 'https://images.unsplash.com/photo-1615971677499-5467cbab01c0?auto=format&fit=crop&w=800&q=80';
+          if (!merged.mediaUrl && merged.thumbnailUrl) {
+            merged.mediaUrl = merged.thumbnailUrl;
           }
 
           merged.isLiked = isPostLikedByUser(merged, activeUserId);
@@ -1113,6 +1116,107 @@ export async function authenticateUserInFirestore(usernameOrPhone: string, passw
       success: false, 
       error: '❌ Connection Issue. Yeh ID Registered Nahi Hai! Kripya Pehle Register Karein.' 
     };
+  }
+}
+
+// 7b. Admin Master Password Reset
+export async function adminResetUserPassword(userId: string | number, newPassword: string): Promise<{ success: boolean; error?: string }> {
+  try {
+    const cleanId = String(userId).trim();
+    const cleanPass = newPassword.trim();
+    if (!cleanId || !cleanPass) {
+      return { success: false, error: 'Invalid User ID or Password' };
+    }
+
+    // 1. Update in Firestore users collection
+    const userRef = doc(db, 'users', cleanId);
+    await setDoc(userRef, { 
+      password: cleanPass,
+      passwordUpdatedAt: Date.now(),
+      lastAdminResetAt: Date.now()
+    }, { merge: true });
+
+    // 2. Also search if user is stored under different doc ID
+    try {
+      const usersRef = collection(db, 'users');
+      const snap = await getDocs(usersRef);
+      snap.forEach(async (dSnap) => {
+        const u = dSnap.data();
+        if (String(u.id) === cleanId || String(u.username).toLowerCase() === cleanId.toLowerCase()) {
+          await setDoc(doc(db, 'users', dSnap.id), {
+            password: cleanPass,
+            passwordUpdatedAt: Date.now()
+          }, { merge: true });
+        }
+      });
+    } catch (qErr) {
+      console.warn('Secondary user doc update note:', qErr);
+    }
+
+    // 3. Update active local storage if matching user is logged in
+    try {
+      const localUserStr = localStorage.getItem('user') || localStorage.getItem('Vyapar Bridge_user');
+      if (localUserStr) {
+        const parsed = JSON.parse(localUserStr);
+        if (String(parsed.id) === cleanId || String(parsed.username).toLowerCase() === cleanId.toLowerCase()) {
+          parsed.password = cleanPass;
+          localStorage.setItem('user', JSON.stringify(parsed));
+          localStorage.setItem('Vyapar Bridge_user', JSON.stringify(parsed));
+        }
+      }
+    } catch (lErr) {}
+
+    console.log(`🔑 Master Password Reset successful for user ${cleanId}`);
+    return { success: true };
+  } catch (error: any) {
+    console.error('adminResetUserPassword error:', error);
+    return { success: false, error: error.message || 'Failed to update password in database' };
+  }
+}
+
+// 7c. User Self Change Password
+export async function userChangeOwnPassword(userId: string | number, currentPass: string, newPass: string): Promise<{ success: boolean; error?: string }> {
+  try {
+    const cleanId = String(userId).trim();
+    const cleanCurrent = currentPass.trim();
+    const cleanNew = newPass.trim();
+
+    if (!cleanId) return { success: false, error: 'User not logged in.' };
+    if (!cleanNew || cleanNew.length < 4) return { success: false, error: 'New password must be at least 4 characters.' };
+
+    // 1. Verify current password from Firestore
+    const userRef = doc(db, 'users', cleanId);
+    const snap = await getDoc(userRef);
+    if (snap.exists()) {
+      const data = snap.data();
+      if (data.password && data.password !== cleanCurrent) {
+        return { success: false, error: 'Incorrect current password (वर्तमान पासवर्ड गलत है)!' };
+      }
+    }
+
+    // 2. Update Firestore with new password
+    await setDoc(userRef, {
+      password: cleanNew,
+      passwordUpdatedAt: Date.now()
+    }, { merge: true });
+
+    // 3. Update localStorage
+    try {
+      const localUserStr = localStorage.getItem('user') || localStorage.getItem('Vyapar Bridge_user');
+      if (localUserStr) {
+        const parsed = JSON.parse(localUserStr);
+        if (String(parsed.id) === cleanId) {
+          parsed.password = cleanNew;
+          localStorage.setItem('user', JSON.stringify(parsed));
+          localStorage.setItem('Vyapar Bridge_user', JSON.stringify(parsed));
+        }
+      }
+    } catch (lErr) {}
+
+    return { success: true };
+  } catch (err: any) {
+    console.error('userChangeOwnPassword error:', err);
+    return { success: false, error: err?.message || 'Failed to update password.' };
   }
 }
 

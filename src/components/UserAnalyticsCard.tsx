@@ -339,8 +339,12 @@ export function UserAnalyticsCard({ userId }: { userId: string }) {
                       return (
                         <div key={log.id} className="bg-zinc-900 border border-zinc-800/80 p-3.5 rounded-2xl flex items-center justify-between gap-3 hover:border-zinc-700 transition-colors">
                           <div className="flex items-center gap-3 min-w-0">
-                            <div className="w-10 h-10 rounded-full bg-zinc-800 border border-zinc-700 overflow-hidden shrink-0">
-                              <img src={log.actorAvatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150'} alt={log.actorName} className="w-full h-full object-cover" />
+                            <div className="w-10 h-10 rounded-full bg-blue-600/20 border border-blue-500/30 overflow-hidden shrink-0 flex items-center justify-center text-blue-400 font-bold text-sm">
+                              {log.actorAvatar ? (
+                                <img src={log.actorAvatar} alt={log.actorName} className="w-full h-full object-cover" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+                              ) : (
+                                <span>{(log.actorName || 'U').charAt(0).toUpperCase()}</span>
+                              )}
                             </div>
                             <div className="min-w-0">
                               <div className="text-xs font-bold text-white truncate flex items-center gap-2">
