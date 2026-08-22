@@ -226,38 +226,7 @@ const db = {
   },
   aiLogs: [],
   totalVisitors: 0,
-  platformFeedbacks: [
-    {
-      id: 'fb-1',
-      rating: 5,
-      userName: 'Rajesh Sharma',
-      userCity: 'Morbi, Gujarat',
-      userRole: 'dealer',
-      comment: 'Vyapar Bridge app is phenomenal! Finding verified tile manufacturers and direct design catalogues in Morbi has become seamless.',
-      createdAt: Date.now() - 86400000 * 3,
-      isVerified: false
-    },
-    {
-      id: 'fb-2',
-      rating: 5,
-      userName: 'Anita Patel',
-      userCity: 'Ahmedabad',
-      userRole: 'customer',
-      comment: 'Top quality platform with instant GST verification and direct WhatsApp dealer contact. Highly recommended!',
-      createdAt: Date.now() - 86400000 * 2,
-      isVerified: false
-    },
-    {
-      id: 'fb-3',
-      rating: 5,
-      userName: 'Vikramaditya Singh',
-      userCity: 'Jaipur',
-      userRole: 'company',
-      comment: 'Excellent B2B networking portal for Indian ceramic manufacturers. Fast loading and great UI!',
-      createdAt: Date.now() - 86400000 * 1,
-      isVerified: false
-    }
-  ]
+  platformFeedbacks: []
 };
 
 // Persistence helper for Admin Settings
@@ -2400,7 +2369,22 @@ Sitemap: ${baseUrl}/sitemap.xml`;
     const currentAdminPin = String(db?.adminSettings?.developerMasterPin || 'admin1234@#').trim();
     if (username && (username.toLowerCase() === 'manit' || username.toLowerCase() === 'admin')) {
       if (password === '5503' || password === 'admin1234@#' || password === currentAdminPin) {
-        const adminUser = db.users.find(u => u.role === 'admin') || db.users[0];
+        const adminUser = db.users.find(u => u.role === 'admin' || u.username === 'manit') || {
+          id: 'admin_manit_1',
+          username: username.toLowerCase(),
+          name: username.toLowerCase() === 'manit' ? 'Master Administrator (Manit)' : 'Master Administrator',
+          role: 'admin',
+          category: 'Master Platform Control & Infrastructure',
+          isVerified: true,
+          verifiedBadge: true,
+          bio: 'Vyapar Bridge Master Developer & System Administrator',
+          phone: '9999999999',
+          email: 'admin@vyaparbridge.com',
+          address: 'National Trade & Commerce Hub',
+          city: 'Morbi / Delhi',
+          state: 'Gujarat',
+          avatar: ''
+        };
         return res.json(adminUser);
       } else {
         return res.status(401).json({ error: 'Incorrect password for admin.' });

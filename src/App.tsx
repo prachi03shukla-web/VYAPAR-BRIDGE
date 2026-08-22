@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { BrowserRouter, Routes, Route, Link, useNavigate, useLocation, useParams } from 'react-router-dom';
-import { Facebook, Twitter, Instagram, Home, Shield, Moon, Sun, PlusSquare, MessageCircle, MessageSquare, Menu, LogOut, LogIn, Check, X, XCircle, Search, Compass, Film, Heart, Calculator, Bookmark, Info, MoreHorizontal, MoreVertical, Music, Image, ImageIcon, ImagePlus, Eye, EyeOff, Camera, Upload, Trash2, Plus, ShieldCheck, Sparkles, QrCode, CheckCircle, CheckCircle2, Award, Smile, Volume2, VolumeX, Play, Pause, ChevronUp, ChevronDown, ArrowLeft, ChevronLeft, ChevronRight, UserPlus, UserCheck, Share2, Phone, Mail, Globe, Building2, Store, MapPin, Locate, Navigation, Tag, Filter, ShieldAlert, UserX, Lock, Key, Clock, FileText, FileCheck, Maximize2, Crop, Loader2, Send, BarChart2, Users, Map as MapIcon, Hash, Pencil, Rocket, ExternalLink, Star, Scale, Video, TrendingUp, ClipboardList, Bell, CreditCard, Calendar, Copy, RefreshCw, AlertTriangle, Gift, Fingerprint, Megaphone } from 'lucide-react';
+import { Facebook, Twitter, Instagram, Home, Shield, Moon, Sun, PlusSquare, MessageCircle, MessageSquare, Menu, LogOut, LogIn, Check, X, XCircle, Search, Compass, Film, Heart, Calculator, Bookmark, Info, MoreHorizontal, MoreVertical, Music, Image, ImageIcon, ImagePlus, Eye, EyeOff, Camera, Upload, Trash2, Plus, ShieldCheck, Sparkles, QrCode, CheckCircle, CheckCircle2, Award, Smile, Volume2, VolumeX, Play, Pause, ChevronUp, ChevronDown, ArrowLeft, ChevronLeft, ChevronRight, UserPlus, UserCheck, Share2, Phone, Mail, Globe, Building2, Store, MapPin, Locate, Navigation, Tag, Filter, ShieldAlert, UserX, Lock, Key, Clock, FileText, FileCheck, Maximize2, Crop, Loader2, Send, BarChart2, Users, Map as MapIcon, Hash, Pencil, Rocket, ExternalLink, Star, Scale, Video, TrendingUp, ClipboardList, Bell, CreditCard, Calendar, Copy, RefreshCw, AlertTriangle, Gift, Fingerprint, Megaphone, Download } from 'lucide-react';
 import toast, { Toaster } from 'react-hot-toast';
 
 if (typeof (toast as any).info !== 'function') {
@@ -446,6 +446,211 @@ export function ReportModal({
           </div>
         </form>
       </div></div>
+  );
+}
+
+export function OfferTokenGeneratorModal({
+  isOpen,
+  onClose,
+  currentUser,
+  savedPosts = [],
+  initialPost = null
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  currentUser: any;
+  savedPosts?: any[];
+  initialPost?: any;
+}) {
+  const [selectedSnapshot, setSelectedSnapshot] = useState<string>('');
+  const [selectedPostLink, setSelectedPostLink] = useState<string>('https://ais-dev-e6txzr4wozaorlknqcnr2z-705640465298.asia-southeast1.run.app/');
+  const [assetValue, setAssetValue] = useState<string>('5000');
+  const [interactionCount, setInteractionCount] = useState<number>(5);
+  const [tokenId] = useState(() => `VB-OFFER-${Math.floor(100000 + Math.random() * 900000)}`);
+
+  useEffect(() => {
+    if (isOpen) {
+      if (initialPost) {
+        if (initialPost.mediaUrl || initialPost.thumbnailUrl) {
+          setSelectedSnapshot(initialPost.mediaUrl || initialPost.thumbnailUrl);
+        }
+        setSelectedPostLink(`https://ais-dev-e6txzr4wozaorlknqcnr2z-705640465298.asia-southeast1.run.app/post/${initialPost.id || 'shared'}`);
+      } else if (savedPosts.length > 0 && !selectedSnapshot) {
+        const first = savedPosts.find(p => p.mediaUrl || p.thumbnailUrl);
+        if (first) {
+          setSelectedSnapshot(first.mediaUrl || first.thumbnailUrl);
+          setSelectedPostLink(`https://ais-dev-e6txzr4wozaorlknqcnr2z-705640465298.asia-southeast1.run.app/post/${first.id || 'shared'}`);
+        }
+      }
+    }
+  }, [isOpen, initialPost, savedPosts]);
+
+  if (!isOpen) return null;
+
+  const numericAsset = parseFloat(assetValue) || 5000;
+  const calculatedDiscount = Math.round((numericAsset * 0.01) + (interactionCount * 10));
+  const qrDataUrl = `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(selectedPostLink)}`;
+
+  return (
+    <div className="fixed inset-0 z-[170] flex items-center justify-center bg-black/85 backdrop-blur-md p-4 overflow-y-auto" onClick={onClose}>
+      <div className="w-full max-w-xl bg-white dark:bg-zinc-950 rounded-3xl shadow-2xl border border-slate-200 dark:border-zinc-800 overflow-hidden my-8" onClick={e => e.stopPropagation()}>
+        <div className="p-4 border-b border-slate-200 dark:border-zinc-800 flex items-center justify-between bg-gradient-to-r from-blue-600 to-indigo-600 text-white">
+          <div className="flex items-center gap-2 font-black text-sm">
+            <Sparkles className="w-5 h-5 text-amber-300" />
+            <span>Vyapar Bridge Verified Offer Token & Discount PDF</span>
+          </div>
+          <button onClick={onClose} className="p-1 hover:bg-white/20 rounded-full text-white cursor-pointer">
+            <XCircle className="w-6 h-6" />
+          </button>
+        </div>
+
+        <div className="p-6 space-y-6 max-h-[80vh] overflow-y-auto">
+          <div>
+            <label className="block text-xs font-black uppercase tracking-wider mb-2 text-black dark:text-zinc-200">
+              1. Select Liked Item Snapshot / Post
+            </label>
+            <div className="grid grid-cols-3 gap-2 mb-3">
+              {savedPosts.filter(p => p.mediaUrl || p.thumbnailUrl).slice(0, 3).map((p, idx) => (
+                <div 
+                  key={p.id || idx}
+                  onClick={() => {
+                    setSelectedSnapshot(p.mediaUrl || p.thumbnailUrl);
+                    setSelectedPostLink(`https://ais-dev-e6txzr4wozaorlknqcnr2z-705640465298.asia-southeast1.run.app/post/${p.id || 'shared'}`);
+                    toast.success('Snapshot & Post link loaded!');
+                  }}
+                  className={cn(
+                    "relative h-24 rounded-xl overflow-hidden border-2 cursor-pointer transition-all",
+                    selectedSnapshot === (p.mediaUrl || p.thumbnailUrl) ? "border-blue-600 ring-2 ring-blue-500/50" : "border-slate-200 dark:border-zinc-800 opacity-70 hover:opacity-100"
+                  )}
+                >
+                  <img src={p.mediaUrl || p.thumbnailUrl} alt="Snapshot" className="w-full h-full object-cover" />
+                  <div className="absolute inset-x-0 bottom-0 bg-black/60 text-white text-[9px] p-1 truncate text-center">
+                    {p.title || 'Product'}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <input 
+              type="file" 
+              accept="image/*"
+              onChange={e => {
+                const file = e.target.files?.[0];
+                if (file) {
+                  const url = URL.createObjectURL(file);
+                  setSelectedSnapshot(url);
+                  toast.success('Custom snapshot uploaded!');
+                }
+              }}
+              className="w-full text-xs file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-blue-50 file:text-blue-700 dark:file:bg-blue-950 dark:file:text-blue-300 hover:file:bg-blue-100 cursor-pointer"
+            />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-bold mb-1.5 text-black dark:text-zinc-200">Asset/Item Estimated Value (₹):</label>
+              <input 
+                type="number"
+                value={assetValue}
+                onChange={e => setAssetValue(e.target.value)}
+                className="w-full p-2.5 rounded-xl border border-slate-200 dark:border-zinc-800 bg-slate-50 dark:bg-zinc-900 text-xs font-bold text-black dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-bold mb-1.5 text-black dark:text-zinc-200">Platform Engagement Count (Likes/Comments):</label>
+              <input 
+                type="number"
+                value={interactionCount}
+                onChange={e => setInteractionCount(parseInt(e.target.value) || 0)}
+                className="w-full p-2.5 rounded-xl border border-slate-200 dark:border-zinc-800 bg-slate-50 dark:bg-zinc-900 text-xs font-bold text-black dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+          </div>
+
+          <div className="bg-slate-50 dark:bg-zinc-900 border-2 border-dashed border-blue-500/40 rounded-2xl p-5 space-y-4 shadow-sm relative">
+            <div className="absolute top-3 right-3 bg-emerald-500 text-white font-black text-[10px] px-2.5 py-1 rounded-full uppercase tracking-wider shadow-sm">
+              Verified Token
+            </div>
+
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 rounded-full bg-blue-600 text-white font-black text-lg flex items-center justify-center shrink-0">
+                VB
+              </div>
+              <div>
+                <h4 className="font-black text-sm text-black dark:text-zinc-100">VYAPAR BRIDGE DIGITAL COMMERCE</h4>
+                <p className="text-[11px] text-black/60 dark:text-zinc-400">Official Engagement Discount & Offer Pass</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 text-xs pt-2 border-t border-slate-200 dark:border-zinc-800">
+              <div>
+                <span className="text-black/60 dark:text-zinc-400 block text-[10px]">TOKEN ID:</span>
+                <strong className="text-blue-600 dark:text-blue-400 font-mono">{tokenId}</strong>
+              </div>
+              <div>
+                <span className="text-black/60 dark:text-zinc-400 block text-[10px]">BUYER MEMBER:</span>
+                <strong className="text-black dark:text-zinc-200">{currentUser?.name || 'Verified Buyer'}</strong>
+              </div>
+              <div>
+                <span className="text-black/60 dark:text-zinc-400 block text-[10px]">ESTIMATED ASSET:</span>
+                <strong className="text-black dark:text-zinc-200">₹{numericAsset.toLocaleString()}</strong>
+              </div>
+              <div>
+                <span className="text-black/60 dark:text-zinc-400 block text-[10px]">CALCULATED DISCOUNT:</span>
+                <strong className="text-emerald-600 font-black text-sm">₹{calculatedDiscount} OFF</strong>
+              </div>
+            </div>
+
+            {selectedSnapshot && (
+              <div className="flex items-center gap-3 bg-white dark:bg-zinc-950 p-2.5 rounded-xl border border-slate-200 dark:border-zinc-800">
+                <img src={selectedSnapshot} alt="Snapshot" className="w-16 h-16 rounded-lg object-cover border" />
+                <div className="flex-1 min-w-0">
+                  <span className="text-[10px] font-bold text-blue-600 uppercase">Selected Item Snapshot</span>
+                  <p className="text-[11px] text-black/80 dark:text-zinc-300 truncate">Verified via Vyapar Bridge Feed & Reels</p>
+                </div>
+              </div>
+            )}
+
+            <div className="bg-white dark:bg-zinc-950 p-4 rounded-xl border border-slate-200 dark:border-zinc-800 flex flex-col items-center text-center space-y-2">
+              <div className="w-32 h-32 bg-white p-1 rounded-lg border shadow-xs flex items-center justify-center">
+                <img src={qrDataUrl} alt="Offer QR" className="w-full h-full object-contain" />
+              </div>
+              <div className="space-y-1 w-full">
+                <span className="text-[10px] text-black/60 dark:text-zinc-400 uppercase font-bold tracking-wider">Seller Direct Verification Link:</span>
+                <input 
+                  type="text" 
+                  readOnly 
+                  value={selectedPostLink} 
+                  className="w-full p-1.5 bg-slate-100 dark:bg-zinc-900 rounded-lg text-[10px] text-blue-600 dark:text-blue-400 font-mono text-center select-all border border-slate-200 dark:border-zinc-800"
+                />
+                <p className="text-[9px] text-black/60 dark:text-zinc-400">Seller can scan this QR code or click/copy the link to view the exact post & catalogue instantly.</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-3 pt-2">
+            <button 
+              type="button" 
+              onClick={onClose} 
+              className="px-4 py-2.5 bg-slate-100 dark:bg-zinc-800 text-black dark:text-zinc-300 font-bold text-xs rounded-xl hover:bg-slate-200 dark:hover:bg-zinc-700 transition-colors cursor-pointer"
+            >
+              Close
+            </button>
+            <button 
+              type="button"
+              onClick={() => {
+                window.print();
+                toast.success('🖨️ Offer Token PDF printed / downloaded successfully!');
+              }}
+              className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl shadow-lg transition-all flex items-center gap-2 cursor-pointer"
+            >
+              <FileText className="w-4 h-4" />
+              <span>Print / Download PDF Offer Token</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1191,6 +1396,7 @@ function ReelCard({
 
   const clickTimerRef = React.useRef<any>(null);
   const lastClickTime = React.useRef(0);
+  const lastTapRef = React.useRef(0);
 
   const handleInteractionClick = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -1203,7 +1409,7 @@ function ReelCard({
         clearTimeout(clickTimerRef.current);
         clickTimerRef.current = null;
       }
-      handleDoubleTap(e);
+      handleDoubleTap();
       lastClickTime.current = 0; // Reset to prevent triple-tap double-trigger
     } else {
       // Potential single tap
@@ -1215,16 +1421,30 @@ function ReelCard({
     }
   };
 
-  const handleDoubleTap = (e: React.MouseEvent) => {
+  const handleTouchEndReel = (e: React.TouchEvent) => {
+    e.stopPropagation();
+    const now = Date.now();
+    const delay = now - lastTapRef.current;
+    if (delay < 350 && delay > 0) {
+      if (clickTimerRef.current) {
+        clearTimeout(clickTimerRef.current);
+        clickTimerRef.current = null;
+      }
+      handleDoubleTap();
+    }
+    lastTapRef.current = now;
+  };
+
+  const handleDoubleTap = () => {
     if (!isLiked) {
       handleLike();
     }
     setShowHeart(true);
     // Haptic feedback if available
     if (window.navigator && window.navigator.vibrate) {
-      window.navigator.vibrate(50);
+      window.navigator.vibrate(60);
     }
-    setTimeout(() => setShowHeart(false), 500);
+    setTimeout(() => setShowHeart(false), 800);
   };
 
   useEffect(() => {
@@ -1619,14 +1839,6 @@ function ReelCard({
 
   return (
     <div className="relative w-full h-full bg-black flex flex-col justify-between select-none overflow-hidden">
-      {/* Top Close Button (Only if displayed in popup modal) */}
-      {onClose && (
-        <div className="absolute top-3 left-3 z-30 pointer-events-auto">
-          <button onClick={onClose} className="p-2 bg-black/50 hover:bg-black/70 backdrop-blur-md rounded-full text-white transition-all cursor-pointer border border-white/10 shadow-lg">
-            <XCircle className="w-5 h-5" />
-          </button>
-        </div>
-      )}
 
       {/* Audio Track for custom music */}
       {reelMusic?.audioUrl && (
@@ -1648,6 +1860,8 @@ function ReelCard({
         <div 
           className="absolute inset-0 z-20 cursor-pointer" 
           onClick={handleInteractionClick}
+          onTouchEnd={handleTouchEndReel}
+          onDoubleClick={handleDoubleTap}
         />
 
         {/* Double Tap Heart Animation */}
@@ -1716,6 +1930,18 @@ function ReelCard({
 
       {/* Right Side Vertical Action Column - Aligned right above the post info */}
       <div className="absolute right-3 bottom-14 z-20 flex flex-col items-center gap-4">
+        {/* Save Button - Moved to Top so it never gets cut off on mobile */}
+        <button 
+          onClick={handleSave}
+          className="flex flex-col items-center gap-1 text-white group cursor-pointer"
+          title="Save to Wall"
+        >
+          <div className="w-11 h-11 rounded-full bg-black/40 hover:bg-black/60 backdrop-blur-md border border-white/15 flex items-center justify-center transition-all group-active:scale-125">
+            <Bookmark className={cn("w-6 h-6", isSaved && "fill-white")} />
+          </div>
+          <span className="text-xs font-semibold drop-shadow-md">{savedCount}</span>
+        </button>
+
         {/* Like Button */}
         <button 
           onClick={handleLike}
@@ -1756,15 +1982,20 @@ function ReelCard({
           <span className="text-xs font-semibold drop-shadow-md">{sharesCount}</span>
         </button>
 
-        {/* Save Button */}
+        {/* Offer Token Button (Replacing old Save position) */}
         <button 
-          onClick={handleSave}
-          className="flex flex-col items-center gap-1 text-white group cursor-pointer"
+          onClick={(e) => {
+            e.stopPropagation();
+            window.dispatchEvent(new CustomEvent('open_offer_token_modal', { detail: { post: reel } }));
+            toast.success('🎁 Offer Token Generator opened with this post snapshot & QR code!');
+          }}
+          className="flex flex-col items-center gap-1 text-pink-400 group cursor-pointer"
+          title="Generate Offer Token & Discount QR Pass"
         >
-          <div className="w-11 h-11 rounded-full bg-black/40 hover:bg-black/60 backdrop-blur-md border border-white/15 flex items-center justify-center transition-all group-active:scale-125">
-            <Bookmark className={cn("w-6 h-6", isSaved && "fill-white")} />
+          <div className="w-11 h-11 rounded-full bg-gradient-to-tr from-blue-600 via-indigo-600 to-purple-600 text-white flex items-center justify-center transition-all group-active:scale-125 shadow-lg shadow-blue-500/40 relative border-2 border-amber-300 transform group-hover:scale-110">
+            <Sparkles className="w-5 h-5 text-amber-300 animate-pulse" />
           </div>
-          <span className="text-xs font-semibold drop-shadow-md">{savedCount}</span>
+          <span className="text-[10px] font-black drop-shadow-md text-amber-300 uppercase tracking-tighter">Offer</span>
         </button>
         
         {/* Enquiry Button */}
@@ -2280,56 +2511,18 @@ function FullScreenFeedViewerModal({
       onTouchEnd={handleTouchEnd}
       onClick={onClose}
     >
-      {/* Top Header Overlay */}
-      <div className="absolute top-4 inset-x-4 sm:inset-x-8 z-40 flex items-center justify-between text-white pointer-events-none">
-        <div className="flex items-center gap-2 bg-black/70 backdrop-blur-md px-4 py-2 rounded-full border border-white/15 pointer-events-auto shadow-2xl">
-          <Sparkles className="w-4 h-4 text-amber-400" />
-          <span className="text-xs font-bold tracking-wider">
-            {currentIndex + 1} / {posts.length}
-          </span>
-          <span className="text-[10px] text-zinc-300 font-medium ml-1 hidden sm:inline">
-            • Slide or Swipe to navigate
-          </span>
-        </div>
-
+      {/* Top Header Overlay - Clean Close Button Only */}
+      <div className="absolute top-3 right-3 sm:top-4 sm:right-6 z-50 pointer-events-auto">
         <button 
           onClick={(e) => { e.stopPropagation(); onClose(); }}
-          className="p-2.5 bg-black/70 hover:bg-black/90 rounded-full text-white backdrop-blur-md border border-white/20 transition-all pointer-events-auto cursor-pointer hover:scale-110 active:scale-95 shadow-2xl"
+          className="w-10 h-10 sm:w-11 sm:h-11 bg-black/60 hover:bg-black/80 rounded-full text-white flex items-center justify-center backdrop-blur-md border border-white/25 transition-all cursor-pointer hover:scale-110 active:scale-95 shadow-2xl"
           title="Close Full Screen"
         >
-          <X className="w-6 h-6" />
+          <X className="w-5 h-5 sm:w-6 sm:h-6" />
         </button>
       </div>
 
-      {/* Left Slider Arrow Button */}
-      <div className="absolute left-3 sm:left-6 top-1/2 -translate-y-1/2 z-40 pointer-events-none">
-        <button 
-          onClick={(e) => { e.stopPropagation(); goToPrev(); }}
-          disabled={currentIndex === 0}
-          className={cn(
-            "w-12 h-12 rounded-full bg-black/70 hover:bg-black/90 text-white flex items-center justify-center backdrop-blur-md border border-white/20 pointer-events-auto transition-all shadow-2xl cursor-pointer hover:scale-110 active:scale-95",
-            currentIndex === 0 ? "opacity-20 cursor-not-allowed pointer-events-none" : "opacity-100"
-          )}
-          title="Previous Slide"
-        >
-          <ChevronLeft className="w-8 h-8" />
-        </button>
-      </div>
 
-      {/* Right Slider Arrow Button */}
-      <div className="absolute right-3 sm:right-6 top-1/2 -translate-y-1/2 z-40 pointer-events-none">
-        <button 
-          onClick={(e) => { e.stopPropagation(); goToNext(); }}
-          disabled={currentIndex === posts.length - 1}
-          className={cn(
-            "w-12 h-12 rounded-full bg-black/70 hover:bg-black/90 text-white flex items-center justify-center backdrop-blur-md border border-white/20 pointer-events-auto transition-all shadow-2xl cursor-pointer hover:scale-110 active:scale-95",
-            currentIndex === posts.length - 1 ? "opacity-20 cursor-not-allowed pointer-events-none" : "opacity-100"
-          )}
-          title="Next Slide"
-        >
-          <ChevronRight className="w-8 h-8" />
-        </button>
-      </div>
 
       {/* Center Reel/Post Display */}
       <div onClick={e => e.stopPropagation()} className="relative z-10 w-full max-w-[420px] h-[90vh] flex items-center justify-center">
@@ -3243,12 +3436,9 @@ function PostItem({
   };
 
   const isPostOwnerOrAdmin = Boolean(
-    !currentUser ||
-    !(post?.userId || post?.user?.id) ||
-    String(currentUser?.id) === String(post?.userId || post?.user?.id) ||
-    currentUser?.role?.toLowerCase() === 'admin' ||
-    currentUser?.role === 'Master Admin' ||
-    currentUser?.isAdmin
+    currentUser?.id && (
+      String(currentUser?.id) === String(post?.userId || post?.user?.id)
+    )
   );
 
   const handleNotInterestedPost = async () => {
@@ -3585,10 +3775,18 @@ function PostItem({
               )}
            </div>
         </div>
-        <div className="relative">
-          <button onClick={() => setShowOptions(!showOptions)} className="text-black dark:text-zinc-100 hover:text-black/70 dark:hover:text-zinc-300 p-1">
-            <MoreHorizontal className="w-5 h-5" />
+        <div className="flex items-center gap-2">
+          <button 
+            onClick={handleSave} 
+            className="p-1.5 rounded-full bg-black/5 dark:bg-zinc-800 hover:bg-black/10 dark:hover:bg-zinc-700 text-black dark:text-zinc-100 transition-colors cursor-pointer"
+            title={isSaved ? "Saved to Wall" : "Save to Wall"}
+          >
+            <Bookmark className={cn("w-4 h-4", isSaved && "fill-black dark:fill-white")} />
           </button>
+          <div className="relative">
+            <button onClick={() => setShowOptions(!showOptions)} className="text-black dark:text-zinc-100 hover:text-black/70 dark:hover:text-zinc-300 p-1">
+              <MoreHorizontal className="w-5 h-5" />
+            </button>
           {showOptions && (
             <div className="absolute right-0 mt-2 w-52 bg-white dark:bg-zinc-900 rounded-xl shadow-2xl z-20 border border-slate-200 dark:border-zinc-800 overflow-hidden text-sm">
               {isPostOwnerOrAdmin ? (
@@ -3633,18 +3831,19 @@ function PostItem({
               </button>
             </div>
           )}
-
-          {/* Report Modal */}
-          <ReportModal
-            isOpen={isReportModalOpen}
-            onClose={() => setIsReportModalOpen(false)}
-            currentUser={currentUser}
-            targetType="post"
-            targetId={post.id}
-            targetName={post.user?.name}
-          />
+          </div>
         </div>
       </div>
+
+      {/* Report Modal */}
+      <ReportModal
+        isOpen={isReportModalOpen}
+        onClose={() => setIsReportModalOpen(false)}
+        currentUser={currentUser}
+        targetType="post"
+        targetId={post.id}
+        targetName={post.user?.name}
+      />
       
       {/* Post Image/Video (Full Width) */}
       {mediaSrc ? (
@@ -3700,19 +3899,19 @@ function PostItem({
       
       {/* Post Actions */}
       <div className="p-3">
-        <div className="flex justify-between items-center mb-3">
-          <div className="flex gap-4">
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
             <button onClick={handleLike} className="flex items-center gap-1.5 text-black dark:text-zinc-100 hover:text-black/70 dark:hover:text-zinc-300 transition-colors duration-700">
-              <Heart className={cn("w-6 h-6 transition-all duration-700 active:scale-95", isLiked ? "text-red-500 fill-red-500" : "")} />
-              {likesCount > 0 && <span className="text-sm font-semibold">{likesCount}</span>}
+              <Heart className={cn("w-5 h-5 sm:w-6 sm:h-6 transition-all duration-700 active:scale-95", isLiked ? "text-red-500 fill-red-500" : "")} />
+              {likesCount > 0 && <span className="text-xs sm:text-sm font-semibold">{likesCount}</span>}
             </button>
             <button onClick={() => setShowComments(!showComments)} className="flex items-center gap-1.5 text-black dark:text-zinc-100 hover:text-black/70 dark:hover:text-zinc-300 active:scale-95 transition-all duration-700">
-              <MessageCircle className="w-6 h-6" />
-              {commentsCount > 0 && <span className="text-sm font-semibold">{commentsCount}</span>}
+              <MessageCircle className="w-5 h-5 sm:w-6 sm:h-6" />
+              {commentsCount > 0 && <span className="text-xs sm:text-sm font-semibold">{commentsCount}</span>}
             </button>
             <button onClick={() => setIsShareModalOpen(true)} className="flex items-center gap-1.5 text-black dark:text-zinc-100 hover:text-black/70 dark:hover:text-zinc-300 active:scale-95 transition-all duration-700">
-              <svg aria-label="Share Post" className="w-6 h-6" fill="currentColor" height="24" role="img" viewBox="0 0 24 24" width="24"><line fill="none" stroke="currentColor" strokeLinejoin="round" strokeWidth="2" x1="22" x2="9.218" y1="3" y2="10.083"></line><polygon fill="none" points="11.698 20.334 22 3.001 2 3.001 9.218 10.084 11.698 20.334" stroke="currentColor" strokeLinejoin="round" strokeWidth="2"></polygon></svg>
-              {sharesCount > 0 && <span className="text-sm font-semibold">{sharesCount}</span>}
+              <svg aria-label="Share Post" className="w-5 h-5 sm:w-6 sm:h-6" fill="currentColor" height="24" role="img" viewBox="0 0 24 24" width="24"><line fill="none" stroke="currentColor" strokeLinejoin="round" strokeWidth="2" x1="22" x2="9.218" y1="3" y2="10.083"></line><polygon fill="none" points="11.698 20.334 22 3.001 2 3.001 9.218 10.084 11.698 20.334" stroke="currentColor" strokeLinejoin="round" strokeWidth="2"></polygon></svg>
+              {sharesCount > 0 && <span className="text-xs sm:text-sm font-semibold">{sharesCount}</span>}
             </button>
             <button 
               onClick={(e) => { 
@@ -3735,9 +3934,9 @@ function PostItem({
 
                 navigate('/chat'); 
               }} 
-              className="text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300 active:scale-95 transition-all duration-700 flex items-center gap-1 bg-emerald-50 dark:bg-emerald-950/60 px-2.5 py-0.5 rounded-full border border-emerald-200 dark:border-emerald-700/60"
+              className="text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300 active:scale-95 transition-all duration-700 flex items-center gap-1 bg-emerald-50 dark:bg-emerald-950/60 px-2 py-0.5 rounded-full border border-emerald-200 dark:border-emerald-700/60"
             >
-              <MessageSquare className="w-4 h-4" />
+              <MessageSquare className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
               <span className="text-[10px] font-black uppercase">Inquiry</span>
             </button>
 
@@ -3749,17 +3948,17 @@ function PostItem({
                   detail: { post, user: currentUser } 
                 }));
               }}
-              className="relative flex items-center gap-1.5 px-2.5 sm:px-3 py-0.5 sm:py-1 rounded-full bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 hover:from-amber-300 hover:to-yellow-300 text-slate-950 font-black text-xs shadow-md hover:shadow-amber-500/50 border border-amber-300/80 transition-all transform hover:scale-105 active:scale-95 cursor-pointer group shrink-0"
+              className="relative flex items-center gap-1 px-2 py-0.5 sm:py-1 rounded-full bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 hover:from-amber-300 hover:to-yellow-300 text-slate-950 font-black text-xs shadow-md hover:shadow-amber-500/50 border border-amber-300/80 transition-all transform hover:scale-105 active:scale-95 cursor-pointer group shrink-0"
               title="Boost Your Business & Reels across India"
             >
-              <span className="relative flex h-5 w-5 items-center justify-center rounded-full bg-slate-950 text-amber-400 shadow-inner group-hover:rotate-12 transition-transform shrink-0">
-                <Megaphone className="w-3 h-3 animate-bounce" />
+              <span className="relative flex h-4 w-4 sm:h-5 sm:w-5 items-center justify-center rounded-full bg-slate-950 text-amber-400 shadow-inner group-hover:rotate-12 transition-transform shrink-0">
+                <Megaphone className="w-2.5 h-2.5 sm:w-3 sm:h-3 animate-bounce" />
                 <span className="absolute -top-0.5 -right-0.5 flex h-2 w-2">
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
                   <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
                 </span>
               </span>
-              <span className="text-[10px] sm:text-[11px] font-black uppercase tracking-tight whitespace-nowrap">Boost Business</span>
+              <span className="text-[10px] font-black uppercase tracking-tight whitespace-nowrap">Boost</span>
             </button>
             {currentUser?.role === 'customer' && (post?.user?.role === 'dealer' || post?.user?.role === 'factory') && (
               <button
@@ -3771,26 +3970,26 @@ function PostItem({
                    }
                    setIsReqModalOpen(true);
                  }}
-                 className="text-amber-600 dark:text-amber-400 hover:text-amber-700 dark:hover:text-amber-300 active:scale-95 transition-all duration-700 flex items-center gap-1 bg-amber-50 dark:bg-amber-950/60 px-2.5 py-0.5 rounded-full border border-amber-200 dark:border-amber-700/60"
+                 className="text-amber-600 dark:text-amber-400 hover:text-amber-700 dark:hover:text-amber-300 active:scale-95 transition-all duration-700 flex items-center gap-1 bg-amber-50 dark:bg-amber-950/60 px-2 py-0.5 rounded-full border border-amber-200 dark:border-amber-700/60"
                  title="Send Requirements to Company"
               >
-                <ClipboardList className="w-4 h-4" />
+                <ClipboardList className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
                 <span className="text-[10px] font-black uppercase">Send Req</span>
               </button>
             )}
+            <button 
+              onClick={(e) => {
+                e.stopPropagation();
+                window.dispatchEvent(new CustomEvent('open_offer_token_modal', { detail: { post } }));
+                toast.success('🎁 Offer Token Generator opened with this post snapshot & QR code!');
+              }}
+              className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 text-white transition-all text-xs font-bold cursor-pointer border border-blue-400/80 active:scale-95 shadow-md shrink-0"
+              title="Generate Offer Token & Discount QR Pass"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-amber-300 animate-pulse" />
+              <span className="text-[10px] font-black uppercase">Offer</span>
+            </button>
           </div>
-          <button 
-            onClick={() => setShowStatsModal(true)} 
-            className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 dark:text-blue-400 transition-all text-xs font-bold cursor-pointer border border-blue-500/30 active:scale-95 shadow-xs"
-            title="View detailed post insights & activity log"
-          >
-            <BarChart2 className="w-4 h-4 text-blue-500" />
-            <span>Insights</span>
-          </button>
-          <button onClick={handleSave} className="flex items-center gap-1.5 text-black dark:text-zinc-100 hover:text-black/70 dark:hover:text-zinc-300 transition-colors duration-700">
-            <Bookmark className={cn("w-6 h-6 transition-all duration-700 active:scale-95", isSaved ? "text-black dark:text-zinc-50 fill-slate-900 dark:fill-white" : "")} />
-            {savedCount > 0 && <span className="font-semibold">{savedCount}</span>}
-          </button>
         </div>
         
         <div 
@@ -4301,6 +4500,10 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
   const [currentAdIndex, setCurrentAdIndex] = useState(0);
   const [adSlideDirection, setAdSlideDirection] = useState<number>(1);
   const [isBrandAdDismissed, setIsBrandAdDismissed] = useState(false);
+
+  // Facebook-style Header User Live Search states
+  const [headerSearchQuery, setHeaderSearchQuery] = useState('');
+  const [isHeaderSearchOpen, setIsHeaderSearchOpen] = useState(false);
 
   // Facebook-style Live Upload Progress states
   const [uploadProgress, setUploadProgress] = useState<number>(0);
@@ -4976,7 +5179,9 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
         <div 
           onClick={() => {
             if (myReels.length > 0 && !isUploadingProgressVisible) {
-              setActiveStoryPosts(myReels);
+              const otherReels = mediaPostsForStories.filter(p => !myReels.some(m => String(m.id) === String(p.id)));
+              const combined = [...myReels, ...otherReels];
+              setActiveStoryPosts(combined);
               setActiveStoryIndex(0);
             } else {
               reelFileInputRef.current?.click();
@@ -5030,7 +5235,13 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
           <div 
             key={group.userId || `group-${groupIdx}`} 
             onClick={() => {
-              setActiveStoryPosts(group.reels);
+              const clickedReels = group.reels;
+              const otherReels = mediaPostsForStories.filter(p => {
+                const pUId = String(p.userId || p.user?.id || p.userName || p.user?.name || '').trim();
+                return pUId !== String(group.userId);
+              });
+              const combined = [...clickedReels, ...otherReels];
+              setActiveStoryPosts(combined);
               setActiveStoryIndex(0);
             }}
             className="flex flex-col items-center gap-1 shrink-0 cursor-pointer group"
@@ -10736,6 +10947,9 @@ function AuthPage({ onLogin }: { onLogin: (user: any) => void }) {
       // INSTANT REGISTRATION FLOW: Save to local storage & log in immediately (0ms UI lag)
       localStorage.setItem('user', JSON.stringify(userProfile));
       localStorage.setItem('Vyapar Bridge_user', JSON.stringify(userProfile));
+      if (userProfile.id) localStorage.setItem('vyapar_user_id', String(userProfile.id));
+      if (userProfile.fingerprintId) localStorage.setItem('vyapar_user_fingerprint', userProfile.fingerprintId);
+
       toast.success(`🎉 Registered successfully as ${selectedRole === 'factory' ? 'Company / Factory' : (selectedRole === 'customer' ? 'Local Customer' : 'Dealer / Distributor')}!`);
       onLogin(userProfile);
       setLoading(false);
@@ -10770,6 +10984,9 @@ function AuthPage({ onLogin }: { onLogin: (user: any) => void }) {
       if (data && data.id) {
         localStorage.setItem('user', JSON.stringify(data));
         localStorage.setItem('Vyapar Bridge_user', JSON.stringify(data));
+        localStorage.setItem('vyapar_user_id', String(data.id));
+        if (data.fingerprintId) localStorage.setItem('vyapar_user_fingerprint', data.fingerprintId);
+
         toast.success(`Welcome back, ${data.name || cleanUsername}!`);
         onLogin(data);
         setLoading(false);
@@ -10784,6 +11001,9 @@ function AuthPage({ onLogin }: { onLogin: (user: any) => void }) {
     if (authRes.success && authRes.user) {
       localStorage.setItem('user', JSON.stringify(authRes.user));
       localStorage.setItem('Vyapar Bridge_user', JSON.stringify(authRes.user));
+      localStorage.setItem('vyapar_user_id', String(authRes.user.id));
+      if (authRes.user.fingerprintId) localStorage.setItem('vyapar_user_fingerprint', authRes.user.fingerprintId);
+
       toast.success(`Welcome back, ${authRes.user.name || cleanUsername}!`);
       onLogin(authRes.user);
     } else {
@@ -11669,7 +11889,7 @@ function RoadmapPage({ user, userLocation }: { user?: any; userLocation?: { lat:
 
     // 2. Industry & Subcategory Filter
     if (selectedIndustryId !== 'all') {
-      const catStr = `${dealer.category || ''} ${dealer.businessType || ''} ${dealer.name || ''} ${dealer.companyName || ''}`;
+      const catStr = `${dealer.category || ''} ${dealer.subCategory || ''} ${dealer.businessType || ''}`;
       const isMatch = matchIndustryOrSubcategory(selectedIndustryId, selectedSubcategoryId, catStr);
       if (!isMatch) return false;
     }
@@ -11803,17 +12023,10 @@ function RoadmapPage({ user, userLocation }: { user?: any; userLocation?: { lat:
                     </div>
                   </div>
 
-                  {dist !== null && (
-                    <div className="mb-3 flex items-center gap-1.5 bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 rounded-xl text-[11px] font-bold text-emerald-700 dark:text-emerald-400">
-                      <MapPin className="w-3.5 h-3.5 text-emerald-600" />
-                      <span>{dist <= 1 ? 'Within 1 KM' : `${dist.toFixed(1)} KM away`}</span>
-                      <span className="text-[9px] bg-emerald-500/20 px-1.5 py-0.2 rounded font-black ml-auto">
-                        {dist <= 100 ? '📍 Nearby Partner' : '🇮🇳 Nationwide'}
-                      </span>
-                    </div>
-                  )}
+                  {/* Distance calculation badge removed per user request to avoid misleading distance numbers, showing pure address/city */}
 
                   <div className="flex flex-col gap-2 mb-6">
+
                     <div className="flex items-center gap-2.5 text-xs text-black/80 dark:text-zinc-400 font-bold uppercase tracking-wider">
                       <div className="p-1.5 bg-slate-50 dark:bg-zinc-900 rounded-lg shrink-0">
                         <MapPin className="w-3.5 h-3.5 text-amber-500" />
@@ -14557,7 +14770,7 @@ function ProfileSettingsDrawer({
             <p className="text-xs text-black/70 dark:text-zinc-400 leading-relaxed">
               Are you sure you want to permanently delete your account <strong className="text-black dark:text-zinc-100 font-bold">({user?.name || 'User'})</strong>?
               <br /><br />
-              This will <span className="text-red-600 dark:text-red-400 font-bold">permanently erase</span> all your uploaded posts, reels, products, catalog designs, profile listings, and chat inquiries from Firebase and server. This action <span className="underline font-semibold">cannot be undone</span>.
+              This will <span className="text-red-600 dark:text-red-400 font-bold">permanently erase</span> all your uploaded posts, reels, products, catalog designs, profile listings, and chat inquiries from Vyapar Database. This action <span className="underline font-semibold">cannot be undone</span>.
             </p>
           </div>
 
@@ -14659,19 +14872,30 @@ function ProfilePage({
   const { userId } = useParams<{ userId?: string }>();
   const navigate = useNavigate();
 
+  const [profileUser, setProfileUser] = useState<any>(currentUser);
+  const [loadingUser, setLoadingUser] = useState(false);
+
   const isOwnProfile = !userId || 
     (Boolean(currentUser?.id) && String(userId) === String(currentUser.id)) || 
     (Boolean(userId) && Boolean(currentUser?.name) && decodeURIComponent(String(userId)).trim().toLowerCase() === String(currentUser?.name).trim().toLowerCase()) ||
-    (Boolean(userId) && Boolean(currentUser?.username) && decodeURIComponent(String(userId)).trim().toLowerCase() === String(currentUser?.username).trim().toLowerCase());
+    (Boolean(userId) && Boolean(currentUser?.username) && decodeURIComponent(String(userId)).trim().toLowerCase() === String(currentUser?.username).trim().toLowerCase()) ||
+    (Boolean(profileUser?.id) && Boolean(currentUser?.id) && String(profileUser.id) === String(currentUser.id));
 
-  const [profileUser, setProfileUser] = useState<any>(currentUser);
-  const userToDisplay = profileUser;
-  const [loadingUser, setLoadingUser] = useState(false);
+  const userToDisplay = profileUser || currentUser;
 
-  const targetIdentifier = userId ? decodeURIComponent(userId) : (currentUser?.id || currentUser?.name || '');
+  const targetIdentifier = userId ? decodeURIComponent(userId) : (profileUser?.id || currentUser?.id || currentUser?.name || '');
   const [isFollowing, setIsFollowing] = useState(() => isUserFollowed(targetIdentifier));
   const [followersCount, setFollowersCount] = useState(0);
   const [followingCount, setFollowingCount] = useState(0);
+  const [usersList, setUsersList] = useState<any[]>([]);
+
+  useEffect(() => {
+    safeFetch('/api/users')
+      .then(data => {
+        if (Array.isArray(data)) setUsersList(data);
+      })
+      .catch(() => {});
+  }, []);
 
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [isVerifyModalOpen, setIsVerifyModalOpen] = useState(false);
@@ -14697,6 +14921,7 @@ function ProfilePage({
   const [activeProfilePostIndex, setActiveProfilePostIndex] = useState<number | null>(null);
   const [activeSavedPostIndex, setActiveSavedPostIndex] = useState<number | null>(null);
   const [isProfileCreateOpen, setIsProfileCreateOpen] = useState(false);
+  const [isOfferTokenModalOpen, setIsOfferTokenModalOpen] = useState(false);
   const [postTitle, setPostTitle] = useState('');
   const [postContent, setPostContent] = useState('');
   const [postHashtags, setPostHashtags] = useState('');
@@ -14705,6 +14930,90 @@ function ProfilePage({
   const [isPublishingPost, setIsPublishingPost] = useState(false);
   const [isSuggestingProfileTags, setIsSuggestingProfileTags] = useState(false);
   const profileFileInputRef = React.useRef<HTMLInputElement>(null);
+
+  const [userCatalogues, setUserCatalogues] = useState<any[]>(() => {
+    try {
+      const saved = localStorage.getItem(`vyapar_catalogues_${targetIdentifier}`);
+      return saved ? JSON.parse(saved) : (userToDisplay?.catalogues || []);
+    } catch (e) {
+      return userToDisplay?.catalogues || [];
+    }
+  });
+  const [isCatalogueCreateOpen, setIsCatalogueCreateOpen] = useState(false);
+  const [catTitle, setCatTitle] = useState('');
+  const [catCategory, setCatCategory] = useState('Vitrified Tiles');
+  const [catUploadType, setCatUploadType] = useState<'pdf' | 'images'>('pdf');
+  const [catFile, setCatFile] = useState<File | null>(null);
+  const [catFilePreview, setCatFilePreview] = useState<string | null>(null);
+  const [isPublishingCat, setIsPublishingCat] = useState(false);
+  const [isEngagementModalOpen, setIsEngagementModalOpen] = useState(false);
+  const catalogueFileInputRef = React.useRef<HTMLInputElement>(null);
+
+  const handlePublishCatalogue = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!catTitle.trim() && !catFile) {
+      toast.error('Please enter a catalogue name and select a file');
+      return;
+    }
+    setIsPublishingCat(true);
+    try {
+      let fileUrl = catFilePreview || 'https://images.unsplash.com/photo-1581091226825-a6a2a5aee158?auto=format&fit=crop&q=80&w=800';
+      if (catFile) {
+        fileUrl = await fileToDataURL(catFile);
+      }
+      const newCat = {
+        id: 'cat_' + Date.now(),
+        title: catTitle,
+        category: catCategory,
+        fileUrl,
+        fileType: catUploadType === 'pdf' ? 'pdf' : 'image',
+        createdAt: new Date().toISOString(),
+        userId: currentUser?.id || targetIdentifier,
+        userName: currentUser?.name || 'User'
+      };
+      const updatedCats = [newCat, ...userCatalogues];
+      setUserCatalogues(updatedCats);
+      localStorage.setItem(`vyapar_catalogues_${currentUser?.id || targetIdentifier}`, JSON.stringify(updatedCats));
+
+      try {
+        await fetch(`/api/users/${currentUser?.id || targetIdentifier}/catalogues`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(newCat)
+        });
+      } catch (err) {}
+
+      toast.success('✨ Product Catalogue uploaded successfully!');
+      setCatTitle('');
+      setCatCategory('Vitrified Tiles');
+      setCatFile(null);
+      setCatFilePreview(null);
+      setIsCatalogueCreateOpen(false);
+    } catch (err) {
+      toast.error('Failed to upload catalogue');
+    } finally {
+      setIsPublishingCat(false);
+    }
+  };
+
+  const handleDeleteCatalogue = async (catId: string) => {
+    if (!window.confirm('Are you sure you want to delete this catalogue?')) return;
+    try {
+      const updatedCats = userCatalogues.filter((c: any) => c.id !== catId);
+      setUserCatalogues(updatedCats);
+      localStorage.setItem(`vyapar_catalogues_${currentUser?.id || targetIdentifier}`, JSON.stringify(updatedCats));
+
+      try {
+        await fetch(`/api/users/${currentUser?.id || targetIdentifier}/catalogues/${catId}`, {
+          method: 'DELETE'
+        });
+      } catch (err) {}
+
+      toast.success('Catalogue deleted successfully');
+    } catch (err) {
+      toast.error('Failed to delete catalogue');
+    }
+  };
 
   const handlePublishFromProfile = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -15481,9 +15790,58 @@ function ProfilePage({
                   </>
                 )}
                 
-
+                <button 
+                  onClick={() => setIsEngagementModalOpen(true)}
+                  className="font-semibold px-4 py-2 rounded-xl text-sm transition-colors border flex items-center gap-2 cursor-pointer bg-amber-50 dark:bg-amber-950/40 hover:bg-amber-100 dark:hover:bg-amber-900/50 border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300 shadow-xs"
+                >
+                  <TrendingUp className="w-4 h-4 text-amber-500" />
+                  <span>Profile Engagement</span>
+                </button>
               </div>
             </div>
+
+            {/* Profile Engagement Modal */}
+            {isEngagementModalOpen && (
+              <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200" onClick={() => setIsEngagementModalOpen(false)}>
+                <div className="bg-white dark:bg-zinc-950 border border-slate-200 dark:border-zinc-800 rounded-3xl p-6 max-w-md w-full shadow-2xl relative text-black dark:text-zinc-50" onClick={e => e.stopPropagation()}>
+                  <div className="flex items-center justify-between mb-4 pb-3 border-b border-slate-100 dark:border-zinc-800">
+                    <div className="flex items-center gap-2">
+                      <div className="p-2 rounded-xl bg-amber-100 dark:bg-amber-950 text-amber-600">
+                        <TrendingUp className="w-5 h-5" />
+                      </div>
+                      <h3 className="font-black text-lg">Profile Engagement & Analytics</h3>
+                    </div>
+                    <button onClick={() => setIsEngagementModalOpen(false)} className="p-1.5 rounded-full hover:bg-slate-100 dark:hover:bg-zinc-800 cursor-pointer">
+                      <X className="w-5 h-5" />
+                    </button>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="p-4 rounded-2xl bg-slate-50 dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800">
+                        <span className="text-xs text-black/70 dark:text-zinc-400 font-semibold">Total Followers</span>
+                        <p className="text-2xl font-black text-blue-600 mt-1">{followersCount.toLocaleString()}</p>
+                      </div>
+                      <div className="p-4 rounded-2xl bg-slate-50 dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800">
+                        <span className="text-xs text-black/70 dark:text-zinc-400 font-semibold">Wall Posts</span>
+                        <p className="text-2xl font-black text-emerald-600 mt-1">{userPosts.length}</p>
+                      </div>
+                    </div>
+
+                    {userToDisplay.role !== 'customer' && (
+                      <UserAnalyticsCard userId={profileUser?.id || currentUser?.id || ''} />
+                    )}
+
+                    <div className="p-4 rounded-2xl bg-blue-50/50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-900/50 text-xs text-black/80 dark:text-zinc-300">
+                      <p className="font-bold flex items-center gap-1.5 text-blue-700 dark:text-blue-400 mb-1">
+                        <Sparkles className="w-4 h-4" /> Real-time Firebase Mirroring Active
+                      </p>
+                      Engagement stats update instantly across B2B feeds and dealer directories when visitors interact with your profile or catalogues.
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
             
             
             {/* Vyapar Bridge Verified B2B Banner Card */}
@@ -15539,11 +15897,7 @@ function ProfilePage({
                 )}
               </div>
             )}
-            <div className="flex gap-6 mb-3 text-black dark:text-zinc-100">
-              <span className="text-base"><span className="font-semibold">{userPosts.length}</span> posts</span>
-              <span className="text-base"><span className="font-semibold">{followersCount.toLocaleString()}</span> followers</span>
-              <span className="text-base"><span className="font-semibold">{followingCount.toLocaleString()}</span> following</span>
-            </div>
+
             
             <div className="text-black dark:text-zinc-100">
               {/* Categories Display - Hidden for Customers */}
@@ -15737,24 +16091,162 @@ function ProfilePage({
         </div>
       )}
 
+      {/* Facebook-Style Followers (Only on own profile) & Highlights Section */}
+      <div className="space-y-4 mb-6">
+        {/* Followers Section - Only on own profile */}
+        {isOwnProfile && (
+          <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-2xl p-4 shadow-sm">
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <h3 className="font-black text-sm text-black dark:text-zinc-100 flex items-center gap-1.5">
+                  <Users className="w-4 h-4 text-blue-500" />
+                  <span>Followers</span>
+                  <span className="text-xs bg-blue-50 dark:bg-blue-950/60 text-blue-600 px-2 py-0.5 rounded-full font-bold">
+                    {usersList?.length || followersCount}
+                  </span>
+                </h3>
+                <p className="text-[11px] text-black/70 dark:text-zinc-400">Connected members & trading partners</p>
+              </div>
+              <span className="text-xs font-bold text-blue-600 hover:underline cursor-pointer">
+                See all
+              </span>
+            </div>
+
+            <div className="grid grid-cols-4 sm:grid-cols-6 gap-3">
+              {usersList && usersList.length > 0 ? (
+                usersList.map((u: any) => (
+                  <div 
+                    key={u.id || Math.random()} 
+                    onClick={() => {
+                      setProfileUser(u);
+                      navigate(`/profile/${u.id || encodeURIComponent(u.name || u.username)}`);
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }} 
+                    className="flex flex-col items-center text-center group cursor-pointer"
+                  >
+                    <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-full overflow-hidden border-2 border-blue-500/80 p-0.5 shadow-sm group-hover:scale-105 transition-transform bg-slate-100 dark:bg-zinc-800 flex items-center justify-center">
+                      {u.avatar ? (
+                        <img src={u.avatar} alt={u.name} className="w-full h-full object-cover rounded-full" />
+                      ) : (
+                        <span className="font-bold text-xs text-blue-600">{(u.name || u.username || 'U').charAt(0)}</span>
+                      )}
+                    </div>
+                    <span className="text-[11px] font-bold text-black dark:text-zinc-200 mt-1.5 truncate w-full">{u.name || u.username}</span>
+                    <span className="text-[9px] text-black/70 dark:text-zinc-400 capitalize">{u.role || 'Member'}</span>
+                  </div>
+                ))
+              ) : (
+                <div className="col-span-full text-center py-4 text-xs text-slate-400">No followers connected yet.</div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Highlights Section */}
+        <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-2xl p-4 shadow-sm">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <h3 className="font-black text-sm text-black dark:text-zinc-100 flex items-center gap-1.5">
+                <Sparkles className="w-4 h-4 text-amber-500" />
+                <span>Highlights & Stories</span>
+              </h3>
+              <p className="text-[11px] text-black/70 dark:text-zinc-400">Featured product collections & showroom tours</p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3 overflow-x-auto pb-1 scrollbar-none">
+            {isOwnProfile && (
+              <div 
+                onClick={() => setIsProfileCreateOpen(true)}
+                className="flex flex-col items-center shrink-0 cursor-pointer group"
+              >
+                <div className="w-16 h-16 rounded-full border-2 border-dashed border-amber-500 flex items-center justify-center bg-amber-50 dark:bg-amber-950/40 text-amber-600 group-hover:scale-105 transition-transform">
+                  <Plus className="w-6 h-6" />
+                </div>
+                <span className="text-[11px] font-bold text-black dark:text-zinc-300 mt-1">New Story</span>
+              </div>
+            )}
+
+            {userPosts && userPosts.filter((p: any) => p.mediaUrl || p.thumbnailUrl).length > 0 ? (
+              userPosts.filter((p: any) => p.mediaUrl || p.thumbnailUrl).map((p: any, i: number) => {
+                const actualIndex = userPosts.findIndex((item: any) => item.id === p.id);
+                return (
+                  <div 
+                    key={p.id || i} 
+                    onClick={() => setActiveProfilePostIndex(actualIndex >= 0 ? actualIndex : i)}
+                    className="flex flex-col items-center shrink-0 cursor-pointer group"
+                  >
+                    <div className="w-16 h-16 rounded-full p-0.5 bg-gradient-to-tr from-amber-500 via-pink-500 to-blue-500 shadow-sm group-hover:scale-105 transition-transform">
+                      <div className="w-full h-full rounded-full overflow-hidden border-2 border-white dark:border-zinc-900">
+                        <img src={p.mediaUrl || p.thumbnailUrl} alt={p.title || 'Highlight'} className="w-full h-full object-cover" />
+                      </div>
+                    </div>
+                    <span className="text-[11px] font-bold text-black dark:text-zinc-300 mt-1 truncate w-16 text-center">{p.title || p.caption || 'Collection'}</span>
+                  </div>
+                );
+              })
+            ) : (
+              <div className="text-xs text-slate-400 py-2">No highlight stories published yet.</div>
+            )}
+          </div>
+        </div>
+
+        {/* Quick Action Triggers (Post, Reel, Catalogues) - Only on own profile */}
+        {isOwnProfile && (
+          <div className="grid grid-cols-3 gap-2.5">
+            <button 
+              onClick={() => { setActiveTab('posts'); setIsProfileCreateOpen(true); }}
+              className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 hover:border-blue-500 p-3 rounded-2xl flex items-center justify-center gap-2 font-bold text-xs text-black dark:text-zinc-100 shadow-xs transition-all cursor-pointer"
+            >
+              <Compass className="w-4 h-4 text-blue-500" />
+              <span>Create Post</span>
+            </button>
+            <button 
+              onClick={() => { setActiveTab('posts'); setIsProfileCreateOpen(true); }}
+              className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 hover:border-pink-500 p-3 rounded-2xl flex items-center justify-center gap-2 font-bold text-xs text-black dark:text-zinc-100 shadow-xs transition-all cursor-pointer"
+            >
+              <Film className="w-4 h-4 text-pink-500" />
+              <span>Upload Reel</span>
+            </button>
+            <button 
+              onClick={() => setActiveTab('catalogues')}
+              className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 hover:border-emerald-500 p-3 rounded-2xl flex items-center justify-center gap-2 font-bold text-xs text-black dark:text-zinc-100 shadow-xs transition-all cursor-pointer"
+            >
+              <FileText className="w-4 h-4 text-emerald-500" />
+              <span>Add PDF/Catalog</span>
+            </button>
+          </div>
+        )}
+      </div>
+
       {/* Tabs Navigation Bar */}
-      <div className="border-t border-slate-200 dark:border-zinc-800 flex justify-center gap-12 mb-6 text-xs uppercase font-semibold tracking-wider">
+      <div className="border-t border-slate-200 dark:border-zinc-800 flex justify-center gap-8 sm:gap-12 mb-6 text-xs uppercase font-semibold tracking-wider overflow-x-auto">
         <button 
           onClick={() => setActiveTab('posts')}
           className={cn(
-            "flex items-center gap-2 py-3 border-t-2 transition-colors cursor-pointer",
+            "flex items-center gap-2 py-3 border-t-2 transition-colors cursor-pointer shrink-0",
             activeTab === 'posts' ? "border-slate-900 dark:border-zinc-50 text-black dark:text-zinc-50" : "border-transparent text-black/60 hover:text-black/80 dark:hover:text-zinc-300"
           )}
         >
           <Compass className="w-4 h-4" />
           Wall Posts
         </button>
+        <button 
+          onClick={() => setActiveTab('catalogues')}
+          className={cn(
+            "flex items-center gap-2 py-3 border-t-2 transition-colors cursor-pointer shrink-0",
+            activeTab === 'catalogues' ? "border-slate-900 dark:border-zinc-50 text-black dark:text-zinc-50" : "border-transparent text-black/60 hover:text-black/80 dark:hover:text-zinc-300"
+          )}
+        >
+          <FileText className="w-4 h-4 text-emerald-500" />
+          Catalogues
+        </button>
         {isOwnProfile && (
           <>
             <button 
               onClick={() => setActiveTab('saved')}
               className={cn(
-                "flex items-center gap-2 py-3 border-t-2 transition-colors cursor-pointer",
+                "flex items-center gap-2 py-3 border-t-2 transition-colors cursor-pointer shrink-0",
                 activeTab === 'saved' ? "border-slate-900 dark:border-zinc-50 text-black dark:text-zinc-50" : "border-transparent text-black/60 hover:text-black/80 dark:hover:text-zinc-300"
               )}
             >
@@ -15764,7 +16256,7 @@ function ProfilePage({
             <button 
               onClick={() => setActiveTab('archive')}
               className={cn(
-                "flex items-center gap-2 py-3 border-t-2 transition-colors cursor-pointer",
+                "flex items-center gap-2 py-3 border-t-2 transition-colors cursor-pointer shrink-0",
                 activeTab === 'archive' ? "border-slate-900 dark:border-zinc-50 text-black dark:text-zinc-50" : "border-transparent text-black/60 hover:text-black/80 dark:hover:text-zinc-300"
               )}
             >
@@ -15775,9 +16267,249 @@ function ProfilePage({
         )}
       </div>
 
-            {/* Grid Content depending on activeTab */}
+      {/* Catalogues Tab Content */}
+      {activeTab === 'catalogues' && (
+        <div className="space-y-6">
+          {/* Catalogue Upload Box - Only for own profile & non-customers */}
+          {isOwnProfile && currentUser?.role !== 'customer' && (
+            <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-2xl p-4 shadow-sm">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-zinc-800">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-xl bg-emerald-50 dark:bg-emerald-950 flex items-center justify-center shrink-0 border border-emerald-200 dark:border-emerald-800 text-emerald-600">
+                    <FileText className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-xs sm:text-sm text-black dark:text-zinc-100 flex items-center gap-1">
+                      Upload Product Catalogues & PDF/Images
+                      <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                    </h3>
+                    <p className="text-[11px] text-black/70 dark:text-zinc-400">Share your latest tile designs, price lists & PDF brochures from local device</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsCatalogueCreateOpen(!isCatalogueCreateOpen)}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-black font-bold px-3 py-1.5 rounded-xl text-xs transition-all shadow-sm flex items-center gap-1.5 cursor-pointer shrink-0"
+                >
+                  <Plus className="w-4 h-4" />
+                  {isCatalogueCreateOpen ? 'Close' : 'Add Catalogue'}
+                </button>
+              </div>
+
+              {isCatalogueCreateOpen && (
+                <form onSubmit={handlePublishCatalogue} className="mt-4 space-y-3">
+                  {/* Step 1: Choose Type */}
+                  <div>
+                    <label className="block text-xs font-bold text-slate-900 dark:text-zinc-100 mb-1.5">
+                      1. Choose Upload Type
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => { setCatUploadType('pdf'); setCatFile(null); setCatFilePreview(null); }}
+                        className={cn(
+                          "py-2.5 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 border transition-all cursor-pointer",
+                          catUploadType === 'pdf' ? "bg-emerald-600 text-white border-emerald-500 shadow-sm" : "bg-slate-100 dark:bg-zinc-800 text-slate-800 dark:text-zinc-200 border-slate-200 dark:border-zinc-700"
+                        )}
+                      >
+                        <FileText className="w-4 h-4" />
+                        <span>Upload PDF</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { setCatUploadType('images'); setCatFile(null); setCatFilePreview(null); }}
+                        className={cn(
+                          "py-2.5 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 border transition-all cursor-pointer",
+                          catUploadType === 'images' ? "bg-emerald-600 text-white border-emerald-500 shadow-sm" : "bg-slate-100 dark:bg-zinc-800 text-slate-800 dark:text-zinc-200 border-slate-200 dark:border-zinc-700"
+                        )}
+                      >
+                        <ImageIcon className="w-4 h-4" />
+                        <span>Upload Images</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Step 2: Catalogue Name */}
+                  <div>
+                    <label className="block text-xs font-bold text-slate-900 dark:text-zinc-100 mb-1">
+                      2. Catalogue Name (नाम) *
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. 2026 Vitrified Tiles Catalogue"
+                      value={catTitle}
+                      onChange={e => setCatTitle(e.target.value)}
+                      className="w-full bg-slate-50 dark:bg-zinc-800/90 border border-slate-200 dark:border-zinc-700 rounded-xl px-3.5 py-2 text-xs sm:text-sm text-slate-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
+                  </div>
+
+                  {/* Step 3: Category */}
+                  <div>
+                    <label className="block text-xs font-bold text-slate-900 dark:text-zinc-100 mb-1">
+                      3. Category (कैटेगरी) *
+                    </label>
+                    <select
+                      value={catCategory}
+                      onChange={e => setCatCategory(e.target.value)}
+                      className="w-full bg-slate-50 dark:bg-zinc-800/90 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-2 text-xs sm:text-sm text-slate-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    >
+                      <option value="Vitrified Tiles">Vitrified Tiles</option>
+                      <option value="Ceramic Tiles">Ceramic Tiles</option>
+                      <option value="Sanitaryware">Sanitaryware</option>
+                      <option value="Marble & Granite">Marble & Granite</option>
+                      <option value="Hardware & Tools">Hardware & Tools</option>
+                      <option value="Other Catalogue">Other Catalogue</option>
+                    </select>
+                  </div>
+
+                  {/* Step 4: File Selection */}
+                  <div>
+                    <label className="block text-xs font-bold text-slate-900 dark:text-zinc-100 mb-1">
+                      4. Select {catUploadType === 'pdf' ? 'PDF File from Device' : 'Image File(s) from Device'} *
+                    </label>
+                    <input
+                      type="file"
+                      ref={catalogueFileInputRef}
+                      accept={catUploadType === 'pdf' ? '.pdf' : 'image/*'}
+                      onChange={e => {
+                        if (e.target.files && e.target.files[0]) {
+                          const file = e.target.files[0];
+                          setCatFile(file);
+                          setCatFilePreview(URL.createObjectURL(file));
+                        }
+                      }}
+                      className="w-full text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-emerald-50 file:text-emerald-700 hover:file:bg-emerald-100 cursor-pointer"
+                    />
+                    {catFilePreview && (
+                      <div className="mt-2 relative w-full h-28 rounded-xl overflow-hidden border border-slate-200 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-800 flex items-center justify-center">
+                        {catUploadType === 'images' ? (
+                          <img src={catFilePreview} alt="Preview" className="w-full h-full object-cover" />
+                        ) : (
+                          <div className="flex items-center gap-2 text-xs font-bold text-emerald-600">
+                            <FileText className="w-6 h-6" />
+                            <span>{catFile?.name || 'Selected PDF'}</span>
+                          </div>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => { setCatFile(null); setCatFilePreview(null); }}
+                          className="absolute top-2 right-2 p-1 bg-black/60 text-white rounded-full hover:bg-black/80"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={isPublishingCat}
+                    className="w-full bg-emerald-600 hover:bg-emerald-700 text-black font-bold py-2.5 rounded-xl text-xs transition-colors shadow-sm flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 mt-2"
+                  >
+                    <Upload className="w-4 h-4" />
+                    <span>{isPublishingCat ? 'Uploading Catalogue...' : 'Upload Catalogue'}</span>
+                  </button>
+                </form>
+              )}
+            </div>
+          )}
+
+          {/* Catalogues Slider / Grid View */}
+          {userCatalogues.length === 0 ? (
+            <div className="text-center py-16 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-8 shadow-sm">
+              <div className="w-16 h-16 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 flex items-center justify-center mx-auto mb-3 border border-emerald-100 dark:border-emerald-900/50">
+                <FileText className="w-8 h-8" />
+              </div>
+              <h3 className="text-lg font-bold text-black dark:text-zinc-100 mb-1">No Catalogues Uploaded Yet</h3>
+              <p className="text-xs text-black/70 dark:text-zinc-400 max-w-sm mx-auto mb-4">
+                {isOwnProfile ? 'Upload your product catalogues, brochures and price lists to showcase to buyers in real-time.' : 'This member has not uploaded any catalogues yet.'}
+              </p>
+              {isOwnProfile && currentUser?.role !== 'customer' && (
+                <button
+                  onClick={() => setIsCatalogueCreateOpen(true)}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-black font-bold px-5 py-2.5 rounded-xl text-xs transition-colors inline-flex items-center gap-2 shadow-sm cursor-pointer"
+                >
+                  <Plus className="w-4 h-4" /> Add First Catalogue
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {userCatalogues.map((cat: any) => (
+                <div key={cat.id || Math.random()} className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-2xl p-4 shadow-sm hover:shadow-md transition-all flex flex-col justify-between group">
+                  <div>
+                    <div className="relative w-full h-40 rounded-xl overflow-hidden bg-slate-100 dark:bg-zinc-800 mb-3">
+                      <img src={cat.fileUrl || 'https://images.unsplash.com/photo-1581091226825-a6a2a5aee158?auto=format&fit=crop&q=80&w=800'} alt={cat.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+                      <div className="absolute top-2 left-2 bg-black/60 backdrop-blur-md px-2 py-0.5 rounded-md text-[10px] text-white font-bold flex items-center gap-1">
+                        <FileText className="w-3 h-3 text-emerald-400" /> Catalogue
+                      </div>
+                    </div>
+                    <h4 className="font-bold text-sm text-black dark:text-zinc-100 mb-1">{cat.title}</h4>
+                    {cat.description && (
+                      <p className="text-xs text-black/70 dark:text-zinc-400 line-clamp-2 mb-3">{cat.description}</p>
+                    )}
+                  </div>
+
+                  <div className="flex items-center justify-between pt-3 border-t border-slate-100 dark:border-zinc-800 mt-2">
+                    <span className="text-[11px] text-slate-400">
+                      {new Date(cat.createdAt || Date.now()).toLocaleDateString()}
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <a
+                        href={cat.fileUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-3 py-1.5 rounded-lg text-xs transition-colors inline-flex items-center gap-1.5 shadow-xs"
+                      >
+                        <Download className="w-3.5 h-3.5" /> View / Download
+                      </a>
+                      {isOwnProfile && (
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteCatalogue(cat.id)}
+                          className="p-1.5 bg-red-50 hover:bg-red-100 dark:bg-red-950/40 dark:hover:bg-red-900/60 text-red-600 rounded-lg transition-colors"
+                          title="Delete Catalogue"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Grid Content depending on activeTab */}
       {activeTab === 'posts' && (
         <div className="space-y-6">
+          {/* Verified Offer Token Generator Banner */}
+          {isOwnProfile && (
+            <div 
+              onClick={() => setIsOfferTokenModalOpen(true)}
+              className="bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 text-white rounded-3xl p-6 shadow-md hover:shadow-lg transition-all cursor-pointer flex items-center justify-between mb-6 group relative overflow-hidden"
+            >
+              <div className="absolute right-0 top-0 w-48 h-48 bg-white/10 rounded-full blur-2xl group-hover:scale-125 transition-transform" />
+              <div className="space-y-1 relative z-10">
+                <div className="flex items-center gap-2">
+                  <span className="bg-amber-400 text-zinc-950 font-black text-[10px] px-2.5 py-0.5 rounded-full uppercase tracking-wider">
+                    New Reward System
+                  </span>
+                  <Sparkles className="w-4 h-4 text-amber-300 animate-pulse" />
+                </div>
+                <h3 className="font-black text-lg sm:text-xl">Generate Verified Offer Token & Discount PDF</h3>
+                <p className="text-xs text-white/80 max-w-lg">
+                  Convert your engagement points & liked item snapshots into an official discount PDF with QR code and direct post verification link for sellers!
+                </p>
+              </div>
+              <div className="w-12 h-12 rounded-2xl bg-white/20 backdrop-blur-md flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform relative z-10">
+                <ChevronRight className="w-6 h-6 text-white" />
+              </div>
+            </div>
+          )}
+
           {/* Customer Saved Activity Dashboard - ONLY FOR CUSTOMERS */}
           {userToDisplay.role === 'customer' && isOwnProfile && (
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
@@ -15852,10 +16584,7 @@ function ProfilePage({
             </div>
           )}
 
-          {/* User Analytics Summary & Eye Button Dashboard right above post creation box */}
-          {userToDisplay.role !== 'customer' && (profileUser?.id || currentUser?.id) && (
-            <UserAnalyticsCard userId={profileUser?.id || currentUser?.id || ''} />
-          )}
+
 
           {/* Post Creation Box on User Profile - Hidden for Customers */}
           {isOwnProfile && currentUser?.role !== 'customer' && (
@@ -16422,7 +17151,16 @@ function ProfilePage({
           currentUser={currentUser}
           onClose={() => setSelectedProfilePost(null)}
         />
-      )}</div>
+      )}
+
+      {/* Offer Token Generator Modal */}
+      <OfferTokenGeneratorModal 
+        isOpen={isOfferTokenModalOpen} 
+        onClose={() => setIsOfferTokenModalOpen(false)} 
+        currentUser={currentUser || userToDisplay} 
+        savedPosts={savedPosts} 
+      />
+    </div>
   );
 }
 
@@ -16592,6 +17330,41 @@ function AppContent() {
   const { isDark, toggleDark } = React.useContext(ThemeContext);
   const [user, setUser] = useState<any>(null);
   const [unreadNotifs, setUnreadNotifs] = useState(0);
+  const [headerSearchQuery, setHeaderSearchQuery] = useState('');
+  const [isHeaderSearchOpen, setIsHeaderSearchOpen] = useState(false);
+  const [dealers, setDealers] = useState<any[]>([]);
+
+  useEffect(() => {
+    let isMounted = true;
+    const processUsers = (fbUsers: any[]) => {
+      if (!Array.isArray(fbUsers)) return;
+      const uniqueMap = new Map();
+      fbUsers.forEach((u: any) => {
+        if (u && (u.name || u.companyName)) {
+          const key = (u.gstNumber && u.gstNumber.trim() !== '') ? u.gstNumber.trim().toUpperCase() : (u.id || u.username);
+          if (key && !uniqueMap.has(key)) {
+            uniqueMap.set(key, u);
+          }
+        }
+      });
+      if (isMounted) {
+        setDealers(Array.from(uniqueMap.values()));
+      }
+    };
+
+    fetchAllUsersFromFirestore().then(fbUsers => {
+      if (fbUsers && fbUsers.length > 0) processUsers(fbUsers);
+    }).catch(() => {});
+
+    const unsubscribe = subscribeToUsersFromFirestore((rtUsers) => {
+      if (rtUsers && rtUsers.length > 0) processUsers(rtUsers);
+    });
+
+    return () => {
+      isMounted = false;
+      if (typeof unsubscribe === 'function') unsubscribe();
+    };
+  }, []);
 
 
   useEffect(() => {
@@ -16747,6 +17520,9 @@ function AppContent() {
   useEffect(() => {
     // Check local storage for user and sync with backend & Firestore
     const savedUser = localStorage.getItem('user') || localStorage.getItem('Vyapar Bridge_user');
+    const savedFingerprint = localStorage.getItem('vyapar_user_fingerprint');
+    const savedUserId = localStorage.getItem('vyapar_user_id');
+
     if (savedUser) {
       try {
         let parsed = JSON.parse(savedUser);
@@ -16765,6 +17541,12 @@ function AppContent() {
         }
 
         setUser(parsed);
+        if (parsed?.id) {
+          localStorage.setItem('vyapar_user_id', String(parsed.id));
+          if (parsed.fingerprintId) {
+            localStorage.setItem('vyapar_user_fingerprint', parsed.fingerprintId);
+          }
+        }
 
         if (parsed?.id) {
           getDoc(doc(firestoreDb, 'users', String(parsed.id))).then(docSnap => {
@@ -16817,6 +17599,21 @@ function AppContent() {
       } catch (e) {
         console.warn('User parse note:', e);
       }
+    } else if (savedUserId || savedFingerprint) {
+      // Fingerprint / Persistent ID recovery mechanism if localStorage 'user' was cleared
+      fetchAllUsersFromFirestore().then(allUsers => {
+        if (Array.isArray(allUsers) && allUsers.length > 0) {
+          const found = allUsers.find((u: any) => 
+            (savedUserId && String(u.id) === String(savedUserId)) || 
+            (savedFingerprint && u.fingerprintId === savedFingerprint)
+          );
+          if (found) {
+            setUser(found);
+            localStorage.setItem('user', JSON.stringify(found));
+            localStorage.setItem('Vyapar Bridge_user', JSON.stringify(found));
+          }
+        }
+      }).catch(() => {});
     }
   }, [navigate]);
 
@@ -16870,6 +17667,8 @@ function AppContent() {
   const [isCalculatorOpen, setIsCalculatorOpen] = useState(false);
   const [isBoostModalOpen, setIsBoostModalOpen] = useState(false);
   const [boostTargetPost, setBoostTargetPost] = useState<any>(null);
+  const [isOfferTokenModalOpen, setIsOfferTokenModalOpen] = useState(false);
+  const [offerTokenTargetPost, setOfferTokenTargetPost] = useState<any>(null);
 
   useEffect(() => {
     const handleOpenAuth = () => setIsAuthModalOpen(true);
@@ -16890,6 +17689,15 @@ function AppContent() {
     };
   }, []);
 
+  useEffect(() => {
+    const handleOpenOfferToken = (e: any) => {
+      setOfferTokenTargetPost(e.detail?.post || null);
+      setIsOfferTokenModalOpen(true);
+    };
+    window.addEventListener('open_offer_token_modal', handleOpenOfferToken);
+    return () => window.removeEventListener('open_offer_token_modal', handleOpenOfferToken);
+  }, []);
+
   if (isLockedOut) {
     return <StealthLockoutScreen onUnlockCheck={() => setIsLockedOut(isAppLockedOut())} />;
   }
@@ -16899,6 +17707,8 @@ function AppContent() {
     setUser(null);
     localStorage.removeItem('user');
     localStorage.removeItem('Vyapar Bridge_user');
+    localStorage.removeItem('vyapar_user_fingerprint');
+    localStorage.removeItem('vyapar_user_id');
     toast.success('Logged out successfully');
   };
 
@@ -16987,7 +17797,7 @@ function AppContent() {
       )}
       
       {/* Mobile Header (Instagram style with Centered Branding, Top Left Theme Toggle & Right Menu) */}
-      <header className="md:hidden bg-[#E6C76C] dark:bg-black border-b border-slate-200 dark:border-zinc-800 px-3 h-14 flex items-center justify-between sticky top-0 z-50 w-full max-w-full overflow-hidden">
+      <header className="md:hidden bg-[#E6C76C] dark:bg-black border-b border-slate-200 dark:border-zinc-800 px-3 h-14 flex items-center justify-between sticky top-0 z-50 w-full max-w-full overflow-visible">
         {/* Left balanced spacer for centered branding */}
         <div className="w-8 shrink-0" />
 
@@ -17018,9 +17828,89 @@ function AppContent() {
 
         {/* Right Actions */}
         <div className="flex items-center gap-2 shrink-0 z-10 relative">
+          <div className="relative flex items-center">
+            {isHeaderSearchOpen ? (
+              <div className="absolute right-0 top-1/2 -translate-y-1/2 bg-white dark:bg-zinc-900 border border-amber-500/50 rounded-xl shadow-2xl p-1.5 flex items-center z-50 w-64 sm:w-72 animate-in fade-in zoom-in-95">
+                <Search className="w-4 h-4 ml-2 text-amber-500 shrink-0" />
+                <input
+                  type="text"
+                  autoFocus
+                  value={headerSearchQuery}
+                  onChange={(e) => setHeaderSearchQuery(e.target.value)}
+                  placeholder="Search users, karigars, dealers..."
+                  className="w-full bg-transparent px-2 py-1 text-xs font-medium text-black dark:text-zinc-100 outline-none placeholder:text-black/60 dark:placeholder:text-zinc-500"
+                />
+                <button 
+                  onClick={() => { setIsHeaderSearchOpen(false); setHeaderSearchQuery(''); }}
+                  className="p-1 text-black/60 dark:text-zinc-400 hover:text-black dark:hover:text-white"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+
+                {/* Live Facebook-style User Results Dropdown */}
+                {headerSearchQuery.trim() && (
+                  <div className="absolute left-0 right-0 top-full mt-2 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-xl shadow-2xl max-h-72 overflow-y-auto z-50 p-2 space-y-1">
+                    {dealers.filter(u => {
+                      const q = headerSearchQuery.trim().toLowerCase();
+                      const name = (u.name || '').toLowerCase();
+                      const comp = (u.companyName || '').toLowerCase();
+                      const cat = (u.category || '').toLowerCase();
+                      const city = (u.city || '').toLowerCase();
+                      return name.includes(q) || comp.includes(q) || cat.includes(q) || city.includes(q);
+                    }).length === 0 ? (
+                      <div className="text-center py-4 text-xs text-black/60 dark:text-zinc-400 font-bold">No registered users found</div>
+                    ) : (
+                      dealers.filter(u => {
+                        const q = headerSearchQuery.trim().toLowerCase();
+                        const name = (u.name || '').toLowerCase();
+                        const comp = (u.companyName || '').toLowerCase();
+                        const cat = (u.category || '').toLowerCase();
+                        const city = (u.city || '').toLowerCase();
+                        return name.includes(q) || comp.includes(q) || cat.includes(q) || city.includes(q);
+                      }).map(u => (
+                        <div
+                          key={u.id || u.username}
+                          onClick={() => {
+                            setIsHeaderSearchOpen(false);
+                            setHeaderSearchQuery('');
+                            navigate(`/profile/${u.id || u.username}`);
+                          }}
+                          className="flex items-center gap-2.5 p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-zinc-800 transition-all cursor-pointer group"
+                        >
+                          <div className="w-9 h-9 rounded-full bg-slate-200 dark:bg-zinc-800 overflow-hidden flex items-center justify-center font-black text-xs text-black dark:text-white shrink-0 border border-slate-300 dark:border-zinc-700">
+                            {u.avatarUrl ? (
+                              <img src={u.avatarUrl} alt={u.name} className="w-full h-full object-cover" />
+                            ) : (
+                              u.name?.charAt(0) || 'U'
+                            )}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="font-extrabold text-xs text-black dark:text-zinc-100 truncate group-hover:text-amber-500">
+                              {u.name}
+                            </div>
+                            <div className="text-[10px] text-black/70 dark:text-zinc-400 truncate">
+                              {u.category || u.role || 'Member'} • {u.city || 'India'}
+                            </div>
+                          </div>
+                          <ChevronRight className="w-3.5 h-3.5 text-black/40 dark:text-zinc-500" />
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <button 
+                onClick={() => setIsHeaderSearchOpen(true)}
+                className="p-1 text-black dark:text-zinc-50 hover:scale-105 transition-transform cursor-pointer flex items-center justify-center"
+                title="Search Users & Karigars"
+              >
+                <Search className="w-5 h-5" />
+              </button>
+            )}
+          </div>
           <Link to="/chat" title="Messages" className="p-1 relative flex items-center justify-center">
             <MessageCircle className="w-5 h-5 text-black dark:text-zinc-50 hover:scale-105 transition-transform" />
-            {/* You could add unread message count here if available */}
           </Link>
           <Link to="/notifications" title="Notifications" className="p-1 relative flex items-center justify-center">
             <Heart className="w-5.5 h-5.5 text-black dark:text-zinc-50 hover:scale-105 transition-transform" />
@@ -17293,6 +18183,18 @@ function AppContent() {
           setIsGlobalVerifyModalOpen(false);
           toast.success('🎉 Congratulations! Vyapar Bridge Verification active!');
         }} 
+      />
+
+      {/* Offer Token Generator Modal */}
+      <OfferTokenGeneratorModal 
+        isOpen={isOfferTokenModalOpen}
+        onClose={() => {
+          setIsOfferTokenModalOpen(false);
+          setOfferTokenTargetPost(null);
+        }}
+        currentUser={user}
+        savedPosts={offerTokenTargetPost ? [offerTokenTargetPost] : []}
+        initialPost={offerTokenTargetPost}
       />
       
       {/* Mobile Bottom Navigation */}

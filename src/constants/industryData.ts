@@ -246,11 +246,6 @@ export function matchIndustryOrSubcategory(
     if (!ind) return true;
 
     if (subcategoryId === 'all') {
-      const indNameMatch = ind.name.toLowerCase();
-      const indShortMatch = ind.shortName.toLowerCase();
-      if (targetText.includes(indNameMatch) || targetText.includes(indShortMatch) || targetText.includes(ind.id.toLowerCase())) {
-        return true;
-      }
       return ind.subcategories.some(s => 
         targetText.includes(s.name.toLowerCase()) || 
         targetText.includes(s.id.toLowerCase()) || 
