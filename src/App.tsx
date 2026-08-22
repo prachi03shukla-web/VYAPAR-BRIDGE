@@ -6982,6 +6982,7 @@ function CreatePost({ user }: { user: any }) {
         }
 
         const formData = new FormData();
+        formData.append('id', generatedId);
         formData.append('title', title);
         formData.append('content', content);
         formData.append('hashtags', hashtags);
@@ -6996,6 +6997,11 @@ function CreatePost({ user }: { user: any }) {
         }
         if (file) formData.append('media', file);
         if (thumbnailFile) formData.append('thumbnail', thumbnailFile);
+
+        if (file && isVideo) {
+          saveVideoBlob(generatedId, file).catch(() => {});
+          cacheVideoUrlInMemory(generatedId, videoStreamUrl || filePreview || '');
+        }
 
         const moderation = await moderateContentUniversally({
           title,
@@ -7031,15 +7037,25 @@ function CreatePost({ user }: { user: any }) {
 
           if (response.ok && data.success && data.post) {
             savedPost = data.post;
+            if (savedPost.id && file && isVideo) {
+              saveVideoBlob(savedPost.id, file).catch(() => {});
+              cacheVideoUrlInMemory(savedPost.id, videoStreamUrl || filePreview || '');
+            }
           }
         } catch (networkErr) {
           console.warn('Backend API note, using direct Firestore sync:', networkErr);
         }
 
-        const finalMedia = (savedPost?.mediaUrl && !savedPost.mediaUrl.startsWith('blob:')) 
+        const isPersistentServerUrl = savedPost?.mediaUrl && (
+          savedPost.mediaUrl.startsWith('data:') || 
+          savedPost.mediaUrl.startsWith('https://') || 
+          savedPost.mediaUrl.startsWith('http://')
+        ) && !savedPost.mediaUrl.includes('localhost') && !savedPost.mediaUrl.startsWith('/uploads');
+
+        const finalMedia = isPersistentServerUrl 
           ? savedPost.mediaUrl 
-          : (isVideo ? (savedPost?.videoUrl || videoStreamUrl || filePreview) : (bgMediaUrl || filePreview));
-        const finalThumb = savedPost?.thumbnailUrl || bgThumbUrl || finalMedia;
+          : (isVideo ? (videoStreamUrl || filePreview || ('indexeddb:' + generatedId)) : (bgMediaUrl || filePreview));
+        const finalThumb = savedPost?.thumbnailUrl || bgThumbUrl || (isVideo ? bgThumbUrl : finalMedia);
 
         const finalPostData = savedPost ? {
           ...savedPost,
@@ -9658,6 +9674,7 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
       const authorRole = user?.role || 'admin';
 
       const formData = new FormData();
+      formData.append('id', adminPostId);
       formData.append('title', newTitle);
       formData.append('content', newContent);
       formData.append('hashtags', '#AdminUpdate #OfficialAnnouncement');
@@ -9667,6 +9684,11 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
       formData.append('type', mediaType === 'video' ? 'video' : (mediaFile ? 'image' : 'text'));
       if (mediaFile) {
         formData.append('media', mediaFile);
+      }
+
+      if (mediaFile && mediaType === 'video') {
+        saveVideoBlob(adminPostId, mediaFile).catch(() => {});
+        cacheVideoUrlInMemory(adminPostId, mediaPreview || '');
       }
 
       let adminPostObj: any = null;
@@ -9687,6 +9709,10 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
 
         if (res.ok && data.success && data.post) {
           adminPostObj = data.post;
+          if (adminPostObj.id && mediaFile && mediaType === 'video') {
+            saveVideoBlob(adminPostObj.id, mediaFile).catch(() => {});
+            cacheVideoUrlInMemory(adminPostObj.id, mediaPreview || '');
+          }
         }
       } catch (e) {
         console.warn('Backend API note, syncing admin post directly to Firestore:', e);
@@ -16239,6 +16265,7 @@ function ProfilePage({
         const resolvedProfileMedia = isVideo ? (initialMedia || fileDataUrl) : (fileDataUrl || videoThumbUrl || (postFilePreview && !postFilePreview.startsWith('blob:') ? postFilePreview : ''));
 
         const formData = new FormData();
+        formData.append('id', generatedId);
         formData.append('title', postTitle);
         formData.append('content', postContent);
         formData.append('hashtags', postHashtags || '#vyaparbridge #business');
@@ -16285,25 +16312,45 @@ function ProfilePage({
 
           if (res.ok && data.success && data.post) {
             savedPost = data.post;
+            if (savedPost.id && postFile && isVideo) {
+              saveVideoBlob(savedPost.id, postFile).catch(() => {});
+              cacheVideoUrlInMemory(savedPost.id, initialMedia);
+            }
           }
         } catch (backendErr) {
           console.warn('Backend /api/posts note, fallback to direct Firestore sync:', backendErr);
         }
 
+        const isPersistentUrl = savedPost?.mediaUrl && (
+          savedPost.mediaUrl.startsWith('data:') || 
+          savedPost.mediaUrl.startsWith('https://') || 
+          savedPost.mediaUrl.startsWith('http://')
+        ) && !savedPost.mediaUrl.includes('localhost') && !savedPost.mediaUrl.startsWith('/uploads');
+
+        const profileMedia = isPersistentUrl ? savedPost.mediaUrl : (resolvedProfileMedia || initialMedia || ('indexeddb:' + generatedId));
+        const profileThumb = videoThumbUrl || savedPost?.thumbnailUrl || profileMedia;
+
         const finalProfilePost = savedPost ? {
           ...savedPost,
+          id: generatedId,
+          type: postMediaType,
           userName: savedPost.userName || profileAuthorName,
           userRole: savedPost.userRole || profileAuthorRole,
-          mediaUrl: (savedPost.mediaUrl && !savedPost.mediaUrl.startsWith('blob:') ? savedPost.mediaUrl : (resolvedProfileMedia || initialMedia)),
-          thumbnailUrl: (savedPost.thumbnailUrl && !savedPost.thumbnailUrl.startsWith('blob:') ? savedPost.thumbnailUrl : (resolvedProfileMedia || initialMedia)),
+          mediaUrl: profileMedia,
+          videoUrl: isVideo ? profileMedia : undefined,
+          video: isVideo ? profileMedia : undefined,
+          thumbnailUrl: profileThumb,
+          persistentMediaUrl: profileMedia,
           status: isPendingApproval ? 'pending' : (savedPost.status || 'approved'),
           pending_admin_approval: isPendingApproval,
           aiFlagReason: aiFlagReason || null
         } : {
           ...instantProfilePost,
-          mediaUrl: resolvedProfileMedia || instantProfilePost.mediaUrl,
-          thumbnailUrl: resolvedProfileMedia || instantProfilePost.thumbnailUrl,
-          persistentMediaUrl: resolvedProfileMedia || instantProfilePost.persistentMediaUrl,
+          mediaUrl: profileMedia || instantProfilePost.mediaUrl,
+          videoUrl: isVideo ? (profileMedia || instantProfilePost.mediaUrl) : undefined,
+          video: isVideo ? (profileMedia || instantProfilePost.mediaUrl) : undefined,
+          thumbnailUrl: profileThumb || instantProfilePost.thumbnailUrl,
+          persistentMediaUrl: profileMedia || instantProfilePost.persistentMediaUrl,
           status: isPendingApproval ? 'pending' : 'approved',
           pending_admin_approval: isPendingApproval,
           aiFlagReason: aiFlagReason || null

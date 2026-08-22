@@ -205,14 +205,25 @@ export async function syncPostToFirestore(postData: any): Promise<boolean> {
       cleanData.persistentMediaUrl = cleanData.mediaUrl;
     }
 
-    if (!cleanData.mediaUrl || cleanData.mediaUrl.startsWith('blob:')) {
-      cleanData.mediaUrl = cleanData.thumbnailUrl || cleanData.persistentMediaUrl || cleanData.videoUrl || '';
+    if (cleanData.type === 'video') {
+      if (!cleanData.mediaUrl || cleanData.mediaUrl.startsWith('blob:') || cleanData.mediaUrl.startsWith('data:image')) {
+        const validStream = (cleanData.videoUrl && !cleanData.videoUrl.startsWith('data:image') && !cleanData.videoUrl.startsWith('blob:')) 
+          ? cleanData.videoUrl 
+          : ('indexeddb:' + postId);
+        cleanData.mediaUrl = validStream;
+        cleanData.videoUrl = validStream;
+        cleanData.persistentMediaUrl = validStream;
+      }
+    } else {
+      if (!cleanData.mediaUrl || cleanData.mediaUrl.startsWith('blob:')) {
+        cleanData.mediaUrl = cleanData.thumbnailUrl || cleanData.persistentMediaUrl || cleanData.videoUrl || '';
+      }
     }
     if (!cleanData.thumbnailUrl || cleanData.thumbnailUrl.startsWith('blob:')) {
-      cleanData.thumbnailUrl = cleanData.mediaUrl || '';
+      cleanData.thumbnailUrl = cleanData.type === 'video' ? (cleanData.thumbnailUrl || cleanData.posterUrl || '') : cleanData.mediaUrl;
     }
     if (!cleanData.persistentMediaUrl || cleanData.persistentMediaUrl.startsWith('blob:')) {
-      cleanData.persistentMediaUrl = cleanData.mediaUrl || '';
+      cleanData.persistentMediaUrl = cleanData.mediaUrl;
     }
 
     // 1. Instant Local Storage Backup (survives tab/page refresh immediately)
