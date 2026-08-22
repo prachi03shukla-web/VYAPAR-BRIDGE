@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { BrowserRouter, Routes, Route, Link, useNavigate, useLocation, useParams } from 'react-router-dom';
-import { Facebook, Twitter, Instagram, Home, Shield, Moon, Sun, PlusSquare, MessageCircle, MessageSquare, Menu, LogOut, LogIn, Check, X, XCircle, Search, Compass, Film, Heart, Calculator, Bookmark, Info, MoreHorizontal, MoreVertical, Music, Image, ImageIcon, ImagePlus, Eye, EyeOff, Camera, Upload, Trash2, Plus, ShieldCheck, Sparkles, QrCode, CheckCircle, CheckCircle2, Award, Smile, Volume2, VolumeX, Play, Pause, ChevronUp, ChevronDown, ArrowLeft, ChevronLeft, ChevronRight, UserPlus, UserCheck, Share2, Phone, Mail, Globe, Building2, Store, MapPin, Locate, Navigation, Tag, Filter, ShieldAlert, UserX, Lock, Key, Clock, FileText, FileCheck, Maximize2, Crop, Loader2, Send, BarChart2, Users, Map as MapIcon, Hash, Pencil, Rocket, ExternalLink, Star, Scale, Video, TrendingUp, ClipboardList, Bell, CreditCard, Calendar, Copy, RefreshCw, AlertTriangle, Gift, Fingerprint, Megaphone, Download } from 'lucide-react';
+import { Facebook, Twitter, Instagram, Home, Shield, Moon, Sun, PlusSquare, MessageCircle, MessageSquare, Menu, LogOut, LogIn, Check, X, XCircle, Search, Compass, Film, Heart, Calculator, Bookmark, Info, MoreHorizontal, MoreVertical, Music, Image, ImageIcon, ImagePlus, Eye, EyeOff, Camera, Upload, Trash2, Plus, ShieldCheck, Sparkles, QrCode, CheckCircle, CheckCircle2, Award, Smile, Volume2, VolumeX, Play, Pause, ChevronUp, ChevronDown, ArrowLeft, ChevronLeft, ChevronRight, UserPlus, UserCheck, Share2, Phone, Mail, Globe, Building2, Store, MapPin, Locate, Navigation, Tag, Filter, ShieldAlert, UserX, Lock, Key, Clock, FileText, FileCheck, Maximize2, Crop, Loader2, Send, BarChart2, Users, Map as MapIcon, Hash, Pencil, Rocket, ExternalLink, Star, Scale, Video, TrendingUp, ClipboardList, Bell, CreditCard, Calendar, Copy, RefreshCw, AlertTriangle, Gift, Fingerprint, Megaphone, Download, Settings } from 'lucide-react';
 import toast, { Toaster } from 'react-hot-toast';
 
 if (typeof (toast as any).info !== 'function') {
@@ -1409,7 +1409,13 @@ function ReelCard({
     window.dispatchEvent(new CustomEvent('pause_all_feed_videos'));
 
     return () => {
-      // Reel closed / exited: allow feed video to resume
+      // Reel closed / exited: pause media and allow feed video to resume
+      if (videoRef.current) {
+        try { videoRef.current.pause(); } catch (e) {}
+      }
+      if (audioRef.current) {
+        try { audioRef.current.pause(); } catch (e) {}
+      }
       window.dispatchEvent(new CustomEvent('vyapar_reel_viewing_active', { detail: { active: false } }));
     };
   }, []);
@@ -3182,29 +3188,66 @@ function FeedVideoPlayer({
     }
   }, [src, isReel]);
 
+  // Unmount cleanup & visibility handling
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.hidden) {
+        attemptPause();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility);
+      attemptPause();
+    };
+  }, []);
+
   // Safe playback trigger
   const attemptPlay = () => {
-    const video = getVideoElement();
-    if (!video || isPausedByUserRef.current) return;
+    if (isPausedByUserRef.current) return;
     if (!isReel) {
       if (isReelActive || location.pathname !== '/') return;
     }
-    const playPromise = video.play();
-    if (playPromise !== undefined) {
-      playPromise
-        .then(() => {
-          setIsPlaying(true);
-          setHasStartedPlaying(true);
-          if (audioRef.current && !isMuted) audioRef.current.play().catch(() => {});
-        })
-        .catch(() => setIsPlaying(false));
+    
+    if (playerRef.current) {
+      try {
+        if (typeof (playerRef.current as any).play === 'function') {
+          const p = (playerRef.current as any).play();
+          if (p && p.catch) p.catch(() => {});
+        }
+      } catch (e) {}
+    }
+
+    const video = getVideoElement();
+    if (video) {
+      const playPromise = video.play();
+      if (playPromise !== undefined) {
+        playPromise
+          .then(() => {
+            setIsPlaying(true);
+            setHasStartedPlaying(true);
+            if (audioRef.current && !isMuted) audioRef.current.play().catch(() => {});
+          })
+          .catch(() => setIsPlaying(false));
+      }
     }
   };
 
   const attemptPause = () => {
+    if (playerRef.current) {
+      try {
+        if (typeof (playerRef.current as any).pause === 'function') {
+          (playerRef.current as any).pause();
+        }
+      } catch (e) {}
+    }
     const video = getVideoElement();
-    if (video) video.pause();
-    if (audioRef.current) audioRef.current.pause();
+    if (video) {
+      try { video.pause(); } catch(e) {}
+    }
+    if (audioRef.current) {
+      try { audioRef.current.pause(); } catch(e) {}
+    }
     setIsPlaying(false);
   };
 
