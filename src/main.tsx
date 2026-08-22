@@ -31,44 +31,45 @@ import { BRAND_LOGO_SRC } from './constants/brandLogo';
 })();
 
 // Suppress benign Firebase GrpcConnection idle stream warnings
-const originalConsoleError = console.error;
-console.error = (...args: any[]) => {
+const isBenignFirestoreLog = (args: any[]): boolean => {
   const msg = args.map(a => {
     if (typeof a === 'string') return a;
     if (a instanceof Error) return a.message + ' ' + (a.stack || '');
     try { return JSON.stringify(a); } catch { return String(a); }
   }).join(' ');
-  if (
+  return (
     msg.includes('GrpcConnection RPC') ||
     msg.includes('Disconnecting idle stream') ||
     msg.includes('CANCELLED: Disconnecting idle stream') ||
     msg.includes('Timed out waiting for new targets') ||
     msg.includes('code=resource-exhausted') ||
-    msg.includes('RESOURCE_EXHAUSTED')
-  ) {
-    return;
-  }
+    msg.includes('RESOURCE_EXHAUSTED') ||
+    msg.includes('@firebase/firestore')
+  );
+};
+
+const originalConsoleError = console.error;
+console.error = (...args: any[]) => {
+  if (isBenignFirestoreLog(args)) return;
   originalConsoleError(...args);
 };
 
 const originalConsoleWarn = console.warn;
 console.warn = (...args: any[]) => {
-  const msg = args.map(a => {
-    if (typeof a === 'string') return a;
-    if (a instanceof Error) return a.message + ' ' + (a.stack || '');
-    try { return JSON.stringify(a); } catch { return String(a); }
-  }).join(' ');
-  if (
-    msg.includes('GrpcConnection RPC') ||
-    msg.includes('Disconnecting idle stream') ||
-    msg.includes('CANCELLED: Disconnecting idle stream') ||
-    msg.includes('Timed out waiting for new targets') ||
-    msg.includes('code=resource-exhausted') ||
-    msg.includes('RESOURCE_EXHAUSTED')
-  ) {
-    return;
-  }
+  if (isBenignFirestoreLog(args)) return;
   originalConsoleWarn(...args);
+};
+
+const originalConsoleInfo = console.info;
+console.info = (...args: any[]) => {
+  if (isBenignFirestoreLog(args)) return;
+  originalConsoleInfo(...args);
+};
+
+const originalConsoleLog = console.log;
+console.log = (...args: any[]) => {
+  if (isBenignFirestoreLog(args)) return;
+  originalConsoleLog(...args);
 };
 
 window.addEventListener('unhandledrejection', (event) => {

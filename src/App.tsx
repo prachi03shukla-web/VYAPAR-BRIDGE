@@ -43,6 +43,8 @@ import { ReferralRewardsModal } from './components/ReferralRewardsModal';
 import { BoostBusinessModal } from './components/BoostBusinessModal';
 import { AdminUserDetailModal } from './components/AdminUserDetailModal';
 import { captureReferralCodeFromUrl, recordNewUserReferral, checkAndUpdateReferralOnPost, getOrCreateFingerprint, getReferralStats, getUserReferralLink } from './utils/referralManager';
+import { resolveUserAvatar, getInitialsAvatar, updateCachedUsers, resolveAuthorInfo } from './utils/userAvatar';
+import { MediaPlayer, MediaOutlet, type MediaPlayerInstance } from '@vidstack/react';
 
 export function renderSafeCommentText(content: string, isAuthorOrAdmin = false): { text: string; masked: boolean } {
   if (!content) return { text: '', masked: false };
@@ -310,7 +312,25 @@ export function isUserFollowed(identifier: string): boolean {
 
 export function toggleFollowUser(identifier: string): boolean {
   if (!identifier) return false;
-  const idStr = String(identifier);
+  const idStr = String(identifier).trim();
+  
+  // Prevent self-follow at utility core
+  try {
+    const rawUser = localStorage.getItem('user') || localStorage.getItem('Vyapar Bridge_user');
+    if (rawUser) {
+      const u = JSON.parse(rawUser);
+      if (u) {
+        const myId = String(u.id || '').trim().toLowerCase();
+        const myName = String(u.name || u.companyName || '').trim().toLowerCase();
+        const myUsername = String(u.username || '').trim().toLowerCase();
+        const targetLower = idStr.toLowerCase();
+        if (targetLower === myId || (myName && targetLower === myName) || (myUsername && targetLower === myUsername)) {
+          return false;
+        }
+      }
+    }
+  } catch (e) {}
+
   const list = getFollowedUsers();
   let newList: string[];
   let isNowFollowing = false;
@@ -1302,8 +1322,26 @@ function ReelCard({
   const videoRef = React.useRef<HTMLVideoElement>(null);
   const audioRef = React.useRef<HTMLAudioElement>(null);
 
-  const localVideoData = reel?.id ? localStorage.getItem('vyapar_video_' + reel.id) : null;
-  const rawVideoSrc = localVideoData || reel?.videoUrl || (reel?.mediaUrl && (reel.mediaUrl.startsWith('data:video') || reel.mediaUrl.startsWith('blob:') || reel.mediaUrl.match(/\.(mp4|webm|mov|m4v|mkv|3gp)(\?.*)?$/i) || reel.mediaUrl.includes('youtube.com') || reel.mediaUrl.includes('youtu.be') || reel.mediaUrl.includes('facebook.com') || reel.mediaUrl.includes('fb.watch')) ? reel.mediaUrl : '') || reel?.video || '';
+  const isExplicitImage = Boolean(
+    reel?.type === 'image' || 
+    reel?.type === 'photo' || 
+    reel?.type === 'picture' || 
+    (reel?.mediaUrl && (
+      reel.mediaUrl.startsWith('data:image/') || 
+      reel.mediaUrl.match(/\.(jpg|jpeg|png|webp|gif|svg|avif|heic|bmp)(\?.*)?$/i)
+    ))
+  );
+
+  const isExplicitPdf = Boolean(
+    reel?.type === 'pdf' || 
+    (reel?.mediaUrl && (
+      reel.mediaUrl.startsWith('data:application/pdf') || 
+      reel.mediaUrl.match(/\.pdf(\?.*)?$/i)
+    ))
+  );
+
+  const localVideoData = (!isExplicitImage && !isExplicitPdf && reel?.id) ? localStorage.getItem('vyapar_video_' + reel.id) : null;
+  const rawVideoSrc = (isExplicitImage || isExplicitPdf) ? '' : (localVideoData || reel?.videoUrl || (reel?.mediaUrl && (reel.mediaUrl.startsWith('data:video') || reel.mediaUrl.startsWith('blob:') || reel.mediaUrl.match(/\.(mp4|webm|mov|m4v|mkv|3gp)(\?.*)?$/i) || reel.mediaUrl.includes('youtube.com') || reel.mediaUrl.includes('youtu.be') || reel.mediaUrl.includes('facebook.com') || reel.mediaUrl.includes('fb.watch')) ? reel.mediaUrl : '') || reel?.video || '');
   
   const isEmbedVideo = Boolean(
     rawVideoSrc.includes('youtube.com') || 
@@ -1312,20 +1350,21 @@ function ReelCard({
     rawVideoSrc.includes('fb.watch')
   );
 
-  const isPlayableVideo = Boolean(
+  const isPlayableVideo = !isExplicitImage && !isExplicitPdf && Boolean(
     rawVideoSrc && (
       rawVideoSrc.startsWith('data:video') || 
       rawVideoSrc.startsWith('blob:') || 
       rawVideoSrc.match(/\.(mp4|webm|mov|m4v|mkv|3gp)(\?.*)?$/i) ||
       isEmbedVideo
-    ) && !rawVideoSrc.startsWith('data:image') && !rawVideoSrc.match(/\.(jpg|jpeg|png|webp|gif|svg|avif)(\?.*)?$/i)
+    ) && !rawVideoSrc.startsWith('data:image') && !rawVideoSrc.match(/\.(jpg|jpeg|png|webp|gif|svg|avif|pdf)(\?.*)?$/i)
   );
 
-  const posterSrc = reel?.thumbnailUrl || (reel?.mediaUrl && reel.mediaUrl.startsWith('data:image') ? reel.mediaUrl : '') || reel?.persistentMediaUrl || '';
-  const mediaSrc = isPlayableVideo ? rawVideoSrc : posterSrc;
-  const isVideo = isPlayableVideo;
-  const authorName = reel?.user?.name || reel?.name || 'User';
-  const authorAvatar = reel?.user?.avatarUrl || reel?.avatar;
+  const [videoFailed, setVideoFailed] = useState(false);
+  const posterSrc = reel?.thumbnailUrl || (reel?.mediaUrl && (reel.mediaUrl.startsWith('data:image') || reel.mediaUrl.match(/\.(jpg|jpeg|png|webp|gif|svg|avif)(\?.*)?$/i)) ? reel.mediaUrl : '') || reel?.persistentMediaUrl || '';
+  const isVideo = isPlayableVideo && !videoFailed;
+  const mediaSrc = isVideo ? rawVideoSrc : (posterSrc || reel?.mediaUrl || rawVideoSrc);
+  const authorName = reel?.user?.name || reel?.userName || reel?.name || 'User';
+  const authorAvatar = resolveUserAvatar(reel, authorName);
   const isAuthorVerified = reel?.user?.isVerified || reel?.isVerified;
   const reelMusic = reel?.music || (reel?.musicTitle ? { title: reel.musicTitle, artist: reel.musicArtist, audioUrl: reel.musicUrl } : null);
 
@@ -1365,6 +1404,17 @@ function ReelCard({
   }, [reel?.id]);
 
   useEffect(() => {
+    // Notify all background feed videos that a Reel is playing so they pause immediately!
+    window.dispatchEvent(new CustomEvent('vyapar_reel_viewing_active', { detail: { active: true } }));
+    window.dispatchEvent(new CustomEvent('pause_all_feed_videos'));
+
+    return () => {
+      // Reel closed / exited: allow feed video to resume
+      window.dispatchEvent(new CustomEvent('vyapar_reel_viewing_active', { detail: { active: false } }));
+    };
+  }, []);
+
+  useEffect(() => {
     // Attempt to play on mount (triggered by user interaction from opening the modal)
     const playMedia = async () => {
       try {
@@ -1395,44 +1445,91 @@ function ReelCard({
   };
 
   const clickTimerRef = React.useRef<any>(null);
-  const lastClickTime = React.useRef(0);
-  const lastTapRef = React.useRef(0);
+  const lastTapInfo = React.useRef<{ x: number; y: number; time: number } | null>(null);
+  const touchStartPos = React.useRef<{ x: number; y: number; time: number } | null>(null);
+  const lastTouchTime = React.useRef(0);
 
-  const handleInteractionClick = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    const now = Date.now();
-    const DOUBLE_TAP_DELAY = 300;
-
-    if (now - lastClickTime.current < DOUBLE_TAP_DELAY) {
-      // Double tap detected
-      if (clickTimerRef.current) {
-        clearTimeout(clickTimerRef.current);
-        clickTimerRef.current = null;
-      }
-      handleDoubleTap();
-      lastClickTime.current = 0; // Reset to prevent triple-tap double-trigger
-    } else {
-      // Potential single tap
-      lastClickTime.current = now;
-      clickTimerRef.current = setTimeout(() => {
-        togglePlay();
-        clickTimerRef.current = null;
-      }, DOUBLE_TAP_DELAY);
+  const handleTouchStartReel = (e: React.TouchEvent) => {
+    if (e.touches.length === 1) {
+      touchStartPos.current = {
+        x: e.touches[0].clientX,
+        y: e.touches[0].clientY,
+        time: Date.now()
+      };
     }
   };
 
   const handleTouchEndReel = (e: React.TouchEvent) => {
-    e.stopPropagation();
-    const now = Date.now();
-    const delay = now - lastTapRef.current;
-    if (delay < 350 && delay > 0) {
-      if (clickTimerRef.current) {
-        clearTimeout(clickTimerRef.current);
-        clickTimerRef.current = null;
-      }
-      handleDoubleTap();
+    lastTouchTime.current = Date.now();
+    if (!touchStartPos.current || e.changedTouches.length === 0) {
+      touchStartPos.current = null;
+      return;
     }
-    lastTapRef.current = now;
+
+    const touch = e.changedTouches[0];
+    const distX = Math.abs(touch.clientX - touchStartPos.current.x);
+    const distY = Math.abs(touch.clientY - touchStartPos.current.y);
+    const totalDist = Math.hypot(distX, distY);
+    const touchDuration = Date.now() - touchStartPos.current.time;
+    touchStartPos.current = null;
+
+    // If finger moved more than 10px or touch was held longer than 400ms, it is a SWIPE/SLIDE/SCROLL gesture -> NOT a tap!
+    if (totalDist > 10 || touchDuration > 400) {
+      return;
+    }
+
+    // This is a verified stationary TAP
+    const now = Date.now();
+    const prevTap = lastTapInfo.current;
+
+    if (prevTap) {
+      const delay = now - prevTap.time;
+      const tapDist = Math.hypot(touch.clientX - prevTap.x, touch.clientY - prevTap.y);
+      // Double tap requires 80ms - 320ms between taps and within 40px radius
+      if (delay >= 80 && delay <= 320 && tapDist <= 40) {
+        if (clickTimerRef.current) {
+          clearTimeout(clickTimerRef.current);
+          clickTimerRef.current = null;
+        }
+        lastTapInfo.current = null;
+        handleDoubleTap();
+        return;
+      }
+    }
+
+    // Potential first tap
+    lastTapInfo.current = {
+      x: touch.clientX,
+      y: touch.clientY,
+      time: now
+    };
+
+    if (clickTimerRef.current) {
+      clearTimeout(clickTimerRef.current);
+    }
+
+    clickTimerRef.current = setTimeout(() => {
+      if (isVideo) {
+        togglePlay();
+      } else if (reelMusic?.audioUrl) {
+        toggleMute();
+      }
+      lastTapInfo.current = null;
+      clickTimerRef.current = null;
+    }, 280);
+  };
+
+  const handleInteractionClick = (e: React.MouseEvent) => {
+    // Ignore synthetic click from touch events to avoid double triggering
+    if (Date.now() - lastTouchTime.current < 500) {
+      return;
+    }
+    e.stopPropagation();
+    if (isVideo) {
+      togglePlay();
+    } else if (reelMusic?.audioUrl) {
+      toggleMute();
+    }
   };
 
   const handleDoubleTap = () => {
@@ -1503,14 +1600,27 @@ function ReelCard({
   }, [reel?.id]);
 
   const handleMediaEnded = () => {
-    setIsPlaying(false);
+    // Seamless continuous loop for Reel video & audio
     if (videoRef.current) {
-      videoRef.current.pause();
+      videoRef.current.currentTime = 0;
+      const vp = videoRef.current.play();
+      if (vp !== undefined) vp.catch(() => {});
     }
     if (audioRef.current) {
-      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+      const ap = audioRef.current.play();
+      if (ap !== undefined) ap.catch(() => {});
     }
+    setIsPlaying(true);
   };
+
+  const isSelfAuthor = Boolean(
+    currentUser?.id && (
+      String(currentUser.id) === String(reel?.userId || reel?.user?.id || authorIdentifier) ||
+      (currentUser.name && authorName && String(currentUser.name).trim().toLowerCase() === String(authorName).trim().toLowerCase()) ||
+      (currentUser.username && authorName && String(currentUser.username).trim().toLowerCase() === String(authorName).trim().toLowerCase())
+    )
+  );
 
   const togglePlay = () => {
     if (isPlaying) {
@@ -1849,6 +1959,7 @@ function ReelCard({
           }}
           src={reelMusic.audioUrl} 
           muted={isMuted}
+          loop
           onEnded={handleMediaEnded}
           className="hidden"
         />
@@ -1860,8 +1971,14 @@ function ReelCard({
         <div 
           className="absolute inset-0 z-20 cursor-pointer" 
           onClick={handleInteractionClick}
+          onTouchStart={handleTouchStartReel}
           onTouchEnd={handleTouchEndReel}
-          onDoubleClick={handleDoubleTap}
+          onDoubleClick={(e) => {
+            e.stopPropagation();
+            if (Date.now() - lastTouchTime.current > 500) {
+              handleDoubleTap();
+            }
+          }}
         />
 
         {/* Double Tap Heart Animation */}
@@ -1881,43 +1998,29 @@ function ReelCard({
           )}
         </AnimatePresence>
 
-        {/* Ambient Blur Backdrop */}
-        {isVideo && mediaSrc ? (
-          <video
-            src={mediaSrc}
-            muted
-            playsInline
-            loop
-            className="absolute inset-0 w-full h-full object-cover blur-2xl opacity-40 scale-110 pointer-events-none"
-          />
-        ) : (
-          <img
-            src={mediaSrc}
-            alt=""
-            className="absolute inset-0 w-full h-full object-cover blur-2xl opacity-40 scale-110 pointer-events-none"
-          />
-        )}
-
-        {/* Sharp Foreground Media */}
-        {(mediaSrc.includes('youtube.com') || mediaSrc.includes('youtu.be') || mediaSrc.includes('facebook.com') || mediaSrc.includes('fb.watch')) ? (
-          <AdMediaDisplay ad={{ type: 'video', mediaUrl: mediaSrc }} className="relative z-10 w-full h-full object-contain pointer-events-auto" />
+        {/* Sharp Foreground Media with Unified FeedVideoPlayer Engine */}
+        {isExplicitPdf ? (
+          <div className="relative z-10 w-full h-full flex items-center justify-center bg-slate-950 p-2 sm:p-4 overflow-y-auto">
+            <PdfCardViewer post={{ ...reel, mediaUrl: mediaSrc || reel?.mediaUrl }} variant="feed" />
+          </div>
+        ) : (mediaSrc.includes('youtube.com') || mediaSrc.includes('youtu.be') || mediaSrc.includes('facebook.com') || mediaSrc.includes('fb.watch')) ? (
+          <AdMediaDisplay ad={{ type: 'video', mediaUrl: mediaSrc }} className="relative z-10 w-full h-full object-cover pointer-events-auto" />
         ) : isVideo && mediaSrc ? (
-          <video
-            ref={videoRef}
-            src={mediaSrc} 
-            poster={reel?.thumbnailUrl}
-            muted={isMuted}
-            playsInline
-            preload="auto"
-            loop
-            onEnded={handleMediaEnded}
-            className="relative z-10 w-full h-full object-contain transition-all duration-300 m-auto transform-gpu will-change-transform"
+          <FeedVideoPlayer
+            src={mediaSrc}
+            poster={posterSrc || reel?.thumbnailUrl}
+            className="w-full h-full object-cover bg-black relative z-10"
+            audioSrc={reelMusic?.audioUrl}
+            isReel={true}
+            autoPlay={true}
+            onDoubleTap={handleDoubleTap}
+            defaultMuted={false}
           />
         ) : (
           <img 
             src={mediaSrc} 
             alt={reel?.title || 'Reel media'} 
-            className="relative z-10 w-full h-full object-contain transition-all duration-300 m-auto"
+            className="relative z-10 w-full h-full object-cover transition-all duration-300 m-auto"
             onError={(e) => {
               e.currentTarget.style.display = 'none';
             }}
@@ -2072,11 +2175,14 @@ function ReelCard({
             isAuthorVerified ? "tiranga-border-circle" : "neon-border-circle"
           )}>
             <div className="w-full h-full bg-black rounded-full p-[1px] overflow-hidden">
-              {authorAvatar ? (
-                <img src={authorAvatar} alt={authorName} className="w-full h-full object-cover" />
-              ) : (
-                authorName?.charAt(0) || 'U'
-              )}
+              <img 
+                src={authorAvatar || getInitialsAvatar(authorName)} 
+                alt={authorName} 
+                className="w-full h-full object-cover" 
+                onError={(e) => {
+                  (e.currentTarget as HTMLImageElement).src = getInitialsAvatar(authorName);
+                }}
+              />
             </div>
           </div>
           
@@ -2088,17 +2194,19 @@ function ReelCard({
               {authorName}
               {isAuthorVerified && <VerifiedBadge size="sm" />}
             </span>
-            <button 
-              onClick={handleToggleFollow}
-              className={cn(
-                "text-xs font-bold px-3 py-1 rounded-full border transition-all cursor-pointer",
-                isFollowing 
-                  ? "bg-white/20 text-white border-white/40" 
-                  : "bg-blue-600 hover:bg-blue-700 text-white border-blue-500 shadow-md"
-              )}
-            >
-              {isFollowing ? 'Following' : 'Follow'}
-            </button>
+            {!isSelfAuthor && (
+              <button 
+                onClick={handleToggleFollow}
+                className={cn(
+                  "text-xs font-bold px-3 py-1 rounded-full border transition-all cursor-pointer",
+                  isFollowing 
+                    ? "bg-white/20 text-white border-white/40" 
+                    : "bg-blue-600 hover:bg-blue-700 text-white border-blue-500 shadow-md"
+                )}
+              >
+                {isFollowing ? 'Following' : 'Follow'}
+              </button>
+            )}
           </div>
         </div>
 
@@ -2409,25 +2517,37 @@ function FullScreenFeedViewerModal({
   userLocation?: {lat: number, lng: number} | null;
 }) {
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
-  const touchStartX = React.useRef<number | null>(null);
-  const touchEndX = React.useRef<number | null>(null);
-  const touchStartY = React.useRef<number | null>(null);
-  const touchEndY = React.useRef<number | null>(null);
+  const [direction, setDirection] = useState<number>(0);
+  const isWheeling = React.useRef(false);
+
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent('vyapar_reel_viewing_active', { detail: { active: true } }));
+    window.dispatchEvent(new CustomEvent('pause_all_feed_videos'));
+    return () => {
+      window.dispatchEvent(new CustomEvent('vyapar_reel_viewing_active', { detail: { active: false } }));
+    };
+  }, []);
 
   const goToNext = () => {
-    setCurrentIndex(prev => Math.min(posts.length - 1, prev + 1));
+    if (currentIndex < posts.length - 1) {
+      setDirection(1);
+      setCurrentIndex(prev => prev + 1);
+    }
   };
 
   const goToPrev = () => {
-    setCurrentIndex(prev => Math.max(0, prev - 1));
+    if (currentIndex > 0) {
+      setDirection(-1);
+      setCurrentIndex(prev => prev - 1);
+    }
   };
 
   // Keyboard Navigation
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === 'd' || e.key === 'D') {
+      if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === 'j' || e.key === 'J' || e.key === 'PageDown') {
         goToNext();
-      } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp' || e.key === 'a' || e.key === 'A') {
+      } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp' || e.key === 'k' || e.key === 'K' || e.key === 'PageUp') {
         goToPrev();
       } else if (e.key === 'Escape') {
         onClose();
@@ -2437,47 +2557,20 @@ function FullScreenFeedViewerModal({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [currentIndex, posts.length]);
 
-  // Touch Drag / Swipe Navigation
-  const handleTouchStart = (e: React.TouchEvent) => {
-    touchStartX.current = e.touches[0].clientX;
-    touchStartY.current = e.touches[0].clientY;
-  };
-
-  const handleTouchMove = (e: React.TouchEvent) => {
-    touchEndX.current = e.touches[0].clientX;
-    touchEndY.current = e.touches[0].clientY;
-  };
-
-  const handleTouchEnd = () => {
-    const minSwipeDistance = 40;
-
-    // Check horizontal swipe first
-    if (touchStartX.current !== null && touchEndX.current !== null) {
-      const distanceX = touchStartX.current - touchEndX.current;
-      if (Math.abs(distanceX) > minSwipeDistance) {
-        if (distanceX > 0) goToNext();
-        else goToPrev();
-        touchStartX.current = null;
-        touchEndX.current = null;
-        touchStartY.current = null;
-        touchEndY.current = null;
-        return;
+  // Smooth mouse wheel trackpad navigation
+  const handleWheel = (e: React.WheelEvent) => {
+    if (isWheeling.current || posts.length <= 1) return;
+    if (Math.abs(e.deltaY) > 25) {
+      isWheeling.current = true;
+      if (e.deltaY > 0) {
+        goToNext();
+      } else {
+        goToPrev();
       }
+      setTimeout(() => {
+        isWheeling.current = false;
+      }, 400);
     }
-
-    // Check vertical swipe
-    if (touchStartY.current !== null && touchEndY.current !== null) {
-      const distanceY = touchStartY.current - touchEndY.current;
-      if (Math.abs(distanceY) > minSwipeDistance) {
-        if (distanceY > 0) goToNext();
-        else goToPrev();
-      }
-    }
-
-    touchStartX.current = null;
-    touchEndX.current = null;
-    touchStartY.current = null;
-    touchEndY.current = null;
   };
 
   if (!posts || posts.length === 0 || currentIndex < 0 || currentIndex >= posts.length) {
@@ -2487,28 +2580,10 @@ function FullScreenFeedViewerModal({
   const currentPost = posts[currentIndex];
   if (!currentPost) return null;
 
-  // Auto-slide story timer: 5s for static images/posts
-  useEffect(() => {
-    if (!currentPost) return;
-    const isVid = currentPost.type === 'video' || currentPost.mediaUrl?.match(/\.(mp4|webm|mov|m4v)$/i);
-    if (!isVid) {
-      const timer = setTimeout(() => {
-        if (currentIndex < posts.length - 1) {
-          setCurrentIndex(prev => prev + 1);
-        } else {
-          onClose();
-        }
-      }, 5000);
-      return () => clearTimeout(timer);
-    }
-  }, [currentIndex, currentPost, posts.length]);
-
   return (
     <div 
       className="fixed inset-0 z-[200] bg-black/95 flex items-center justify-center backdrop-blur-xl overflow-hidden select-none"
-      onTouchStart={handleTouchStart}
-      onTouchMove={handleTouchMove}
-      onTouchEnd={handleTouchEnd}
+      onWheel={handleWheel}
       onClick={onClose}
     >
       {/* Top Header Overlay - Clean Close Button Only */}
@@ -2522,18 +2597,65 @@ function FullScreenFeedViewerModal({
         </button>
       </div>
 
-
-
-      {/* Center Reel/Post Display */}
-      <div onClick={e => e.stopPropagation()} className="relative z-10 w-full max-w-[420px] h-[90vh] flex items-center justify-center">
-        <ReelCard 
-          key={currentPost?.id || currentIndex} 
-          reel={currentPost} 
-          currentUser={currentUser} 
-          onClose={onClose} 
-          userLocation={userLocation}
-        />
-      </div></div>
+      {/* Center Reel/Post Display with YouTube Shorts / Instagram Smooth Swipe Physics */}
+      <div onClick={e => e.stopPropagation()} className="relative z-10 w-full max-w-[420px] h-[calc(100dvh-32px)] max-h-[850px] aspect-[9/16] flex items-center justify-center overflow-hidden rounded-2xl border border-zinc-800 shadow-2xl my-auto">
+        <AnimatePresence mode="popLayout" custom={direction}>
+          <motion.div
+            key={currentPost?.id || currentIndex}
+            custom={direction}
+            drag="y"
+            dragConstraints={{ top: 0, bottom: 0 }}
+            dragElastic={0.25}
+            onDragEnd={(_e, info) => {
+              const offset = info.offset.y;
+              const velocity = info.velocity.y;
+              if (offset < -50 || velocity < -300) {
+                goToNext();
+              } else if (offset > 50 || velocity > 300) {
+                goToPrev();
+              }
+            }}
+            initial={(dir: number) => ({
+              y: dir > 0 ? '100%' : dir < 0 ? '-100%' : 0,
+              scale: 0.88,
+              rotateX: dir > 0 ? 12 : dir < 0 ? -12 : 0,
+              opacity: 0.8
+            })}
+            animate={{
+              y: 0,
+              scale: 1,
+              rotateX: 0,
+              opacity: 1,
+              transition: {
+                y: { type: 'spring', stiffness: 380, damping: 30 },
+                scale: { duration: 0.22, ease: 'easeOut' },
+                rotateX: { duration: 0.22, ease: 'easeOut' },
+                opacity: { duration: 0.18 }
+              }
+            }}
+            exit={(dir: number) => ({
+              y: dir > 0 ? '-100%' : '100%',
+              scale: 0.88,
+              rotateX: dir > 0 ? -12 : 12,
+              opacity: 0.8,
+              transition: {
+                y: { type: 'spring', stiffness: 380, damping: 30 },
+                scale: { duration: 0.22 },
+                opacity: { duration: 0.18 }
+              }
+            })}
+            className="w-full h-full flex items-center justify-center relative overflow-hidden touch-pan-y"
+          >
+            <ReelCard 
+              reel={currentPost} 
+              currentUser={currentUser} 
+              onClose={onClose} 
+              userLocation={userLocation}
+            />
+          </motion.div>
+        </AnimatePresence>
+      </div>
+    </div>
   );
 }
 
@@ -3000,21 +3122,137 @@ function FeedVideoPlayer({
   src,
   poster,
   className,
-  audioSrc
+  audioSrc,
+  isReel = false,
+  autoPlay = false,
+  onDoubleTap,
+  defaultMuted
 }: {
   src: string;
   poster?: string;
   className?: string;
   audioSrc?: string;
+  isReel?: boolean;
+  autoPlay?: boolean;
+  onDoubleTap?: () => void;
+  defaultMuted?: boolean;
 }) {
-  const videoRef = React.useRef<HTMLVideoElement>(null);
+  const location = useLocation();
+  const playerRef = React.useRef<MediaPlayerInstance>(null);
   const audioRef = React.useRef<HTMLAudioElement>(null);
   const containerRef = React.useRef<HTMLDivElement>(null);
+  const progressBarRef = React.useRef<HTMLDivElement>(null);
+  
   const [isPlaying, setIsPlaying] = useState(false);
-  const [isMuted, setIsMuted] = useState(true);
+  const [isMuted, setIsMuted] = useState(() => defaultMuted !== undefined ? defaultMuted : !isReel);
   const [isLoading, setIsLoading] = useState(false);
   const [hasError, setHasError] = useState(false);
+  const [hasStartedPlaying, setHasStartedPlaying] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [isHovered, setIsHovered] = useState(false);
+  const [isReelActive, setIsReelActive] = useState(false);
+  const [isScrubbing, setIsScrubbing] = useState(false);
+  const [scrubPercent, setScrubPercent] = useState(0);
+  const [hoverPercent, setHoverPercent] = useState<number | null>(null);
+  const isIntersectingRef = React.useRef(false);
+  const isDraggingRef = React.useRef(false);
+  const isPausedByUserRef = React.useRef(false);
+  const lastTapTimeRef = React.useRef(0);
+  const clickTimeoutRef = React.useRef<any>(null);
 
+  const getVideoElement = (): HTMLVideoElement | null => {
+    return containerRef.current?.querySelector('video') || null;
+  };
+
+  useEffect(() => {
+    setHasError(false);
+    setIsLoading(false);
+    setHasStartedPlaying(false);
+    isPausedByUserRef.current = false;
+    setProgress(0);
+    setCurrentTime(0);
+    const video = getVideoElement();
+    if (video) {
+      video.load();
+      if (isReel || autoPlay) {
+        attemptPlay();
+      }
+    }
+  }, [src, isReel]);
+
+  // Safe playback trigger
+  const attemptPlay = () => {
+    const video = getVideoElement();
+    if (!video || isPausedByUserRef.current) return;
+    if (!isReel) {
+      if (isReelActive || location.pathname !== '/') return;
+    }
+    const playPromise = video.play();
+    if (playPromise !== undefined) {
+      playPromise
+        .then(() => {
+          setIsPlaying(true);
+          setHasStartedPlaying(true);
+          if (audioRef.current && !isMuted) audioRef.current.play().catch(() => {});
+        })
+        .catch(() => setIsPlaying(false));
+    }
+  };
+
+  const attemptPause = () => {
+    const video = getVideoElement();
+    if (video) video.pause();
+    if (audioRef.current) audioRef.current.pause();
+    setIsPlaying(false);
+  };
+
+  // Listen to Reel viewer active/inactive events and global pause commands
+  useEffect(() => {
+    const handleReelEvent = (e: any) => {
+      const active = Boolean(e?.detail?.active);
+      setIsReelActive(active);
+      if (!isReel) {
+        if (active) {
+          attemptPause();
+        } else {
+          if (location.pathname === '/' && isIntersectingRef.current && !isPausedByUserRef.current) {
+            attemptPlay();
+          }
+        }
+      }
+    };
+
+    const handlePauseAll = () => {
+      attemptPause();
+    };
+
+    window.addEventListener('vyapar_reel_viewing_active', handleReelEvent);
+    window.addEventListener('pause_all_feed_videos', handlePauseAll);
+
+    return () => {
+      window.removeEventListener('vyapar_reel_viewing_active', handleReelEvent);
+      window.removeEventListener('pause_all_feed_videos', handlePauseAll);
+    };
+  }, [location.pathname, isMuted, isReelActive, isReel]);
+
+  // React to Route change
+  useEffect(() => {
+    if (isReel) {
+      if (!isPausedByUserRef.current) {
+        attemptPlay();
+      }
+    } else {
+      if (location.pathname !== '/') {
+        attemptPause();
+      } else if (!isReelActive && isIntersectingRef.current && !isPausedByUserRef.current) {
+        attemptPlay();
+      }
+    }
+  }, [location.pathname, isReel]);
+
+  // IntersectionObserver for Feed & Reels scrolling
   useEffect(() => {
     const el = containerRef.current;
     if (!el || typeof IntersectionObserver === 'undefined') return;
@@ -3022,122 +3260,337 @@ function FeedVideoPlayer({
     const observer = new IntersectionObserver(
       (entries) => {
         entries.forEach((entry) => {
-          const video = videoRef.current;
-          if (!video) return;
-          if (entry.isIntersecting && entry.intersectionRatio >= 0.5) {
-            const playPromise = video.play();
-            if (playPromise !== undefined) {
-              playPromise
-                .then(() => {
-                  setIsPlaying(true);
-                  if (audioRef.current) audioRef.current.play().catch(()=>{});
-                })
-                .catch(() => setIsPlaying(false));
+          const inView = entry.isIntersecting && entry.intersectionRatio >= 0.25;
+          isIntersectingRef.current = inView;
+
+          if (inView && !isPausedByUserRef.current) {
+            if (isReel || (!isReelActive && location.pathname === '/')) {
+              attemptPlay();
             }
-          } else {
-            video.pause();
-            if (audioRef.current) audioRef.current.pause();
-            setIsPlaying(false);
+          } else if (!inView) {
+            attemptPause();
           }
         });
       },
-      { threshold: [0.1, 0.5, 0.8] }
+      { threshold: [0.25, 0.5, 0.75] }
     );
 
     observer.observe(el);
     return () => {
       observer.disconnect();
     };
-  }, [src]);
+  }, [src, isReelActive, location.pathname, isReel]);
 
-  const togglePlay = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    const video = videoRef.current;
+  const togglePlay = (e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (isDraggingRef.current) return;
+    const video = getVideoElement();
     if (!video) return;
-    if (video.paused) {
-      const p = video.play();
-      if (p !== undefined) {
-        p.then(() => {
-          setIsPlaying(true);
-          if (audioRef.current) audioRef.current.play().catch(()=>{});
-        }).catch(() => {});
-      }
+    if (isPlaying || !video.paused) {
+      isPausedByUserRef.current = true;
+      attemptPause();
     } else {
-      video.pause();
-      if (audioRef.current) audioRef.current.pause();
-      setIsPlaying(false);
+      isPausedByUserRef.current = false;
+      attemptPlay();
+    }
+  };
+
+  const handlePlayerTap = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (isDraggingRef.current) return;
+
+    const now = Date.now();
+    const timeSinceLastTap = now - lastTapTimeRef.current;
+
+    if (timeSinceLastTap > 0 && timeSinceLastTap < 300 && onDoubleTap) {
+      if (clickTimeoutRef.current) {
+        clearTimeout(clickTimeoutRef.current);
+        clickTimeoutRef.current = null;
+      }
+      lastTapTimeRef.current = 0;
+      onDoubleTap();
+    } else {
+      lastTapTimeRef.current = now;
+      if (clickTimeoutRef.current) clearTimeout(clickTimeoutRef.current);
+      clickTimeoutRef.current = setTimeout(() => {
+        togglePlay(e);
+        lastTapTimeRef.current = 0;
+      }, 250);
     }
   };
 
   const toggleMute = (e: React.MouseEvent) => {
     e.stopPropagation();
-    const video = videoRef.current;
+    const video = getVideoElement();
     if (!video) return;
     const newMuted = !isMuted;
     video.muted = newMuted;
     if (audioRef.current) {
       audioRef.current.muted = newMuted;
       if (!newMuted && isPlaying) {
-        audioRef.current.play().catch(()=>{});
+        audioRef.current.play().catch(() => {});
       }
     }
     setIsMuted(newMuted);
   };
 
-  if (hasError) {
-    return poster ? (
-      <img
-        src={poster}
-        alt="Video thumbnail"
-        className={className || "w-full h-full max-h-[80vh] object-contain bg-black"}
-      />
-    ) : (
-      <div className="w-full min-h-[250px] bg-zinc-950 flex flex-col items-center justify-center text-zinc-500 gap-2">
-        <Film className="w-10 h-10 text-zinc-600" />
-        <span className="text-xs font-semibold">Video unavailable</span>
-      </div>
-    );
-  }
+  const handleTimeUpdate = () => {
+    if (isDraggingRef.current) return;
+    const video = getVideoElement();
+    if (video && video.duration) {
+      const dur = video.duration;
+      const cur = video.currentTime;
+      setDuration(dur);
+      setCurrentTime(cur);
+      setProgress((cur / dur) * 100);
+    }
+  };
+
+  const handleLoadedMetadata = () => {
+    const video = getVideoElement();
+    if (video && video.duration) {
+      setDuration(video.duration);
+    }
+  };
+
+  const handleRetry = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setHasError(false);
+    setIsLoading(true);
+    const video = getVideoElement();
+    if (video) {
+      video.load();
+      attemptPlay();
+      setIsLoading(false);
+    }
+  };
+
+  // Helper to format time (e.g., 0:24)
+  const formatTime = (secs: number) => {
+    if (isNaN(secs) || secs < 0) return '0:00';
+    const m = Math.floor(secs / 60);
+    const s = Math.floor(secs % 60);
+    return `${m}:${s < 10 ? '0' : ''}${s}`;
+  };
+
+  // Calculate seek percentage from a clientX coordinate
+  const calculatePercentFromX = (clientX: number) => {
+    const bar = progressBarRef.current;
+    if (!bar) return 0;
+    const rect = bar.getBoundingClientRect();
+    const pos = (clientX - rect.left) / rect.width;
+    return Math.max(0, Math.min(100, pos * 100));
+  };
+
+  // Apply new time directly to video element and audio track
+  const applySeekPercent = (pct: number) => {
+    const video = getVideoElement();
+    if (!video) return;
+    const dur = video.duration || duration || 0;
+    if (dur > 0) {
+      const targetTime = (pct / 100) * dur;
+      video.currentTime = targetTime;
+      if (audioRef.current) {
+        audioRef.current.currentTime = targetTime;
+      }
+      setCurrentTime(targetTime);
+      setProgress(pct);
+    }
+  };
+
+  // Mouse & Touch Scrubbing Handlers
+  const handleScrubberStart = (clientX: number) => {
+    isDraggingRef.current = true;
+    setIsScrubbing(true);
+    const pct = calculatePercentFromX(clientX);
+    setScrubPercent(pct);
+    applySeekPercent(pct);
+
+    const onPointerMove = (e: MouseEvent | TouchEvent) => {
+      if (!isDraggingRef.current) return;
+      const x = 'touches' in e ? e.touches[0].clientX : e.clientX;
+      const movedPct = calculatePercentFromX(x);
+      setScrubPercent(movedPct);
+      applySeekPercent(movedPct);
+    };
+
+    const onPointerUp = () => {
+      isDraggingRef.current = false;
+      setIsScrubbing(false);
+      window.removeEventListener('mousemove', onPointerMove);
+      window.removeEventListener('mouseup', onPointerUp);
+      window.removeEventListener('touchmove', onPointerMove);
+      window.removeEventListener('touchend', onPointerUp);
+      window.removeEventListener('touchcancel', onPointerUp);
+    };
+
+    window.addEventListener('mousemove', onPointerMove);
+    window.addEventListener('mouseup', onPointerUp);
+    window.addEventListener('touchmove', onPointerMove, { passive: true });
+    window.addEventListener('touchend', onPointerUp);
+    window.addEventListener('touchcancel', onPointerUp);
+  };
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    handleScrubberStart(e.clientX);
+  };
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    e.stopPropagation();
+    if (e.touches.length > 0) {
+      handleScrubberStart(e.touches[0].clientX);
+    }
+  };
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    const pct = calculatePercentFromX(e.clientX);
+    setHoverPercent(pct);
+  };
+
+  const handleMouseLeave = () => {
+    setHoverPercent(null);
+  };
+
+  const displayProgress = isScrubbing ? scrubPercent : progress;
+  const currentPreviewTime = isScrubbing 
+    ? (scrubPercent / 100) * (duration || 1)
+    : hoverPercent !== null 
+      ? (hoverPercent / 100) * (duration || 1) 
+      : currentTime;
 
   return (
-    <div ref={containerRef} className="relative w-full h-full min-h-[300px] flex items-center justify-center bg-black group overflow-hidden select-none">
-      <video
-        ref={videoRef}
+    <div 
+      ref={containerRef} 
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+      className="relative w-full h-full min-h-[300px] flex items-center justify-center bg-black group overflow-hidden select-none"
+    >
+      {/* Background Poster fallback ONLY before video has started playing or if error */}
+      {poster && (!hasStartedPlaying || hasError) && (
+        <img
+          src={poster}
+          alt="Video preview poster"
+          className={`absolute inset-0 w-full h-full pointer-events-none z-0 filter brightness-95 transition-opacity duration-300 ${isReel ? 'object-cover' : 'object-contain'}`}
+        />
+      )}
+
+      <MediaPlayer
+        ref={playerRef}
         src={src}
-        poster={poster}
+        poster={hasStartedPlaying ? undefined : poster}
+        title="Vyapar Video"
         playsInline
-        muted={isMuted}
         loop
-        preload="metadata"
-        onCanPlay={() => setIsLoading(false)}
-        onWaiting={() => setIsLoading(true)}
-        onPlaying={() => { setIsLoading(false); setIsPlaying(true); }}
+        muted={isMuted}
+        load="eager"
+        preload="auto"
+        autoplay={isReel || autoPlay}
+        onPlay={() => { setIsPlaying(true); setHasStartedPlaying(true); }}
         onPause={() => setIsPlaying(false)}
-        onError={() => setHasError(true)}
-        className={className || "w-full h-full max-h-[80vh] object-contain bg-black transform-gpu will-change-transform"}
-      />
-      {audioSrc && <audio ref={audioRef} src={audioSrc} loop preload="metadata" muted={isMuted} />}
+        onWaiting={() => setIsLoading(true)}
+        onCanPlay={() => setIsLoading(false)}
+        onPlaying={() => { setIsLoading(false); setIsPlaying(true); setHasStartedPlaying(true); }}
+        onTimeUpdate={handleTimeUpdate}
+        onError={() => {
+          setIsLoading(false);
+          setHasError(true);
+        }}
+        className={className || "w-full h-full max-h-[80vh] object-contain bg-black transform-gpu will-change-transform relative z-10"}
+      >
+        <MediaOutlet />
+      </MediaPlayer>
+      {audioSrc && <audio ref={audioRef} src={audioSrc} loop preload="none" muted={isMuted} />}
 
       {/* Tap to play/pause overlay */}
       <div 
-        onClick={togglePlay} 
-        className="absolute inset-0 cursor-pointer flex items-center justify-center z-10"
+        onClick={handlePlayerTap} 
+        className="absolute inset-0 cursor-pointer flex items-center justify-center z-20"
       >
-        {!isPlaying && !isLoading && (
+        {/* Buffering Spinner */}
+        {isLoading && (
+          <div className="w-12 h-12 rounded-full bg-black/60 backdrop-blur-md border border-white/20 flex items-center justify-center pointer-events-none shadow-2xl">
+            <div className="w-6 h-6 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+          </div>
+        )}
+
+        {/* Center Play Button when paused */}
+        {!isPlaying && !isLoading && !hasError && (
           <div className="w-14 h-14 rounded-full bg-black/60 text-white backdrop-blur-md border border-white/20 flex items-center justify-center shadow-2xl transition-transform transform active:scale-90 hover:scale-110">
             <Play className="w-7 h-7 fill-white ml-1" />
           </div>
+        )}
+
+        {/* Error Retry Card */}
+        {hasError && (
+          <button
+            onClick={handleRetry}
+            className="px-4 py-2 rounded-full bg-black/75 text-white backdrop-blur-md border border-white/30 flex items-center gap-2 text-xs font-semibold shadow-xl hover:bg-black/90 transition-transform active:scale-95 cursor-pointer z-30"
+          >
+            <RefreshCw className="w-4 h-4" /> Tap to reload video
+          </button>
         )}
       </div>
 
       {/* Sound Mute/Unmute Button */}
       <button
         onClick={toggleMute}
-        className="absolute bottom-3 right-3 z-20 p-2.5 rounded-full bg-black/65 hover:bg-black/85 text-white backdrop-blur-md border border-white/20 transition-transform active:scale-95 shadow-xl cursor-pointer"
+        className="absolute bottom-5 right-3 z-30 p-2.5 rounded-full bg-black/65 hover:bg-black/85 text-white backdrop-blur-md border border-white/20 transition-transform active:scale-95 shadow-xl cursor-pointer"
         title={isMuted ? "Unmute" : "Mute"}
       >
         {isMuted ? <VolumeX className="w-4 h-4 text-white" /> : <Volume2 className="w-4 h-4 text-white" />}
       </button>
+
+      {/* Interactive Time & Progress Scrubber Bar */}
+      <div 
+        ref={progressBarRef}
+        onMouseDown={handleMouseDown}
+        onTouchStart={handleTouchStart}
+        onMouseMove={handleMouseMove}
+        onMouseLeave={handleMouseLeave}
+        onClick={(e) => e.stopPropagation()}
+        className="absolute bottom-0 left-0 right-0 h-6 pt-3 pb-1 px-0 z-30 cursor-pointer group/scrubber select-none"
+        title="Slide or click to seek video"
+      >
+        {/* Hover / Scrub Floating Time Tooltip */}
+        {(isScrubbing || (hoverPercent !== null && isHovered)) && duration > 0 && (
+          <div 
+            className="absolute -top-7 transform -translate-x-1/2 px-2 py-0.5 rounded-md bg-black/85 text-white text-[10px] font-mono font-bold tracking-tight backdrop-blur-md border border-white/20 pointer-events-none shadow-lg whitespace-nowrap z-40 transition-all duration-75"
+            style={{ 
+              left: `${Math.max(5, Math.min(95, isScrubbing ? scrubPercent : (hoverPercent ?? displayProgress)))}%` 
+            }}
+          >
+            {formatTime(currentPreviewTime)} <span className="opacity-60">/ {formatTime(duration)}</span>
+          </div>
+        )}
+
+        {/* Scrubber Track Bar */}
+        <div className="relative w-full h-1.5 group-hover/scrubber:h-2.5 transition-all duration-150 bg-white/25 rounded-full overflow-visible">
+          {/* Hover preview marker */}
+          {hoverPercent !== null && !isScrubbing && (
+            <div 
+              className="absolute top-0 bottom-0 left-0 bg-white/30 rounded-full pointer-events-none"
+              style={{ width: `${hoverPercent}%` }}
+            />
+          )}
+
+          {/* Active Blue Progress Fill */}
+          <div 
+            className="h-full bg-blue-500 rounded-full relative transition-all duration-75 shadow-sm"
+            style={{ width: `${displayProgress}%` }}
+          >
+            {/* Draggable Scrubber Thumb / Head */}
+            <div 
+              className={cn(
+                "absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 rounded-full bg-white shadow-md border-2 border-blue-600 transition-all cursor-grab active:cursor-grabbing",
+                isScrubbing 
+                  ? "w-4 h-4 scale-125 ring-4 ring-blue-500/40" 
+                  : "w-3.5 h-3.5 opacity-0 group-hover/scrubber:opacity-100 group-hover/scrubber:scale-110"
+              )}
+            />
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -3163,6 +3616,18 @@ function PostItem({
   const activeUserId = currentUser?.id || localStorage.getItem('vyapar_user_id');
   const [isLiked, setIsLiked] = useState(() => isPostLikedByUser(post, activeUserId));
   const [isSaved, setIsSaved] = useState(() => isPostSavedByUser(post, activeUserId));
+
+  const authorInfo = resolveAuthorInfo(post);
+  const authorAvatar = authorInfo.avatarUrl;
+  const authorName = authorInfo.name;
+
+  const isSelfPost = Boolean(
+    currentUser?.id && (
+      String(currentUser.id) === String(post.userId) ||
+      (currentUser.name && authorName && String(currentUser.name).trim().toLowerCase() === String(authorName).trim().toLowerCase()) ||
+      (currentUser.username && authorName && String(currentUser.username).trim().toLowerCase() === String(authorName).trim().toLowerCase())
+    )
+  );
 
   const mediaSrc = post.mediaUrl || post.persistentMediaUrl || post.videoUrl || post.thumbnailUrl || (post.id ? localStorage.getItem('vyapar_video_' + post.id) : null);
   const postMusic = post.music || (post.musicTitle ? { title: post.musicTitle, artist: post.musicArtist, audioUrl: post.musicUrl } : null);
@@ -3305,7 +3770,8 @@ function PostItem({
     }
     const wasLiked = isLiked;
     const nextState = !wasLiked;
-    const nextCount = wasLiked ? Math.max(0, likesCount - 1) : likesCount + 1;
+    const baseCount = typeof likesCount === 'number' ? likesCount : (post?.likesCount || post?.likes || 0);
+    const nextCount = wasLiked ? Math.max(0, baseCount - 1) : baseCount + 1;
 
     setIsLiked(nextState);
     setLikesCount(nextCount);
@@ -3315,6 +3781,7 @@ function PostItem({
     if (post) {
       post.isLiked = nextState;
       post.likesCount = nextCount;
+      post.likes = nextCount;
     }
 
     // Sync with backend memory
@@ -3325,17 +3792,18 @@ function PostItem({
     }).catch(() => {});
 
     // Direct Firestore Sync (Works on Vercel & everywhere)
-    const fsRes = await likePostInFirestore(post.id, currentUser.id, wasLiked, post);
-    if (fsRes && fsRes.success) {
+    const fsRes = await likePostInFirestore(post.id, currentUser.id, wasLiked, { ...post, likesCount: baseCount });
+    if (fsRes && fsRes.success && typeof fsRes.likesCount === 'number') {
       setIsLiked(fsRes.isLiked);
       setLikesCount(fsRes.likesCount);
       if (post) {
         post.isLiked = fsRes.isLiked;
         post.likesCount = fsRes.likesCount;
+        post.likes = fsRes.likesCount;
       }
     }
     if (onPostUpdated && post) {
-      onPostUpdated({ ...post, isLiked: nextState, likesCount: nextCount });
+      onPostUpdated({ ...post, isLiked: nextState, likesCount: post.likesCount || nextCount });
     }
   };
 
@@ -3409,11 +3877,15 @@ function PostItem({
     }
   };
 
-  const lastTapRef = useRef<number>(0);
+  const lastPostTapInfo = useRef<{ x: number; y: number; time: number } | null>(null);
+  const touchStartPostPos = useRef<{ x: number; y: number; time: number } | null>(null);
+  const lastPostTouchTime = useRef<number>(0);
 
   const triggerLikeWithHeart = () => {
     if (!isLiked) {
       handleLike();
+    } else {
+      playLikeSound();
     }
     if (window.navigator && window.navigator.vibrate) {
       window.navigator.vibrate(60);
@@ -3422,24 +3894,151 @@ function PostItem({
     setTimeout(() => setShowHeartOverlay(false), 900);
   };
 
-  const handleDoubleClickImage = () => {
-    triggerLikeWithHeart();
+  const handleDoubleClickImage = (e: React.MouseEvent) => {
+    if (Date.now() - lastPostTouchTime.current > 500) {
+      triggerLikeWithHeart();
+    }
+  };
+
+  const handleTouchStartImage = (e: React.TouchEvent) => {
+    if (e.touches.length === 1) {
+      touchStartPostPos.current = {
+        x: e.touches[0].clientX,
+        y: e.touches[0].clientY,
+        time: Date.now()
+      };
+    }
   };
 
   const handleTouchEndImage = (e: React.TouchEvent) => {
-    const now = Date.now();
-    const delay = now - lastTapRef.current;
-    if (delay < 350 && delay > 0) {
-      triggerLikeWithHeart();
+    lastPostTouchTime.current = Date.now();
+    if (!touchStartPostPos.current || e.changedTouches.length === 0) {
+      touchStartPostPos.current = null;
+      return;
     }
-    lastTapRef.current = now;
+
+    const touch = e.changedTouches[0];
+    const totalDist = Math.hypot(
+      touch.clientX - touchStartPostPos.current.x,
+      touch.clientY - touchStartPostPos.current.y
+    );
+    const duration = Date.now() - touchStartPostPos.current.time;
+    touchStartPostPos.current = null;
+
+    // If scrolling / swiping (movement > 15px or duration > 450ms), don't treat as tap!
+    if (totalDist > 15 || duration > 450) {
+      return;
+    }
+
+    const now = Date.now();
+    const prevTap = lastPostTapInfo.current;
+
+    if (prevTap) {
+      const delay = now - prevTap.time;
+      const tapDist = Math.hypot(touch.clientX - prevTap.x, touch.clientY - prevTap.y);
+      if (delay >= 40 && delay <= 450 && tapDist <= 60) {
+        lastPostTapInfo.current = null;
+        triggerLikeWithHeart();
+        return;
+      }
+    }
+
+    lastPostTapInfo.current = {
+      x: touch.clientX,
+      y: touch.clientY,
+      time: now
+    };
   };
 
   const isPostOwnerOrAdmin = Boolean(
     currentUser?.id && (
-      String(currentUser?.id) === String(post?.userId || post?.user?.id)
+      String(currentUser?.id) === String(post?.userId || post?.user?.id) ||
+      currentUser?.role === 'admin' ||
+      currentUser?.role === 'superadmin' ||
+      currentUser?.email === 'admin@vyaparbridge.com'
     )
   );
+
+  const [isPostNotifOn, setIsPostNotifOn] = useState(() => {
+    try {
+      const key = 'vyapar_post_notifs_' + (currentUser?.id || 'guest');
+      const list = JSON.parse(localStorage.getItem(key) || '[]');
+      return Array.isArray(list) && list.includes(String(post.id));
+    } catch { return false; }
+  });
+
+  const handleTogglePostNotifications = (e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    const next = !isPostNotifOn;
+    setIsPostNotifOn(next);
+    setShowOptions(false);
+    try {
+      const key = 'vyapar_post_notifs_' + (currentUser?.id || 'guest');
+      let list: string[] = [];
+      const existing = localStorage.getItem(key);
+      if (existing) list = JSON.parse(existing);
+      if (next) {
+        if (!list.includes(String(post.id))) list.push(String(post.id));
+        toast.success('🔔 Notifications turned ON for this post!');
+      } else {
+        list = list.filter(id => id !== String(post.id));
+        toast.success('🔕 Notifications turned OFF for this post.');
+      }
+      localStorage.setItem(key, JSON.stringify(list));
+    } catch (err) {}
+  };
+
+  const handleCopyLink = (e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setShowOptions(false);
+    const postUrl = `${window.location.origin}/#post-${post.id}`;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(postUrl).then(() => {
+        toast.success('🔗 Post link copied to clipboard!');
+      }).catch(() => {
+        toast.success('🔗 Post link: ' + postUrl);
+      });
+    } else {
+      toast.success('🔗 Post link: ' + postUrl);
+    }
+  };
+
+  const handleBlockUser = async () => {
+    const userId = currentUser?.id || 'guest';
+    const authorId = String(post.userId || post.user?.id || '');
+    if (!authorId) {
+      toast.error('Unable to identify creator to block.');
+      return;
+    }
+    
+    // 1. Persist locally
+    const { localBlockedKey } = getUserHiddenFilters(userId);
+    try {
+      let list: string[] = [];
+      const existing = localStorage.getItem(localBlockedKey);
+      if (existing) list = JSON.parse(existing);
+      if (!list.includes(authorId)) list.push(authorId);
+      localStorage.setItem(localBlockedKey, JSON.stringify(list));
+    } catch (e) {}
+
+    // 2. Persist in Firestore & Backend
+    if (currentUser?.id) {
+      blockUserInFirestore(currentUser.id, authorId);
+      try {
+        await fetch(`/api/users/${authorId}/block`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId: currentUser.id })
+        });
+      } catch (e) {}
+    }
+
+    toast.success(`🚫 ${authorName || 'User'} has been blocked. All their posts are now permanently hidden.`);
+    if (onPostDeleted) onPostDeleted(post.id);
+    window.dispatchEvent(new CustomEvent('postDeleted', { detail: { postId: post.id } }));
+    window.dispatchEvent(new CustomEvent('userBlocked', { detail: { blockedUserId: authorId } }));
+    window.dispatchEvent(new CustomEvent('blockedUsersUpdated', { detail: { blockedUserId: authorId } }));
+  };
 
   const handleNotInterestedPost = async () => {
     const userId = currentUser?.id || 'guest';
@@ -3640,45 +4239,6 @@ function PostItem({
 
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
 
-  const handleBlockUser = async () => {
-    const targetUserId = String(post.userId || post.user?.id || '');
-    if (!targetUserId) return;
-    if (currentUser && String(currentUser.id) === targetUserId) {
-      toast.error('You cannot block yourself');
-      return;
-    }
-    if (!confirm(`Block ${post.user?.name || 'this user'}? All their content and profile will be permanently hidden.`)) return;
-
-    const blockerId = currentUser?.id || 'guest';
-    
-    // 1. Persist locally
-    const { localBlockedKey } = getUserHiddenFilters(blockerId);
-    try {
-      let list: string[] = [];
-      const existing = localStorage.getItem(localBlockedKey);
-      if (existing) list = JSON.parse(existing);
-      if (!list.includes(targetUserId)) list.push(targetUserId);
-      localStorage.setItem(localBlockedKey, JSON.stringify(list));
-    } catch (e) {}
-
-    // 2. Persist in Firestore & Backend
-    if (currentUser?.id) {
-      blockUserInFirestore(currentUser.id, targetUserId);
-      try {
-        await fetch(`/api/users/${targetUserId}/block`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ blockerId: currentUser.id })
-        });
-      } catch (err) {}
-    }
-
-    toast.success(`User ${post.user?.name || ''} blocked! All content permanently hidden.`);
-    if (onPostDeleted) onPostDeleted(post.id);
-    window.dispatchEvent(new CustomEvent('userBlocked', { detail: { userId: targetUserId } }));
-    window.dispatchEvent(new CustomEvent('postDeleted', { detail: { postId: post.id } }));
-  };
-
   const handleDeleteComment = async (commentId: string) => {
     if (!confirm('Delete comment?')) return;
     try {
@@ -3722,21 +4282,19 @@ function PostItem({
            <div 
              onClick={() => navigate(`/profile/${post.userId}`)}
              className={cn(
-             "w-9 h-9 rounded-full cursor-pointer shrink-0 transition-transform hover:scale-105",
-             (post.user?.isVerified || (currentUser?.id === post.userId && currentUser?.isVerified))
+             "w-10 h-10 rounded-full cursor-pointer shrink-0 transition-transform hover:scale-105 overflow-hidden flex items-center justify-center bg-slate-200 dark:bg-zinc-800",
+             (post.user?.isVerified || authorInfo.isVerified || (currentUser?.id === post.userId && currentUser?.isVerified))
                ? "tiranga-border-circle p-[2px]"
                : "neon-border-circle p-[2px]"
            )}>
-             <div className="w-full h-full bg-[#E6C76C] dark:bg-black rounded-full p-[1px] overflow-hidden">
-               <div className="w-full h-full bg-slate-100 dark:bg-zinc-900 rounded-full flex items-center justify-center text-xs font-bold text-black/80 dark:text-zinc-300">
-                 <img 
-                   src={post.user?.avatarUrl || post.user?.avatar || post.userAvatar || post.avatar || BRAND_LOGO_SRC} 
-                   alt={post.user?.name || post.userName || 'User'} 
-                   className="w-full h-full object-cover rounded-full" 
-                   onError={(e) => { e.currentTarget.src = BRAND_LOGO_SRC; }}
-                 />
-               </div>
-             </div>
+             <img 
+               src={authorAvatar || getInitialsAvatar(authorName)} 
+               alt={authorName} 
+               className="w-full h-full object-cover rounded-full select-none" 
+               onError={(e) => { 
+                 (e.currentTarget as HTMLImageElement).src = getInitialsAvatar(authorName); 
+               }}
+             />
            </div>
            <div className="flex flex-col">
               <div className="flex items-center gap-1">
@@ -3744,16 +4302,16 @@ function PostItem({
                   onClick={() => navigate(`/profile/${post.userId}`)}
                   className={cn(
                     "font-black italic tracking-wider text-sm text-black dark:text-zinc-50 leading-none cursor-pointer hover:text-blue-600 dark:hover:text-blue-400 hover:underline",
-                    (post.user?.isVerified || (currentUser?.id === post.userId && currentUser?.isVerified)) && "text-blue-600 dark:text-blue-400 font-bold"
+                    (post.user?.isVerified || authorInfo.isVerified || (currentUser?.id === post.userId && currentUser?.isVerified)) && "text-blue-600 dark:text-blue-400 font-bold"
                   )}
                   style={{ fontFamily: "'Playfair Display', 'Dancing Script', serif", fontWeight: 900 }}
                 >
-                  {post.user?.name || post.userName || 'Verified Member'}
+                  {authorName}
                 </span>
-                {(post.user?.isVerified || (currentUser?.id === post.userId && currentUser?.isVerified)) && (
+                {(post.user?.isVerified || authorInfo.isVerified || (currentUser?.id === post.userId && currentUser?.isVerified)) && (
                   <VerifiedBadge size="sm" />
                 )}
-                {currentUser?.id !== post.userId && (
+                {!isSelfPost && (
                   <div className="flex items-center">
                     <span className="text-slate-300 dark:text-zinc-700 mx-1.5 text-[10px]">•</span>
                     <button 
@@ -3784,53 +4342,124 @@ function PostItem({
             <Bookmark className={cn("w-4 h-4", isSaved && "fill-black dark:fill-white")} />
           </button>
           <div className="relative">
-            <button onClick={() => setShowOptions(!showOptions)} className="text-black dark:text-zinc-100 hover:text-black/70 dark:hover:text-zinc-300 p-1">
+            <button 
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowOptions(!showOptions);
+              }} 
+              className="text-black dark:text-zinc-100 hover:text-black/70 dark:hover:text-zinc-300 p-1.5 rounded-full hover:bg-black/5 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
+              title="More options"
+            >
               <MoreHorizontal className="w-5 h-5" />
             </button>
-          {showOptions && (
-            <div className="absolute right-0 mt-2 w-52 bg-white dark:bg-zinc-900 rounded-xl shadow-2xl z-20 border border-slate-200 dark:border-zinc-800 overflow-hidden text-sm">
-              {isPostOwnerOrAdmin ? (
-                <>
-                  <button onClick={() => { setIsEditModalOpen(true); setShowOptions(false); }} className="w-full text-left px-4 py-3 text-black dark:text-zinc-50 font-semibold hover:bg-slate-50 dark:hover:bg-zinc-800 border-b border-slate-100 dark:border-zinc-800">
-                    Edit Post
-                  </button>
-                  <button onClick={(e) => handleDeletePost(e)} className="w-full text-left px-4 py-3 text-red-600 font-semibold hover:bg-slate-50 dark:hover:bg-zinc-800 border-b border-slate-100 dark:border-zinc-800">
-                    Delete Post
-                  </button>
-                </>
-              ) : (
-                <>
+
+            {showOptions && (
+              <>
+                {/* Click outside anywhere on screen to close */}
+                <div 
+                  className="fixed inset-0 z-40 bg-black/20 dark:bg-black/40 backdrop-blur-[0.5px]" 
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowOptions(false);
+                  }} 
+                />
+
+                <div 
+                  onClick={(e) => e.stopPropagation()} 
+                  className="absolute right-0 mt-2 w-56 bg-white dark:bg-zinc-900 rounded-2xl shadow-2xl z-50 border border-slate-200 dark:border-zinc-800 overflow-hidden text-sm animate-in fade-in zoom-in-95 duration-150 divide-y divide-slate-100 dark:divide-zinc-800/60"
+                >
+                  {/* Notifications Option */}
                   <button 
-                    onClick={() => { setIsReportModalOpen(true); setShowOptions(false); }} 
-                    className="w-full text-left px-4 py-3 text-red-600 font-bold hover:bg-red-50 dark:hover:bg-red-950/40 border-b border-slate-100 dark:border-zinc-800 flex items-center gap-2"
+                    onClick={handleTogglePostNotifications}
+                    className="w-full text-left px-4 py-3 text-black dark:text-zinc-100 font-semibold hover:bg-slate-50 dark:hover:bg-zinc-800 flex items-center gap-2.5 transition-colors cursor-pointer"
                   >
-                    <ShieldAlert className="w-4 h-4 text-red-500" />
-                    <span>Report Post / Nudity</span>
+                    {isPostNotifOn ? (
+                      <>
+                        <Bell className="w-4 h-4 text-blue-600 dark:text-blue-400 fill-blue-600 dark:fill-blue-400" />
+                        <span>Turn Off Notifications</span>
+                      </>
+                    ) : (
+                      <>
+                        <Bell className="w-4 h-4 text-black/70 dark:text-zinc-400" />
+                        <span>Turn On Notifications</span>
+                      </>
+                    )}
                   </button>
+
+                  {/* Owner or Admin Options: Edit & Delete */}
+                  {isPostOwnerOrAdmin ? (
+                    <>
+                      <button 
+                        onClick={() => { setIsEditModalOpen(true); setShowOptions(false); }} 
+                        className="w-full text-left px-4 py-3 text-black dark:text-zinc-50 font-semibold hover:bg-slate-50 dark:hover:bg-zinc-800 flex items-center gap-2.5 transition-colors cursor-pointer"
+                      >
+                        <Pencil className="w-4 h-4 text-blue-500" />
+                        <span>Edit Post</span>
+                      </button>
+                      <button 
+                        onClick={(e) => handleDeletePost(e)} 
+                        className="w-full text-left px-4 py-3 text-red-600 dark:text-red-400 font-semibold hover:bg-red-50 dark:hover:bg-red-950/30 flex items-center gap-2.5 transition-colors cursor-pointer"
+                      >
+                        <Trash2 className="w-4 h-4 text-red-500" />
+                        <span>Delete Post</span>
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button 
+                        onClick={() => { setIsReportModalOpen(true); setShowOptions(false); }} 
+                        className="w-full text-left px-4 py-3 text-red-600 dark:text-red-400 font-bold hover:bg-red-50 dark:hover:bg-red-950/30 flex items-center gap-2.5 transition-colors cursor-pointer"
+                      >
+                        <ShieldAlert className="w-4 h-4 text-red-500" />
+                        <span>Report Post / Nudity</span>
+                      </button>
+                      <button 
+                        onClick={() => { handleBlockUser(); setShowOptions(false); }} 
+                        className="w-full text-left px-4 py-3 text-red-600 dark:text-red-400 font-bold hover:bg-red-50 dark:hover:bg-red-950/30 flex items-center gap-2.5 transition-colors cursor-pointer"
+                      >
+                        <UserX className="w-4 h-4 text-red-500" />
+                        <span>Block User</span>
+                      </button>
+                    </>
+                  )}
+
+                  {/* Not Interested */}
                   <button 
-                    onClick={() => { handleBlockUser(); setShowOptions(false); }} 
-                    className="w-full text-left px-4 py-3 text-red-600 font-bold hover:bg-red-50 dark:hover:bg-red-950/40 border-b border-slate-100 dark:border-zinc-800 flex items-center gap-2"
+                    onClick={() => { handleNotInterestedPost(); setShowOptions(false); }} 
+                    className="w-full text-left px-4 py-3 text-amber-600 dark:text-amber-400 font-bold hover:bg-amber-50 dark:hover:bg-amber-950/30 flex items-center gap-2.5 transition-colors cursor-pointer"
                   >
-                    <UserX className="w-4 h-4 text-red-500" />
-                    <span>Block User</span>
+                    <EyeOff className="w-4 h-4 text-amber-500" />
+                    <span>Not Interested</span>
                   </button>
-                </>
-              )}
-              <button 
-                onClick={() => { handleNotInterestedPost(); setShowOptions(false); }} 
-                className="w-full text-left px-4 py-3 text-amber-600 dark:text-amber-400 font-bold hover:bg-slate-50 dark:hover:bg-zinc-800 border-b border-slate-100 dark:border-zinc-800 flex items-center gap-2 cursor-pointer"
-              >
-                <EyeOff className="w-4 h-4 text-amber-500" />
-                <span>Not Interested</span>
-              </button>
-              <button onClick={() => { setIsShareModalOpen(true); setShowOptions(false); }} className="w-full text-left px-4 py-3 text-black dark:text-zinc-50 hover:bg-slate-50 dark:hover:bg-zinc-800 border-b border-slate-100 dark:border-zinc-800">
-                Share Post
-              </button>
-              <button onClick={() => setShowOptions(false)} className="w-full text-left px-4 py-3 text-black/70 dark:text-zinc-400 hover:bg-slate-50 dark:hover:bg-zinc-800">
-                Cancel
-              </button>
-            </div>
-          )}
+
+                  {/* Share Post */}
+                  <button 
+                    onClick={() => { setIsShareModalOpen(true); setShowOptions(false); }} 
+                    className="w-full text-left px-4 py-3 text-black dark:text-zinc-100 hover:bg-slate-50 dark:hover:bg-zinc-800 flex items-center gap-2.5 transition-colors cursor-pointer"
+                  >
+                    <Share2 className="w-4 h-4 text-black/70 dark:text-zinc-400" />
+                    <span>Share Post</span>
+                  </button>
+
+                  {/* Copy Link */}
+                  <button 
+                    onClick={handleCopyLink}
+                    className="w-full text-left px-4 py-3 text-black dark:text-zinc-100 hover:bg-slate-50 dark:hover:bg-zinc-800 flex items-center gap-2.5 transition-colors cursor-pointer"
+                  >
+                    <Copy className="w-4 h-4 text-black/70 dark:text-zinc-400" />
+                    <span>Copy Link</span>
+                  </button>
+
+                  {/* Cancel */}
+                  <button 
+                    onClick={() => setShowOptions(false)} 
+                    className="w-full text-left px-4 py-3 text-black/70 dark:text-zinc-400 hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors font-medium cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -3850,14 +4479,15 @@ function PostItem({
         <div 
           className="relative w-full bg-black min-h-[350px] max-h-[80vh] flex items-center justify-center overflow-hidden cursor-pointer select-none border-y border-slate-50 dark:border-zinc-900"
           onDoubleClick={handleDoubleClickImage}
+          onTouchStart={handleTouchStartImage}
           onTouchEnd={handleTouchEndImage}
         >
-          {mediaSrc.includes('youtube.com') || mediaSrc.includes('youtu.be') || mediaSrc.includes('facebook.com') || mediaSrc.includes('fb.watch') ? (
-            <AdMediaDisplay ad={{ type: 'video', mediaUrl: mediaSrc }} className="w-full h-full aspect-video min-h-[350px] max-h-[80vh] object-cover bg-black pointer-events-auto" />
-          ) : (post.type === 'video' || mediaSrc.startsWith('data:video') || mediaSrc.includes('/uploads/') || mediaSrc.match(/\.(mp4|webm|mov|m4v|mkv|3gp)(\?.*)?$/i)) && !mediaSrc.match(/\.(jpg|jpeg|png|webp|gif|svg|avif)(\?.*)?$/i) ? (
-            <FeedVideoPlayer src={mediaSrc} poster={post.thumbnailUrl} className="w-full h-full max-h-[80vh] object-contain bg-black" audioSrc={postMusic?.audioUrl} />
-          ) : post.type === 'pdf' || mediaSrc.match(/\.pdf(\?.*)?$/i) ? (
+          {post.type === 'pdf' || mediaSrc.match(/\.pdf(\?.*)?$/i) || mediaSrc.startsWith('data:application/pdf') ? (
             <PdfCardViewer post={{ ...post, mediaUrl: mediaSrc }} variant="feed" />
+          ) : mediaSrc.includes('youtube.com') || mediaSrc.includes('youtu.be') || mediaSrc.includes('facebook.com') || mediaSrc.includes('fb.watch') ? (
+            <AdMediaDisplay ad={{ type: 'video', mediaUrl: mediaSrc }} className="w-full h-full aspect-video min-h-[350px] max-h-[80vh] object-cover bg-black pointer-events-auto" />
+          ) : (post.type === 'video' || mediaSrc.startsWith('data:video') || mediaSrc.match(/\.(mp4|webm|mov|m4v|mkv|3gp)(\?.*)?$/i)) && !mediaSrc.match(/\.(jpg|jpeg|png|webp|gif|svg|avif|pdf)(\?.*)?$/i) && !mediaSrc.startsWith('data:application/pdf') ? (
+            <FeedVideoPlayer src={mediaSrc} poster={post.thumbnailUrl} className="w-full h-full max-h-[80vh] object-contain bg-black" audioSrc={postMusic?.audioUrl} />
           ) : post.type === 'audio' || mediaSrc.match(/\.(mp3|wav|ogg|m4a)(\?.*)?$/i) ? (
             <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-indigo-900 to-purple-900 p-8">
                <div className="w-32 h-32 bg-white/10 rounded-full flex items-center justify-center mb-6 shadow-2xl animate-pulse">
@@ -4036,11 +4666,20 @@ function PostItem({
               <div key={comment.id} className="text-sm flex flex-col mb-1">
                 <div className="flex items-start gap-2 group/comment">
                   <div className="w-6 h-6 rounded-full bg-slate-200 dark:bg-zinc-800 flex items-center justify-center overflow-hidden shrink-0 mt-0.5">
-                    {(comment.user?.avatarUrl || comment.userAvatar) ? (
-                      <img src={comment.user?.avatarUrl || comment.userAvatar} alt={comment.user?.name || comment.userName || 'User'} className="w-full h-full object-cover" />
-                    ) : (
-                      <span className="text-[10px] font-bold text-black/80 dark:text-zinc-200">{(comment.user?.name || comment.userName || 'U').charAt(0).toUpperCase()}</span>
-                    )}
+                    {(() => {
+                      const cName = comment.user?.name || comment.userName || 'User';
+                      const cAvatar = resolveUserAvatar(comment, cName);
+                      return (
+                        <img 
+                          src={cAvatar || getInitialsAvatar(cName)} 
+                          alt={cName} 
+                          className="w-full h-full object-cover"
+                          onError={(e) => {
+                            (e.currentTarget as HTMLImageElement).src = getInitialsAvatar(cName);
+                          }}
+                        />
+                      );
+                    })()}
                   </div>
                   <div className="flex-1 flex flex-col">
                     <div className="flex items-center gap-1.5 flex-wrap shrink-0">
@@ -4435,41 +5074,226 @@ function MusicSelectionModal({ isOpen, onClose, onSelect }: { isOpen: boolean, o
   );
 }
 
-function SuggestedUsersRow({ users }: { users: any[] }) {
-  if (!users || users.length === 0) return null;
+function SuggestedUsersRow({ 
+  users,
+  currentUser,
+  onUpdateUser
+}: { 
+  users: any[];
+  currentUser?: any;
+  onUpdateUser?: (u: any) => void;
+}) {
+  const [followedMap, setFollowedMap] = useState<Record<string, boolean>>({});
+
+  const filteredUsers = useMemo(() => {
+    if (!Array.isArray(users)) return [];
+    const myId = String(currentUser?.id || '').trim().toLowerCase();
+    const myName = String(currentUser?.name || currentUser?.companyName || '').trim().toLowerCase();
+    const myUsername = String(currentUser?.username || '').trim().toLowerCase();
+    return users.filter(u => {
+      const uid = String(u?.id || u?.userId || u?.username || '').trim().toLowerCase();
+      const uname = String(u?.name || u?.companyName || u?.displayName || '').trim().toLowerCase();
+      if (myId && (uid === myId || uname === myId)) return false;
+      if (myName && (uname === myName || uid === myName)) return false;
+      if (myUsername && (uid === myUsername || uname === myUsername)) return false;
+      return true;
+    });
+  }, [users, currentUser]);
+
+  useEffect(() => {
+    const syncFollow = () => {
+      const currentFollowed = getFollowedUsers();
+      const newMap: Record<string, boolean> = {};
+      if (Array.isArray(filteredUsers)) {
+        filteredUsers.forEach(u => {
+          const uid = String(u?.id || u?.userId || u?.username || '');
+          if (uid) {
+            newMap[uid] = currentFollowed.includes(uid);
+          }
+        });
+      }
+      setFollowedMap(newMap);
+    };
+
+    syncFollow();
+    window.addEventListener('followedUsersUpdated', syncFollow);
+    return () => window.removeEventListener('followedUsersUpdated', syncFollow);
+  }, [filteredUsers]);
+
+  if (!filteredUsers || filteredUsers.length === 0) return null;
+
+  const handleFollowToggle = async (e: React.MouseEvent, targetUser: any) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const targetId = String(targetUser.id || targetUser.userId || targetUser.username || '');
+    if (!targetId) return;
+
+    if (!currentUser?.id) {
+      toast.error('Please login to follow businesses and creators');
+      return;
+    }
+
+    const userName = targetUser.name || targetUser.companyName || targetUser.displayName || targetUser.username || 'User';
+    const nextStatus = toggleFollowUser(targetId);
+
+    // Optimistic UI state update
+    setFollowedMap(prev => ({ ...prev, [targetId]: nextStatus }));
+
+    // Update target user followers count & current user following count
+    const delta = nextStatus ? 1 : -1;
+    const currentTargetFollowers = Number(targetUser.followersCount || targetUser.followers?.length || 0);
+    const updatedTargetFollowers = Math.max(0, currentTargetFollowers + delta);
+    targetUser.followersCount = updatedTargetFollowers;
+
+    if (currentUser) {
+      const currentMyFollowing = Number(currentUser.followingCount || currentUser.following?.length || 0);
+      const updatedUserFollowing = Math.max(0, currentMyFollowing + delta);
+      const updatedCurrentUser = {
+        ...currentUser,
+        followingCount: updatedUserFollowing,
+        following: nextStatus 
+          ? Array.from(new Set([...(currentUser.following || []), targetId]))
+          : (currentUser.following || []).filter((id: string) => id !== targetId)
+      };
+      if (onUpdateUser) {
+        onUpdateUser(updatedCurrentUser);
+      }
+      try {
+        localStorage.setItem('user', JSON.stringify(updatedCurrentUser));
+        localStorage.setItem('Vyapar Bridge_user', JSON.stringify(updatedCurrentUser));
+        syncUserToFirestore(updatedCurrentUser).catch(() => {});
+      } catch (err) {}
+    }
+
+    // Sync target user to Firestore
+    try {
+      syncUserToFirestore({
+        ...targetUser,
+        id: targetId,
+        followersCount: updatedTargetFollowers
+      }).catch(() => {});
+    } catch (err) {}
+
+    // Call backend API
+    try {
+      await fetch(`/api/users/${targetId}/follow`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ followerId: currentUser.id })
+      });
+    } catch (err) {
+      console.warn('Backend follow sync error:', err);
+    }
+
+    if (nextStatus) {
+      toast.success(`✓ Following ${userName}`);
+    } else {
+      toast(`Unfollowed ${userName}`, { icon: 'ℹ️' });
+    }
+  };
 
   return (
-    <div className="py-6 border-y border-slate-100 dark:border-zinc-900 bg-slate-50/50 dark:bg-zinc-950/50 my-2 overflow-hidden">
-      <div className="px-4 mb-4 flex items-center justify-between">
-        <h3 className="text-sm font-bold text-black dark:text-zinc-50 uppercase tracking-wider">Suggested for you</h3>
-        <Link to="/explore" className="text-xs font-bold text-blue-500 hover:underline">See all</Link>
+    <div className="py-5 border-y border-slate-200/80 dark:border-zinc-800/80 bg-white/70 dark:bg-zinc-900/70 backdrop-blur-sm my-3 rounded-2xl sm:rounded-3xl shadow-sm overflow-hidden">
+      <div className="px-4 mb-3.5 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <div className="w-2 h-2 rounded-full bg-blue-600 animate-pulse"></div>
+          <h3 className="text-xs sm:text-sm font-black text-black dark:text-zinc-50 uppercase tracking-wider">Suggested for you</h3>
+        </div>
+        <Link to="/explore" className="text-xs font-bold text-blue-600 hover:text-blue-700 dark:text-blue-400 hover:underline flex items-center gap-1">
+          See all
+          <ChevronRight className="w-3.5 h-3.5" />
+        </Link>
       </div>
-      <div className="flex gap-4 overflow-x-auto px-4 pb-2 no-scrollbar scroll-smooth">
-        {users.map((u, i) => (
-          <div key={u.id || `su-${i}`} className="flex-shrink-0 w-40 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-xl p-4 flex flex-col items-center text-center shadow-sm hover:border-blue-500/50 transition-all">
-            <Link to={`/profile/${u.id}`} className="relative mb-3 block">
-              <div className="w-16 h-16 rounded-full overflow-hidden border-2 border-slate-100 dark:border-zinc-800 shadow-inner">
-                <img src={u.avatarUrl} alt={u.name} className="w-full h-full object-cover" />
-              </div>
-              {u.isVerified && (
-                <div className="absolute -bottom-1 -right-1 bg-white dark:bg-zinc-900 rounded-full p-0.5 shadow-md">
-                  <CheckCircle className="w-4 h-4 text-blue-500 fill-blue-500" />
-                </div>
-              )}
-            </Link>
-            <h4 className="font-bold text-sm text-black dark:text-zinc-50 truncate w-full mb-0.5">{u.name}</h4>
-            {u.role !== 'customer' && (
-              <p className="text-[10px] text-black/70 uppercase font-bold tracking-tighter mb-3">{u.role}</p>
-            )}
-            <Link 
-              to={`/profile/${u.id}`}
-              className="w-full py-1.5 bg-blue-500 hover:bg-blue-600 text-white text-xs font-bold rounded-lg transition-colors shadow-lg shadow-blue-500/20"
+
+      <div className="flex gap-3.5 overflow-x-auto px-4 pb-2 no-scrollbar scroll-smooth">
+        {filteredUsers.map((u, i) => {
+          const userId = u.id || u.userId || u.uid || u._id || u.username || `su-${i}`;
+          const userName = u.name || u.companyName || u.displayName || u.username || u.title || 'Vyapar Member';
+          const userRole = u.role || (u.companyName ? 'dealer' : 'member');
+          const userCity = u.city || u.state || u.location;
+          const userAvatar = resolveUserAvatar(u, userName);
+          const isFollowing = isUserFollowed(String(userId)) || Boolean(followedMap[String(userId)]);
+
+          return (
+            <div 
+              key={userId} 
+              className="flex-shrink-0 w-36 sm:w-40 bg-white dark:bg-zinc-950 border border-slate-200 dark:border-zinc-800 hover:border-blue-500/60 dark:hover:border-blue-500/60 rounded-2xl p-3.5 flex flex-col items-center text-center shadow-sm hover:shadow-md transition-all duration-200 group"
             >
-              View Profile
-            </Link>
-          </div>
-        ))}
-      </div></div>
+              {/* Profile Avatar with click listener to open profile */}
+              <Link 
+                to={`/profile/${encodeURIComponent(String(userId))}`} 
+                className="relative mb-2.5 block cursor-pointer transition-transform group-hover:scale-105"
+                title={`View ${userName}'s profile`}
+              >
+                <div className="w-16 h-16 rounded-full overflow-hidden border-2 border-slate-100 dark:border-zinc-800 shadow-inner bg-slate-100 dark:bg-zinc-800 flex items-center justify-center">
+                  <img 
+                    src={userAvatar || getInitialsAvatar(userName)} 
+                    alt={userName} 
+                    onError={(e) => {
+                      (e.currentTarget as HTMLImageElement).src = getInitialsAvatar(userName);
+                    }}
+                    className="w-full h-full object-cover" 
+                  />
+                </div>
+                {u.isVerified && (
+                  <div className="absolute -bottom-1 -right-1 bg-white dark:bg-zinc-900 rounded-full p-0.5 shadow-md">
+                    <CheckCircle className="w-4 h-4 text-blue-500 fill-blue-500" />
+                  </div>
+                )}
+              </Link>
+
+              {/* Profile Name with click listener to open profile */}
+              <Link 
+                to={`/profile/${encodeURIComponent(String(userId))}`}
+                className="w-full mb-1 cursor-pointer group/name block"
+                title={`View ${userName}'s profile`}
+              >
+                <h4 className="font-black text-xs sm:text-sm text-black dark:text-zinc-50 truncate w-full group-hover/name:text-blue-600 transition-colors">
+                  {userName}
+                </h4>
+                {userCity && (
+                  <p className="text-[10px] text-slate-500 dark:text-zinc-400 truncate w-full flex items-center justify-center gap-0.5 mt-0.5">
+                    <MapPin className="w-2.5 h-2.5 shrink-0" />
+                    <span className="truncate">{userCity}</span>
+                  </p>
+                )}
+              </Link>
+
+              {userRole && userRole !== 'customer' && (
+                <span className="text-[9.5px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-slate-100 dark:bg-zinc-800 text-slate-700 dark:text-zinc-300 mb-3 border border-slate-200/60 dark:border-zinc-700/60 truncate max-w-full">
+                  {userRole}
+                </span>
+              )}
+
+              {/* Functional Follow / Following Button */}
+              <button 
+                type="button"
+                onClick={(e) => handleFollowToggle(e, u)}
+                className={cn(
+                  "w-full py-1.5 px-2 rounded-xl text-xs font-bold transition-all duration-200 flex items-center justify-center gap-1.5 shadow-sm active:scale-95 cursor-pointer mt-auto",
+                  isFollowing
+                    ? "bg-slate-100 hover:bg-red-50 text-slate-800 hover:text-red-600 dark:bg-zinc-800 dark:hover:bg-red-950/40 dark:text-zinc-200 dark:hover:text-red-400 border border-slate-300 dark:border-zinc-700"
+                    : "bg-blue-600 hover:bg-blue-700 text-white shadow-md shadow-blue-500/25"
+                )}
+              >
+                {isFollowing ? (
+                  <>
+                    <UserCheck className="w-3.5 h-3.5 text-blue-500" />
+                    <span>Following</span>
+                  </>
+                ) : (
+                  <>
+                    <UserPlus className="w-3.5 h-3.5" />
+                    <span>Follow</span>
+                  </>
+                )}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -5008,9 +5832,20 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
       isMyUpload: true
     };
 
+    // Save reel ID in user's created reels list so the story circle stays visible even after reload
+    try {
+      const existingStr = localStorage.getItem('vyapar_my_reel_ids');
+      const existingIds = existingStr ? JSON.parse(existingStr) : [];
+      if (!existingIds.includes(reelId)) {
+        existingIds.unshift(reelId);
+        localStorage.setItem('vyapar_my_reel_ids', JSON.stringify(existingIds.slice(0, 50)));
+      }
+    } catch (e) {}
+
     // Non-blocking server API post attempt
     try {
       const formData = new FormData();
+      formData.append('id', reelId);
       formData.append('title', finalReelPost.title);
       formData.append('content', finalReelPost.content);
       formData.append('hashtags', finalReelPost.hashtags);
@@ -5019,6 +5854,8 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
       formData.append('userRole', authorUser.role);
       formData.append('userAvatar', authorUser.avatarUrl);
       formData.append('type', mediaType);
+      formData.append('thumbnailUrl', videoThumbnailUrl || localMediaUrl);
+      formData.append('persistentMediaUrl', persistentMediaUrl || videoThumbnailUrl || localMediaUrl);
       formData.append('media', pendingReelFile);
       
       fetch('/api/posts', { method: 'POST', body: formData })
@@ -5026,13 +5863,19 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
         .then(data => {
           if (data && data.success && data.post && data.post.mediaUrl) {
             const serverMediaUrl = data.post.mediaUrl;
-            const updatedPost = { 
-              ...finalReelPost, 
-              mediaUrl: serverMediaUrl, 
-              persistentMediaUrl: serverMediaUrl 
-            };
-            setPosts(prev => prev.map(p => p.id === reelId ? updatedPost : p));
-            syncPostToFirestore(updatedPost).catch(() => {});
+            const isPersistent = serverMediaUrl.startsWith('data:') || serverMediaUrl.startsWith('https://') || serverMediaUrl.startsWith('http://') || serverMediaUrl.startsWith('/uploads/') || serverMediaUrl.startsWith('/public/uploads/');
+            if (isPersistent) {
+              const updatedPost = { 
+                ...finalReelPost, 
+                mediaUrl: serverMediaUrl, 
+                videoUrl: serverMediaUrl,
+                video: serverMediaUrl,
+                persistentMediaUrl: serverMediaUrl,
+                thumbnailUrl: data.post.thumbnailUrl || finalReelPost.thumbnailUrl
+              };
+              setPosts(prev => prev.map(p => p.id === reelId ? updatedPost : p));
+              syncPostToFirestore(updatedPost).catch(() => {});
+            }
           }
         })
         .catch(() => {});
@@ -5065,16 +5908,28 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
     }, 2200);
   };
 
-  const mediaPostsForStories = posts.filter(p => Boolean(p.mediaUrl) || p.type === 'video' || p.type === 'image');
+  const mediaPostsForStories = posts.filter(p => Boolean(p.mediaUrl || p.thumbnailUrl || p.videoUrl || p.video) || p.type === 'video' || p.type === 'image');
 
   const myReels = useMemo(() => {
-    const myId = String(user?.id || localStorage.getItem('vyapar_user_id') || '').trim();
+    let savedMyReelIds: string[] = [];
+    try {
+      const idsStr = localStorage.getItem('vyapar_my_reel_ids');
+      if (idsStr) savedMyReelIds = JSON.parse(idsStr);
+    } catch (e) {}
+
+    const myId = String(user?.id || localStorage.getItem('vyapar_user_id') || '').trim().toLowerCase();
     const myName = String(user?.name || localStorage.getItem('vyapar_user_name') || '').trim().toLowerCase();
+
     return posts.filter(p => {
-      if (!p.mediaUrl && p.type !== 'video' && p.type !== 'image') return false;
-      const pId = String(p.userId || p.user?.id || '').trim();
+      if (!p) return false;
+      const pId = String(p.userId || p.user?.id || '').trim().toLowerCase();
       const pName = String(p.userName || p.user?.name || '').trim().toLowerCase();
-      return (myId && pId === myId) || (myName && pName === myName) || p.userId?.startsWith('user_guest') || p.isMyUpload;
+      const isMatch = (myId && pId === myId) || 
+                      (myName && pName === myName) || 
+                      p.userId?.startsWith('user_guest') || 
+                      p.isMyUpload || 
+                      savedMyReelIds.includes(String(p.id));
+      return isMatch;
     });
   }, [posts, user]);
 
@@ -5085,13 +5940,13 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
 
     mediaPostsForStories.forEach(p => {
       const uId = String(p.userId || p.user?.id || p.userName || p.user?.name || 'trader').trim();
-      const avatar = p.user?.avatarUrl || p.user?.avatar || p.userAvatar || p.avatar || BRAND_LOGO_SRC;
+      const authorInfo = resolveAuthorInfo(p);
       const uObj = {
         id: uId,
-        name: p.user?.name || p.userName || p.name || 'Verified Member',
-        avatarUrl: avatar,
-        avatar: avatar,
-        isVerified: Boolean(p.user?.isVerified)
+        name: authorInfo.name,
+        avatarUrl: authorInfo.avatarUrl,
+        avatar: authorInfo.avatarUrl,
+        isVerified: Boolean(p.user?.isVerified || authorInfo.isVerified)
       };
 
       if (!map.has(uId)) {
@@ -5529,7 +6384,11 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
             />
             {/* Inject Suggested Companies/Dealers every 5 items as requested */}
             {(idx + 1) % 5 === 0 && suggestedUsers.length > 0 && (
-              <SuggestedUsersRow users={suggestedUsers.slice(0, 6)} />
+              <SuggestedUsersRow 
+                users={suggestedUsers.slice(0, 6)} 
+                currentUser={user} 
+                onUpdateUser={onUpdateUser} 
+              />
             )}
           </React.Fragment>
         ))}
@@ -5592,11 +6451,12 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
             }`}>
               {pendingReelFile?.type.startsWith('video') || (pendingReelFile?.name && /\.(mp4|webm|mov|m4v|mkv)$/i.test(pendingReelFile.name)) ? (
                 <video 
+                  autoPlay
                   preload="auto" 
-                  src={reelPreviewUrl} 
+                  src={reelPreviewUrl || ''} 
                   className="w-full h-full object-contain transform-gpu will-change-transform" 
                   loop 
-                  muted={selectedMusic && reelOriginalVolume === 0} 
+                  muted={Boolean(selectedMusic ? reelOriginalVolume === 0 : false)} 
                   playsInline
                   onLoadedMetadata={(e) => {
                     setIsMediaReady(true);
@@ -5607,12 +6467,25 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
                     if (ratio < 0.75) setReelAspectRatio('9/16');
                     else if (ratio > 1.25) setReelAspectRatio('16/9');
                     else setReelAspectRatio('1/1');
+                    v.play().catch(() => {
+                      // Fallback muted play if browser blocked unmuted autoplay
+                      v.muted = true;
+                      v.play().catch(() => {});
+                    });
                   }}
                   onCanPlay={() => setIsMediaReady(true)}
                   ref={(el) => { 
                     if (el) {
                       el.volume = selectedMusic ? reelOriginalVolume : 1;
-                      if (el.paused) { const p = el.play(); if (p !== undefined) p.catch(()=>{}); }
+                      if (el.paused) { 
+                        const p = el.play(); 
+                        if (p !== undefined) {
+                          p.catch(() => {
+                            el.muted = true;
+                            el.play().catch(() => {});
+                          });
+                        } 
+                      }
                     }
                   }}
                 />
@@ -5902,6 +6775,13 @@ function CreatePost({ user }: { user: any }) {
       } catch (e) {
         console.warn('Image optimization note:', e);
       }
+    } else if (file && isPdf) {
+      try {
+        persistentMediaUrl = await fileToDataURL(file);
+        persistentThumbnailUrl = persistentMediaUrl;
+      } catch (e) {
+        persistentMediaUrl = filePreview || '';
+      }
     } else if (file && isVideo) {
       try {
         persistentThumbnailUrl = await generateVideoThumbnail(file);
@@ -6152,17 +7032,17 @@ function CreatePost({ user }: { user: any }) {
                 </div>
               </div>
             ) : (
-              <div className="relative aspect-video w-full rounded-2xl overflow-hidden bg-black border border-slate-200 dark:border-zinc-800">
+              <div className="relative w-full rounded-2xl overflow-hidden bg-slate-950 border border-slate-200 dark:border-zinc-800 p-3">
                 {isPdf ? (
-                  <div className="w-full h-full bg-gradient-to-br from-slate-950 via-emerald-950/80 to-slate-900 p-5 flex flex-col justify-between text-white relative overflow-y-auto">
-                    <div className="flex items-center justify-between border-b border-emerald-500/20 pb-3">
+                  <div className="w-full space-y-3">
+                    <div className="flex items-center justify-between bg-emerald-950/80 border border-emerald-500/30 rounded-xl px-4 py-2.5">
                       <div className="flex items-center gap-3 min-w-0">
-                        <div className="w-12 h-12 rounded-xl bg-emerald-500/20 border border-emerald-400/40 flex items-center justify-center text-emerald-400 shadow-lg shrink-0">
-                          <FileText className="w-6 h-6" />
+                        <div className="w-10 h-10 rounded-lg bg-emerald-500/20 border border-emerald-400/30 flex items-center justify-center text-emerald-400 shrink-0">
+                          <FileText className="w-5 h-5" />
                         </div>
                         <div className="min-w-0">
-                          <p className="text-sm font-black text-white truncate">{file?.name}</p>
-                          <span className="text-[10px] text-emerald-300/80 font-bold uppercase tracking-wider block">
+                          <p className="text-xs font-black text-white truncate">{file?.name}</p>
+                          <span className="text-[10px] text-emerald-300 font-bold uppercase tracking-wider block">
                             PDF Catalogue Attached ✓
                           </span>
                         </div>
@@ -6170,119 +7050,18 @@ function CreatePost({ user }: { user: any }) {
 
                       <button 
                         type="button"
-                        onClick={() => thumbInputRef.current?.click()}
-                        className="px-3.5 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-xl text-xs font-black uppercase tracking-wider transition-all shadow-lg border border-emerald-400/30 flex items-center gap-1.5 shrink-0 active:scale-95 cursor-pointer"
+                        onClick={() => {
+                          setFile(null);
+                          setFilePreview(null);
+                        }}
+                        className="px-3 py-1.5 bg-red-500/20 hover:bg-red-500/40 text-red-300 hover:text-white rounded-xl text-xs font-bold transition-all border border-red-500/30 flex items-center gap-1 shrink-0 cursor-pointer"
                       >
-                        <ImagePlus className="w-4 h-4" />
-                        {thumbnailPreview ? 'Change Thumbnail' : 'Set Cover Thumbnail'}
+                        <X className="w-4 h-4" />
+                        Remove
                       </button>
                     </div>
 
-                    {/* Thumbnail Preview or Warning Banner */}
-                    {thumbnailPreview ? (
-                      <div className="my-2 relative rounded-xl overflow-hidden border-2 border-emerald-400/60 shadow-2xl h-44 bg-black/80 flex items-center justify-center group/thumb">
-                        <img src={thumbnailPreview} alt="Catalogue Cover" className="w-full h-full object-contain" />
-                        <div className="absolute top-2 left-2 bg-emerald-600/90 backdrop-blur-md text-white text-[10px] font-black px-3 py-1 rounded-full border border-emerald-300/40 shadow-md flex items-center gap-1">
-                          <FileCheck className="w-3.5 h-3.5 text-emerald-200" /> COVER THUMBNAIL READY ✓
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => { setThumbnailFile(null); setThumbnailPreview(null); }}
-                          className="absolute top-2 right-2 p-1.5 bg-black/80 hover:bg-red-600 text-white rounded-full transition-colors"
-                          title="Remove Thumbnail"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="my-2 p-4 rounded-xl border-2 border-dashed border-amber-400/50 bg-amber-500/10 text-amber-100 flex flex-col items-center justify-center text-center gap-2">
-                        <p className="text-xs font-black text-amber-300 flex items-center gap-1">
-                          📸 Cover Thumbnail Recommended for Wall & Feed
-                        </p>
-                        <p className="text-[11px] text-zinc-300 max-w-sm">
-                          Set a custom photo (product photo/catalogue cover) so users can click on it on the Home Feed and User Wall.
-                        </p>
-                        <div className="flex flex-wrap items-center justify-center gap-2 mt-1">
-                          <button
-                            type="button"
-                            onClick={() => thumbInputRef.current?.click()}
-                            className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded-lg text-xs transition-all shadow-md active:scale-95 flex items-center gap-1.5 cursor-pointer"
-                          >
-                            <Upload className="w-3.5 h-3.5" /> Upload Cover Photo
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (canvasRef.current) {
-                                const canvas = canvasRef.current;
-                                canvas.width = 600;
-                                canvas.height = 400;
-                                const ctx = canvas.getContext('2d');
-                                if (ctx) {
-                                  const grad = ctx.createLinearGradient(0, 0, 600, 400);
-                                  grad.addColorStop(0, '#064e3b');
-                                  grad.addColorStop(0.5, '#042f2e');
-                                  grad.addColorStop(1, '#0f172a');
-                                  ctx.fillStyle = grad;
-                                  ctx.fillRect(0, 0, 600, 400);
-
-                                  ctx.strokeStyle = '#10b981';
-                                  ctx.lineWidth = 8;
-                                  ctx.strokeRect(12, 12, 576, 376);
-
-                                  ctx.fillStyle = '#059669';
-                                  ctx.fillRect(30, 30, 190, 36);
-                                  ctx.fillStyle = '#ffffff';
-                                  ctx.font = 'bold 14px sans-serif';
-                                  ctx.fillText('📄 PDF CATALOGUE', 45, 53);
-
-                                  const comp = user?.businessName || user?.name || 'VERIFIED BUSINESS';
-                                  ctx.fillStyle = '#34d399';
-                                  ctx.font = 'bold 18px sans-serif';
-                                  ctx.fillText(comp.toUpperCase(), 30, 120);
-
-                                  const postT = title || file?.name || 'Product Catalogue & Price List';
-                                  ctx.fillStyle = '#ffffff';
-                                  ctx.font = 'bold 22px sans-serif';
-                                  
-                                  const words = postT.split(' ');
-                                  let line = '';
-                                  let y = 170;
-                                  for (let i = 0; i < words.length; i++) {
-                                    const testLine = line + words[i] + ' ';
-                                    if (ctx.measureText(testLine).width > 520 && i > 0) {
-                                      ctx.fillText(line, 30, y);
-                                      line = words[i] + ' ';
-                                      y += 30;
-                                    } else {
-                                      line = testLine;
-                                    }
-                                  }
-                                  ctx.fillText(line, 30, y);
-
-                                  ctx.fillStyle = '#a7f3d0';
-                                  ctx.font = '12px sans-serif';
-                                  ctx.fillText('Official B2B Catalogue • Vyapar Bridge Network', 30, 350);
-
-                                  canvas.toBlob((blob) => {
-                                    if (blob) {
-                                      const autoFile = new File([blob], "pdf_cover.jpg", { type: "image/jpeg" });
-                                      setThumbnailFile(autoFile);
-                                      if (thumbnailPreview) URL.revokeObjectURL(thumbnailPreview);
-                                      setThumbnailPreview(URL.createObjectURL(blob));
-                                      toast.success('✨ Cover Card Auto-Generated! ✓');
-                                    }
-                                  }, 'image/jpeg', 0.95);
-                                }
-                              }
-                            }}
-                            className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg text-xs transition-all shadow-md active:scale-95 flex items-center gap-1.5 cursor-pointer"
-                          >
-                            <Sparkles className="w-3.5 h-3.5 text-amber-300" /> Auto-Generate Cover Card
-                          </button>
-                        </div>
-                      </div>
-                    )}
+                    <PdfCardViewer post={{ title: title || file?.name || 'Catalogue', mediaUrl: filePreview || '', user: user }} variant="feed" />
                   </div>
                 ) : isVideo && filePreview ? (
                   <div className="relative w-full h-full">
@@ -10821,13 +11600,29 @@ function AuthPage({ onLogin }: { onLogin: (user: any) => void }) {
       .finally(() => setLoading(false));
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSubmit = async (e?: React.FormEvent) => {
+    if (e && e.preventDefault) {
+      e.preventDefault();
+    }
     setError('');
 
+    const cleanUsername = (username || '').trim().toLowerCase();
+    const cleanPassword = (password || '').trim();
+
+    // Direct explicit input validation with immediate feedback (prevents silent iframe blocking)
+    if (!cleanUsername) {
+      toast.error('Kripya Username ya Mobile Number enter karein!');
+      setError('Kripya Username ya Mobile Number enter karein!');
+      return;
+    }
+
+    if (!cleanPassword) {
+      toast.error('Kripya Password enter karein!');
+      setError('Kripya Password enter karein!');
+      return;
+    }
+
     // Master Admin Login Authentication (manit / 5503 or admin credentials)
-    const cleanUsername = username.trim().toLowerCase();
-    const cleanPassword = password.trim();
     const storedSecretKey = (localStorage.getItem('VyaparBridge_admin_pin') || localStorage.getItem('Vyapar Bridge_custom_master_key') || 'admin1234@#').trim();
 
     if (cleanUsername === 'manit' || cleanUsername === 'admin') {
@@ -10966,20 +11761,48 @@ function AuthPage({ onLogin }: { onLogin: (user: any) => void }) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(userProfile)
-      }).catch((apiErr) => {
-        // Safe to ignore on static Vercel / offline
-      });
+      }).catch(() => {});
 
       return;
     }
 
-    // LOGIN FLOW - Strictly check registered accounts in Firestore & Local Database
+    // Fast local memory / storage instant login check (< 5ms)
     try {
-      const data = await safeFetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: cleanUsername, password: cleanPassword, role: selectedRole })
-      });
+      const cachedUsersStr = localStorage.getItem('vyapar_cached_users') || localStorage.getItem('vyapar_all_users_cache');
+      if (cachedUsersStr) {
+        const cachedUsers = JSON.parse(cachedUsersStr);
+        if (Array.isArray(cachedUsers)) {
+          const matched = cachedUsers.find((u: any) => {
+            const uName = (u?.username || '').trim().toLowerCase();
+            const uPhone = (u?.phone || '').trim();
+            const uEmail = (u?.email || '').trim().toLowerCase();
+            return (uName === cleanUsername || uPhone === cleanUsername || uEmail === cleanUsername);
+          });
+          if (matched) {
+            if (!matched.password || matched.password === cleanPassword) {
+              localStorage.setItem('user', JSON.stringify(matched));
+              localStorage.setItem('Vyapar Bridge_user', JSON.stringify(matched));
+              localStorage.setItem('vyapar_user_id', String(matched.id));
+              toast.success(`Welcome back, ${matched.name || cleanUsername}!`);
+              onLogin(matched);
+              setLoading(false);
+              return;
+            }
+          }
+        }
+      }
+    } catch {}
+
+    // LOGIN FLOW - Strictly check registered accounts in Server & Firestore
+    try {
+      const data = await Promise.race([
+        safeFetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: cleanUsername, password: cleanPassword, role: selectedRole })
+        }),
+        new Promise<any>((_, reject) => setTimeout(() => reject(new Error('timeout')), 3500))
+      ]);
       
       if (data && data.id) {
         localStorage.setItem('user', JSON.stringify(data));
@@ -10993,25 +11816,36 @@ function AuthPage({ onLogin }: { onLogin: (user: any) => void }) {
         return;
       }
     } catch (err: any) {
-      // Static Vercel or offline fallback
+      // Fall through to Firestore Authentication Check
     }
 
-    // Direct Firestore Authentication Check
-    const authRes = await authenticateUserInFirestore(cleanUsername, cleanPassword, selectedRole);
-    if (authRes.success && authRes.user) {
-      localStorage.setItem('user', JSON.stringify(authRes.user));
-      localStorage.setItem('Vyapar Bridge_user', JSON.stringify(authRes.user));
-      localStorage.setItem('vyapar_user_id', String(authRes.user.id));
-      if (authRes.user.fingerprintId) localStorage.setItem('vyapar_user_fingerprint', authRes.user.fingerprintId);
+    // Direct Firestore Authentication Check with timeout
+    try {
+      const authRes: any = await Promise.race([
+        authenticateUserInFirestore(cleanUsername, cleanPassword, selectedRole),
+        new Promise<any>((_, reject) => setTimeout(() => reject(new Error('timeout')), 4000))
+      ]);
 
-      toast.success(`Welcome back, ${authRes.user.name || cleanUsername}!`);
-      onLogin(authRes.user);
-    } else {
-      const errMsg = authRes.error || '❌ Account nahi mila! Kripya pehle "Register New Account" tab par jaakar register karein.';
-      setError(errMsg);
-      toast.error(errMsg);
+      if (authRes && authRes.success && authRes.user) {
+        localStorage.setItem('user', JSON.stringify(authRes.user));
+        localStorage.setItem('Vyapar Bridge_user', JSON.stringify(authRes.user));
+        localStorage.setItem('vyapar_user_id', String(authRes.user.id));
+        if (authRes.user.fingerprintId) localStorage.setItem('vyapar_user_fingerprint', authRes.user.fingerprintId);
+
+        toast.success(`Welcome back, ${authRes.user.name || cleanUsername}!`);
+        onLogin(authRes.user);
+      } else {
+        const errMsg = authRes?.error || '❌ Account nahi mila! Kripya pehle "Sign Up / Register" tab par jaakar account banayein.';
+        setError(errMsg);
+        toast.error(errMsg);
+      }
+    } catch (err) {
+      const fallbackMsg = '❌ Account check timed out. Agar aap naye hain toh pehle "Sign Up / Register" tab par jaakar register karein!';
+      setError(fallbackMsg);
+      toast.error(fallbackMsg);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   return (
@@ -11150,7 +11984,15 @@ function AuthPage({ onLogin }: { onLogin: (user: any) => void }) {
         </div>
 
         {/* Form Container */}
-        <form className="p-4 sm:p-6 flex flex-col gap-3.5" onSubmit={handleSubmit}>
+        <form 
+          id="auth-login-form"
+          noValidate
+          className="p-4 sm:p-6 flex flex-col gap-3.5" 
+          onSubmit={(e) => {
+            e.preventDefault();
+            handleSubmit(e);
+          }}
+        >
           {!isLogin && (
             <>
               {selectedRole === 'customer' ? (
@@ -11622,19 +12464,74 @@ function AuthPage({ onLogin }: { onLogin: (user: any) => void }) {
             </div>
           )}
 
-          {error && <p className="text-red-500 text-xs font-semibold text-center">{error}</p>}
+          {error && (
+            <div className="bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800/60 rounded-xl p-2.5 text-red-600 dark:text-red-300 text-xs font-semibold text-center flex items-center justify-center gap-1.5">
+              <span>⚠️</span>
+              <span>{error}</span>
+            </div>
+          )}
 
           <button 
+            id="auth-submit-btn"
             type="submit"
             disabled={loading}
-            className="w-full text-white font-extrabold text-sm rounded-xl py-3 mt-1 transition-all bg-blue-600 hover:bg-blue-700 active:scale-[0.99] shadow-lg flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+            onClick={(e) => {
+              // Ensure direct click handles submit seamlessly even if form bubbling is intercepted
+              if (!loading) {
+                handleSubmit(e);
+              }
+            }}
+            className={cn(
+              "w-full text-white font-black text-sm rounded-xl py-3.5 mt-1 transition-all shadow-lg flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98] select-none",
+              loading ? "opacity-70 cursor-not-allowed bg-blue-500" : "bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 hover:from-blue-700 hover:to-indigo-700 hover:shadow-xl ring-2 ring-blue-400/40"
+            )}
           >
-            {loading ? 'Processing...' : (
+            {loading ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin text-white" />
+                <span>Processing... (लॉगिन हो रहा है...)</span>
+              </>
+            ) : (
               isLogin 
-                ? `Log In as ${selectedRole === 'factory' ? 'Company / Factory' : (selectedRole === 'customer' ? 'Local Customer' : 'Dealer / Distributor')}` 
-                : `Create ${selectedRole === 'factory' ? 'Factory / Company' : (selectedRole === 'customer' ? 'Customer' : 'Dealer / Distributor')} Account`
+                ? `⚡ Log In as ${selectedRole === 'factory' ? 'Merchant / Company' : (selectedRole === 'customer' ? 'Local Customer' : 'Dealer / Trader')}` 
+                : `✨ Create ${selectedRole === 'factory' ? 'Merchant / Factory' : (selectedRole === 'customer' ? 'Customer' : 'Dealer / Trader')} Account`
             )}
           </button>
+
+          {/* Quick 1-Click Instant Demo Login Helpers */}
+          {isLogin && (
+            <div className="mt-3 pt-3 border-t border-slate-200 dark:border-zinc-800 text-center space-y-2">
+              <p className="text-[11px] font-bold text-slate-700 dark:text-zinc-300 flex items-center justify-center gap-1.5">
+                <span>🚀 1-Click Instant Demo Logins (तुरंत टेस्ट करें):</span>
+              </p>
+              <div className="grid grid-cols-3 gap-1.5">
+                <button
+                  type="button"
+                  disabled={loading}
+                  onClick={() => handleQuickDemo('factory')}
+                  className="py-2 px-1.5 bg-blue-50 hover:bg-blue-100 dark:bg-blue-950/60 dark:hover:bg-blue-900/60 border border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-300 rounded-lg text-[10px] font-extrabold transition-all cursor-pointer truncate shadow-xs active:scale-95"
+                >
+                  🏢 Merchant Demo
+                </button>
+                <button
+                  type="button"
+                  disabled={loading}
+                  onClick={() => handleQuickDemo('dealer')}
+                  className="py-2 px-1.5 bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/60 dark:hover:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 rounded-lg text-[10px] font-extrabold transition-all cursor-pointer truncate shadow-xs active:scale-95"
+                >
+                  🏪 Dealer Demo
+                </button>
+                <button
+                  type="button"
+                  disabled={loading}
+                  onClick={() => handleQuickDemo('customer')}
+                  className="py-2 px-1.5 bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/60 dark:hover:bg-amber-900/60 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-300 rounded-lg text-[10px] font-extrabold transition-all cursor-pointer truncate shadow-xs active:scale-95"
+                >
+                  👤 Buyer Demo
+                </button>
+              </div>
+            </div>
+          )}
         </form>
     </div>
   );
@@ -12357,6 +13254,14 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
   const [currentIndex, setCurrentIndex] = useState(0);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent('vyapar_reel_viewing_active', { detail: { active: true } }));
+    window.dispatchEvent(new CustomEvent('pause_all_feed_videos'));
+    return () => {
+      window.dispatchEvent(new CustomEvent('vyapar_reel_viewing_active', { detail: { active: false } }));
+    };
+  }, []);
+
   // New upload state
   const [isPreviewModalOpen, setIsPreviewModalOpen] = useState(false);
   const [isMusicModalOpen, setIsMusicModalOpen] = useState(false);
@@ -12448,7 +13353,20 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
           p.mediaBase64 || 
           p.video
         );
-        setReels(sortReelsByFollowedFirst(videoPosts));
+        const sorted = sortReelsByFollowedFirst(videoPosts);
+        setReels(prev => {
+          if (prev.length === 0) return sorted;
+          const prevIds = prev.map(r => String(r.id)).join(',');
+          const newIds = sorted.map(r => String(r.id)).join(',');
+          if (prevIds === newIds) {
+            // Update stats without replacing array references that trigger video restart
+            return prev.map(oldReel => {
+              const fresh = sorted.find(s => String(s.id) === String(oldReel.id));
+              return fresh ? { ...oldReel, likesCount: fresh.likesCount, commentsCount: fresh.commentsCount, viewsCount: fresh.viewsCount } : oldReel;
+            });
+          }
+          return sorted;
+        });
       }
     });
 
@@ -12600,8 +13518,19 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
       isVerified: Boolean(activeUser.isVerified)
     };
 
+    // Save reel ID in user's created reels list so it shows across all pages and profiles
+    try {
+      const existingStr = localStorage.getItem('vyapar_my_reel_ids');
+      const existingIds = existingStr ? JSON.parse(existingStr) : [];
+      if (!existingIds.includes(generatedReelId)) {
+        existingIds.unshift(generatedReelId);
+        localStorage.setItem('vyapar_my_reel_ids', JSON.stringify(existingIds.slice(0, 50)));
+      }
+    } catch (e) {}
+
     try {
       const formData = new FormData();
+      formData.append('id', generatedReelId);
       formData.append('title', 'New B2B Reel');
       formData.append('content', 'Uploaded from Reels');
       formData.append('hashtags', '#reel #b2b #tiles #products');
@@ -12610,6 +13539,8 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
       formData.append('userRole', authorUser.role);
       formData.append('userAvatar', authorUser.avatarUrl);
       formData.append('type', mediaType);
+      formData.append('thumbnailUrl', videoThumbnailUrl || localMediaUrl);
+      formData.append('persistentMediaUrl', persistentMediaUrl || videoThumbnailUrl || localMediaUrl);
       formData.append('media', pendingFile);
 
       if (selectedMusic) {
@@ -12626,7 +13557,7 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
 
       try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 6000);
+        const timeoutId = setTimeout(() => controller.abort(), 180000);
 
         const response = await fetch('/api/posts', {
           method: 'POST',
@@ -12671,22 +13602,30 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
           audioUrl: selectedMusic.audioUrl || selectedMusic.musicUrl || selectedMusic.url
         } : null;
 
-        const resolvedUrl = (publishedReel?.mediaUrl && !publishedReel.mediaUrl.startsWith('blob:'))
-          ? publishedReel.mediaUrl
-          : localMediaUrl;
+        const isPersistentUrl = publishedReel?.mediaUrl && (
+          publishedReel.mediaUrl.startsWith('data:') || 
+          publishedReel.mediaUrl.startsWith('https://') || 
+          publishedReel.mediaUrl.startsWith('http://') ||
+          publishedReel.mediaUrl.startsWith('/uploads/') ||
+          publishedReel.mediaUrl.startsWith('/public/uploads/')
+        );
+        const resolvedUrl = isPersistentUrl ? publishedReel.mediaUrl : localMediaUrl;
+        const resolvedThumb = publishedReel?.thumbnailUrl || videoThumbnailUrl || resolvedUrl;
 
         const finalReel = publishedReel ? {
           ...publishedReel,
+          id: generatedReelId,
           type: publishedReel.type || mediaType,
           mediaUrl: resolvedUrl,
-          thumbnailUrl: publishedReel.thumbnailUrl || resolvedUrl,
-          persistentMediaUrl: resolvedUrl,
+          thumbnailUrl: resolvedThumb,
+          persistentMediaUrl: persistentMediaUrl || resolvedThumb || resolvedUrl,
           status: isPendingApproval ? 'pending' : (publishedReel.status || 'approved'),
           pending_admin_approval: isPendingApproval,
           aiFlagReason: moderation.reason || publishedReel.aiFlagReason || null,
           user: publishedReel.user && publishedReel.user.name ? publishedReel.user : authorUser,
           userAvatar: authorUser.avatarUrl,
-          music: publishedReel.music || musicObj
+          music: publishedReel.music || musicObj,
+          isMyUpload: true
         } : {
           id: generatedReelId,
           userId: String(currentUser.id),
@@ -12698,8 +13637,8 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
           hashtags: '#reel #b2b #tiles #products',
           type: mediaType,
           mediaUrl: resolvedUrl,
-          thumbnailUrl: resolvedUrl,
-          persistentMediaUrl: resolvedUrl,
+          thumbnailUrl: resolvedThumb,
+          persistentMediaUrl: persistentMediaUrl || resolvedThumb || resolvedUrl,
           category: 'Commercial Wholesale',
           visibility: 'public',
           status: isPendingApproval ? 'pending' : 'approved',
@@ -12709,7 +13648,8 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
           viewsCount: 1,
           createdAt: Date.now(),
           music: musicObj,
-          user: authorUser
+          user: authorUser,
+          isMyUpload: true
         };
 
         // Update state & dispatch event immediately
@@ -12740,26 +13680,37 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
     }
   };
 
-  const touchStartY = React.useRef<number | null>(null);
-  const touchEndY = React.useRef<number | null>(null);
-  const touchStartX = React.useRef<number | null>(null);
-  const touchEndX = React.useRef<number | null>(null);
+  const [direction, setDirection] = useState<number>(0);
   const isWheeling = React.useRef(false);
+
+  const goToNext = () => {
+    if (currentIndex < reels.length - 1) {
+      setDirection(1);
+      setCurrentIndex(prev => prev + 1);
+    }
+  };
+
+  const goToPrev = () => {
+    if (currentIndex > 0) {
+      setDirection(-1);
+      setCurrentIndex(prev => prev - 1);
+    }
+  };
 
   // Keyboard navigation for reels
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'ArrowDown' || e.key === 'PageDown' || e.key === 'j' || e.key === 'J') {
         e.preventDefault();
-        setCurrentIndex(prev => Math.min(reels.length - 1, prev + 1));
+        goToNext();
       } else if (e.key === 'ArrowUp' || e.key === 'PageUp' || e.key === 'k' || e.key === 'K') {
         e.preventDefault();
-        setCurrentIndex(prev => Math.max(0, prev - 1));
+        goToPrev();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [reels.length]);
+  }, [currentIndex, reels.length]);
 
   // Mouse wheel trackpad scroll navigation (Instagram style)
   const handleWheel = (e: React.WheelEvent) => {
@@ -12767,9 +13718,9 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
     if (Math.abs(e.deltaY) > 25) {
       isWheeling.current = true;
       if (e.deltaY > 0) {
-        setCurrentIndex(prev => Math.min(reels.length - 1, prev + 1));
+        goToNext();
       } else {
-        setCurrentIndex(prev => Math.max(0, prev - 1));
+        goToPrev();
       }
       setTimeout(() => {
         isWheeling.current = false;
@@ -12777,49 +13728,11 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
     }
   };
 
-  const handleTouchStart = (e: React.TouchEvent) => {
-    touchStartY.current = e.touches[0].clientY;
-    touchEndY.current = e.touches[0].clientY;
-    touchStartX.current = e.touches[0].clientX;
-    touchEndX.current = e.touches[0].clientX;
-  };
-
-  const handleTouchMove = (e: React.TouchEvent) => {
-    touchEndY.current = e.touches[0].clientY;
-    touchEndX.current = e.touches[0].clientX;
-  };
-
-  const handleTouchEnd = () => {
-    if (touchStartY.current !== null && touchEndY.current !== null && touchStartX.current !== null && touchEndX.current !== null) {
-      const diffY = touchStartY.current - touchEndY.current;
-      const diffX = touchStartX.current - touchEndX.current;
-      const minSwipeDistance = 30;
-
-      // Vertical swipe takes priority for Reels (Swipe UP = Next Reel, Swipe DOWN = Prev Reel)
-      if (Math.abs(diffY) > minSwipeDistance && Math.abs(diffY) > Math.abs(diffX)) {
-        if (diffY > 0) {
-          // Swiped Up -> Next Reel
-          setCurrentIndex(prev => Math.min(reels.length - 1, prev + 1));
-        } else {
-          // Swiped Down -> Previous Reel
-          setCurrentIndex(prev => Math.max(0, prev - 1));
-        }
-      }
-    }
-    touchStartY.current = null;
-    touchEndY.current = null;
-    touchStartX.current = null;
-    touchEndX.current = null;
-  };
-
   const currentReel = reels.length > 0 && currentIndex >= 0 && currentIndex < reels.length ? reels[currentIndex] : null;
 
   return (
     <div 
       onWheel={handleWheel}
-      onTouchStart={handleTouchStart}
-      onTouchMove={handleTouchMove}
-      onTouchEnd={handleTouchEnd}
       className="w-full h-[calc(100dvh-56px)] md:h-[calc(100vh-64px)] flex items-center justify-center bg-black md:bg-zinc-950 overflow-hidden relative select-none"
     >
       {/* Hidden file input for uploading reels */}
@@ -12833,7 +13746,7 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
 
       {/* Reel Phone Container (Instagram Viewport) */}
       {reels.length > 0 ? (
-        <div className="relative w-full max-w-[430px] h-full flex flex-col items-center justify-center bg-black overflow-hidden md:rounded-2xl md:border md:border-zinc-800 shadow-2xl">
+        <div className="relative w-full max-w-[420px] h-full max-h-[100dvh] md:max-h-[850px] aspect-[9/16] flex flex-col items-center justify-center bg-black overflow-hidden md:rounded-2xl md:border md:border-zinc-800 shadow-2xl mx-auto my-auto">
           {/* Top Instagram-Style Header */}
           <div className="absolute top-0 inset-x-0 z-30 flex items-center justify-between px-4 pt-3.5 pb-2 bg-gradient-to-b from-black/80 via-black/30 to-transparent pointer-events-none">
             <div className="flex items-center gap-1.5 pointer-events-auto">
@@ -12843,19 +13756,59 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
             </div>
           </div>
 
-          {/* Active Reel with Smooth Transition */}
-          <AnimatePresence mode="wait">
-            <motion.div 
-              key={currentReel?.id || currentIndex}
-              initial={{ opacity: 0.9, y: 15 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0.9, y: -15 }}
-              transition={{ duration: 0.22, ease: 'easeOut' }}
-              className="w-full h-full flex items-center justify-center relative overflow-hidden"
-            >
-              <ReelCard reel={currentReel} currentUser={user} userLocation={userLocation} />
-            </motion.div>
-          </AnimatePresence>
+          {/* Active Reel with Interactive Drag Physics & Smooth YouTube Shorts / Instagram Transition */}
+          <div className="w-full h-full relative overflow-hidden">
+            <AnimatePresence mode="popLayout" custom={direction}>
+              <motion.div 
+                key={currentReel?.id || currentIndex}
+                custom={direction}
+                drag="y"
+                dragConstraints={{ top: 0, bottom: 0 }}
+                dragElastic={0.25}
+                onDragEnd={(_e, info) => {
+                  const offset = info.offset.y;
+                  const velocity = info.velocity.y;
+                  if (offset < -50 || velocity < -300) {
+                    goToNext();
+                  } else if (offset > 50 || velocity > 300) {
+                    goToPrev();
+                  }
+                }}
+                initial={(dir: number) => ({
+                  y: dir > 0 ? '100%' : dir < 0 ? '-100%' : 0,
+                  scale: 0.88,
+                  rotateX: dir > 0 ? 12 : dir < 0 ? -12 : 0,
+                  opacity: 0.8
+                })}
+                animate={{
+                  y: 0,
+                  scale: 1,
+                  rotateX: 0,
+                  opacity: 1,
+                  transition: {
+                    y: { type: 'spring', stiffness: 380, damping: 30 },
+                    scale: { duration: 0.22, ease: 'easeOut' },
+                    rotateX: { duration: 0.22, ease: 'easeOut' },
+                    opacity: { duration: 0.18 }
+                  }
+                }}
+                exit={(dir: number) => ({
+                  y: dir > 0 ? '-100%' : '100%',
+                  scale: 0.88,
+                  rotateX: dir > 0 ? -12 : 12,
+                  opacity: 0.8,
+                  transition: {
+                    y: { type: 'spring', stiffness: 380, damping: 30 },
+                    scale: { duration: 0.22 },
+                    opacity: { duration: 0.18 }
+                  }
+                })}
+                className="w-full h-full flex items-center justify-center relative overflow-hidden touch-pan-y"
+              >
+                <ReelCard reel={currentReel} currentUser={user} userLocation={userLocation} />
+              </motion.div>
+            </AnimatePresence>
+          </div>
         </div>
       ) : (
         <div className="text-center py-20 px-4 text-white flex flex-col items-center justify-center">
@@ -12911,11 +13864,12 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
             }`}>
               {pendingFile?.type.startsWith('video') || (pendingFile?.name && /\.(mp4|webm|mov|m4v|mkv)$/i.test(pendingFile.name)) ? (
                 <video 
+                  autoPlay
                   preload="auto" 
-                  src={previewUrl} 
+                  src={previewUrl || ''} 
                   className="w-full h-full object-contain transform-gpu will-change-transform" 
                   loop 
-                  muted={selectedMusic && originalVolume === 0} 
+                  muted={Boolean(selectedMusic ? originalVolume === 0 : false)} 
                   playsInline
                   onLoadedMetadata={(e) => {
                     setIsMediaReady(true);
@@ -12926,12 +13880,24 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
                     if (ratio < 0.75) setReelAspectRatio('9/16');
                     else if (ratio > 1.25) setReelAspectRatio('16/9');
                     else setReelAspectRatio('1/1');
+                    v.play().catch(() => {
+                      v.muted = true;
+                      v.play().catch(() => {});
+                    });
                   }}
                   onCanPlay={() => setIsMediaReady(true)}
                   ref={(el) => { 
                     if (el) {
                       el.volume = selectedMusic ? originalVolume : 1;
-                      if (el.paused) { const p = el.play(); if (p !== undefined) p.catch(()=>{}); }
+                      if (el.paused) { 
+                        const p = el.play(); 
+                        if (p !== undefined) {
+                          p.catch(() => {
+                            el.muted = true;
+                            el.play().catch(() => {});
+                          });
+                        } 
+                      }
                     }
                   }}
                 />
@@ -13764,7 +14730,10 @@ function EditProfileModal({ isOpen, onClose, user, onSave, onOpenVerify }: { isO
       hideGst
     };
 
-    const updatedUser = { ...user, ...payload };
+    const updatedUser = { ...user, ...payload, avatar: payload.avatarUrl || user?.avatar };
+    updateCachedUsers(updatedUser);
+    syncUserToFirestore(updatedUser);
+    window.dispatchEvent(new CustomEvent('vyapar_user_avatar_updated', { detail: updatedUser }));
     
     try {
       const res = await fetch(`/api/users/${user?.id || '1'}`, {
@@ -13774,6 +14743,8 @@ function EditProfileModal({ isOpen, onClose, user, onSave, onOpenVerify }: { isO
       });
       const data = await res.json();
       if (data.success && data.user) {
+        updateCachedUsers(data.user);
+        syncUserToFirestore(data.user);
         onSave(data.user);
         toast.success('Profile & Location updated successfully!');
         onClose();
@@ -14875,13 +15846,44 @@ function ProfilePage({
   const [profileUser, setProfileUser] = useState<any>(currentUser);
   const [loadingUser, setLoadingUser] = useState(false);
 
-  const isOwnProfile = !userId || 
-    (Boolean(currentUser?.id) && String(userId) === String(currentUser.id)) || 
-    (Boolean(userId) && Boolean(currentUser?.name) && decodeURIComponent(String(userId)).trim().toLowerCase() === String(currentUser?.name).trim().toLowerCase()) ||
-    (Boolean(userId) && Boolean(currentUser?.username) && decodeURIComponent(String(userId)).trim().toLowerCase() === String(currentUser?.username).trim().toLowerCase()) ||
-    (Boolean(profileUser?.id) && Boolean(currentUser?.id) && String(profileUser.id) === String(currentUser.id));
+  const cachedStoredUser = useMemo(() => {
+    try {
+      const raw = localStorage.getItem('user') || localStorage.getItem('Vyapar Bridge_user');
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  }, []);
 
-  const userToDisplay = profileUser || currentUser;
+  const activeCurrentUser = currentUser || cachedStoredUser;
+
+  const isOwnProfile = useMemo(() => {
+    if (!userId) return true;
+    if (!activeCurrentUser) return false;
+    
+    const uidParam = decodeURIComponent(String(userId)).trim().toLowerCase();
+    const myId = String(activeCurrentUser.id || '').trim().toLowerCase();
+    const myName = String(activeCurrentUser.name || activeCurrentUser.companyName || '').trim().toLowerCase();
+    const myUsername = String(activeCurrentUser.username || '').trim().toLowerCase();
+    const myPhone = String(activeCurrentUser.phone || activeCurrentUser.mobile || '').trim().toLowerCase();
+    
+    const dispId = String(profileUser?.id || '').trim().toLowerCase();
+    const dispName = String(profileUser?.name || profileUser?.companyName || '').trim().toLowerCase();
+    const dispUsername = String(profileUser?.username || '').trim().toLowerCase();
+    const dispPhone = String(profileUser?.phone || profileUser?.mobile || '').trim().toLowerCase();
+
+    if (uidParam === myId || (myName && uidParam === myName) || (myUsername && uidParam === myUsername) || (myPhone && uidParam === myPhone)) {
+      return true;
+    }
+    if (dispId && myId && dispId === myId) return true;
+    if (dispName && myName && dispName === myName) return true;
+    if (dispUsername && myUsername && dispUsername === myUsername) return true;
+    if (dispPhone && myPhone && dispPhone === myPhone) return true;
+
+    return false;
+  }, [userId, activeCurrentUser, profileUser]);
+
+  const userToDisplay = profileUser || currentUser || cachedStoredUser;
 
   const targetIdentifier = userId ? decodeURIComponent(userId) : (profileUser?.id || currentUser?.id || currentUser?.name || '');
   const [isFollowing, setIsFollowing] = useState(() => isUserFollowed(targetIdentifier));
@@ -14942,7 +15944,6 @@ function ProfilePage({
   const [isCatalogueCreateOpen, setIsCatalogueCreateOpen] = useState(false);
   const [catTitle, setCatTitle] = useState('');
   const [catCategory, setCatCategory] = useState('Vitrified Tiles');
-  const [catUploadType, setCatUploadType] = useState<'pdf' | 'images'>('pdf');
   const [catFile, setCatFile] = useState<File | null>(null);
   const [catFilePreview, setCatFilePreview] = useState<string | null>(null);
   const [isPublishingCat, setIsPublishingCat] = useState(false);
@@ -14961,12 +15962,13 @@ function ProfilePage({
       if (catFile) {
         fileUrl = await fileToDataURL(catFile);
       }
+      const isPdf = catFile?.type === 'application/pdf' || catFile?.name?.toLowerCase().endsWith('.pdf');
       const newCat = {
         id: 'cat_' + Date.now(),
         title: catTitle,
         category: catCategory,
         fileUrl,
-        fileType: catUploadType === 'pdf' ? 'pdf' : 'image',
+        fileType: isPdf ? 'pdf' : 'image',
         createdAt: new Date().toISOString(),
         userId: currentUser?.id || targetIdentifier,
         userName: currentUser?.name || 'User'
@@ -15482,16 +16484,24 @@ function ProfilePage({
     if (file) {
       const reader = new FileReader();
       reader.onloadend = async () => {
-        const newAvatarUrl = reader.result as string;
-        const updated = { ...currentUser, avatarUrl: newAvatarUrl };
+        let newAvatarUrl = reader.result as string;
+        try {
+          const optimized = await optimizeImageForPersistence(newAvatarUrl, 400, 400, 0.75);
+          if (optimized) newAvatarUrl = optimized;
+        } catch (e) {}
+
+        const updated = { ...currentUser, avatarUrl: newAvatarUrl, avatar: newAvatarUrl };
         onUpdateUser(updated);
         setProfileUser(updated);
+        updateCachedUsers(updated);
+        syncUserToFirestore(updated);
+        window.dispatchEvent(new CustomEvent('vyapar_user_avatar_updated', { detail: updated }));
         toast.success('Profile photo updated!');
         try {
           await fetch(`/api/users/${currentUser?.id || '1'}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ avatarUrl: newAvatarUrl })
+            body: JSON.stringify({ avatarUrl: newAvatarUrl, avatar: newAvatarUrl })
           });
         } catch (err) {
           console.error(err);
@@ -15672,14 +16682,21 @@ function ProfilePage({
                   : "neon-border-circle p-[3px]"
               )}
             >
-              <div className="w-full h-full rounded-full p-[2px] overflow-hidden">
-                {userToDisplay.avatarUrl ? (
-                  <img src={userToDisplay.avatarUrl} alt={userToDisplay.name} className="w-full h-full object-cover rounded-full" />
-                ) : (
-                  <div className="w-full h-full bg-slate-200 dark:bg-zinc-800 rounded-full flex items-center justify-center text-4xl font-bold text-black dark:text-zinc-300 shadow-inner">
-                    {userToDisplay.name?.charAt(0) || 'U'}
-                  </div>
-                )}
+              <div className="w-full h-full rounded-full p-[2px] overflow-hidden flex items-center justify-center bg-slate-200 dark:bg-zinc-800">
+                {(() => {
+                  const pName = userToDisplay.name || 'User';
+                  const pAvatar = resolveUserAvatar(userToDisplay, pName);
+                  return (
+                    <img 
+                      src={pAvatar || getInitialsAvatar(pName)} 
+                      alt={pName} 
+                      className="w-full h-full object-cover rounded-full"
+                      onError={(e) => {
+                        (e.currentTarget as HTMLImageElement).src = getInitialsAvatar(pName);
+                      }}
+                    />
+                  );
+                })()}
               </div>
               {isOwnProfile && (
                 <div className="absolute inset-0 rounded-full bg-black/40 flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity text-black text-xs font-semibold gap-1">
@@ -15746,8 +16763,8 @@ function ProfilePage({
               </div>
 
               {/* Action Buttons for Profile */}
-              <div className="flex items-center gap-2">
-                {!isOwnProfile && (
+              <div className="flex items-center gap-2 flex-wrap">
+                {!isOwnProfile ? (
                   <>
                     <button 
                       onClick={async () => {
@@ -15773,7 +16790,7 @@ function ProfilePage({
                         "font-bold px-6 py-2 rounded-xl text-sm transition-all shadow-sm flex items-center gap-2 cursor-pointer",
                         isFollowing 
                           ? "bg-slate-100 dark:bg-zinc-900 text-black dark:text-zinc-100 border border-slate-200 dark:border-zinc-800" 
-                          : "bg-blue-600 hover:bg-blue-700 text-black"
+                          : "bg-blue-600 hover:bg-blue-700 text-white"
                       )}
                     >
                       {isFollowing ? <UserCheck className="w-4 h-4" /> : <UserPlus className="w-4 h-4" />}
@@ -15787,6 +16804,26 @@ function ProfilePage({
                       <MessageSquare className="w-4 h-4 text-emerald-500" />
                       <span>Chat</span>
                     </button>
+                  </>
+                ) : (
+                  <>
+                    <button 
+                      onClick={() => setIsEditModalOpen(true)}
+                      className="font-bold px-5 py-2 rounded-xl text-sm transition-colors border flex items-center gap-2 cursor-pointer bg-blue-50 dark:bg-blue-950/40 hover:bg-blue-100 dark:hover:bg-blue-900/50 border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-300 shadow-xs"
+                    >
+                      <Pencil className="w-4 h-4 text-blue-500" />
+                      <span>Edit Profile</span>
+                    </button>
+
+                    {onOpenSettingsDrawer && (
+                      <button 
+                        onClick={onOpenSettingsDrawer}
+                        className="p-2 rounded-xl border border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 hover:bg-slate-50 dark:hover:bg-zinc-800 text-black dark:text-zinc-100 transition-colors cursor-pointer"
+                        title="Account Settings"
+                      >
+                        <Settings className="w-4 h-4 text-slate-500" />
+                      </button>
+                    )}
                   </>
                 )}
                 
@@ -16191,9 +17228,9 @@ function ProfilePage({
           </div>
         </div>
 
-        {/* Quick Action Triggers (Post, Reel, Catalogues) - Only on own profile */}
+        {/* Quick Action Triggers (Post, Reel) - Only on own profile */}
         {isOwnProfile && (
-          <div className="grid grid-cols-3 gap-2.5">
+          <div className="grid grid-cols-2 gap-2.5">
             <button 
               onClick={() => { setActiveTab('posts'); setIsProfileCreateOpen(true); }}
               className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 hover:border-blue-500 p-3 rounded-2xl flex items-center justify-center gap-2 font-bold text-xs text-black dark:text-zinc-100 shadow-xs transition-all cursor-pointer"
@@ -16207,13 +17244,6 @@ function ProfilePage({
             >
               <Film className="w-4 h-4 text-pink-500" />
               <span>Upload Reel</span>
-            </button>
-            <button 
-              onClick={() => setActiveTab('catalogues')}
-              className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 hover:border-emerald-500 p-3 rounded-2xl flex items-center justify-center gap-2 font-bold text-xs text-black dark:text-zinc-100 shadow-xs transition-all cursor-pointer"
-            >
-              <FileText className="w-4 h-4 text-emerald-500" />
-              <span>Add PDF/Catalog</span>
             </button>
           </div>
         )}
@@ -16230,16 +17260,6 @@ function ProfilePage({
         >
           <Compass className="w-4 h-4" />
           Wall Posts
-        </button>
-        <button 
-          onClick={() => setActiveTab('catalogues')}
-          className={cn(
-            "flex items-center gap-2 py-3 border-t-2 transition-colors cursor-pointer shrink-0",
-            activeTab === 'catalogues' ? "border-slate-900 dark:border-zinc-50 text-black dark:text-zinc-50" : "border-transparent text-black/60 hover:text-black/80 dark:hover:text-zinc-300"
-          )}
-        >
-          <FileText className="w-4 h-4 text-emerald-500" />
-          Catalogues
         </button>
         {isOwnProfile && (
           <>
@@ -16266,221 +17286,6 @@ function ProfilePage({
           </>
         )}
       </div>
-
-      {/* Catalogues Tab Content */}
-      {activeTab === 'catalogues' && (
-        <div className="space-y-6">
-          {/* Catalogue Upload Box - Only for own profile & non-customers */}
-          {isOwnProfile && currentUser?.role !== 'customer' && (
-            <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-2xl p-4 shadow-sm">
-              <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-zinc-800">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-9 h-9 rounded-xl bg-emerald-50 dark:bg-emerald-950 flex items-center justify-center shrink-0 border border-emerald-200 dark:border-emerald-800 text-emerald-600">
-                    <FileText className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <h3 className="font-bold text-xs sm:text-sm text-black dark:text-zinc-100 flex items-center gap-1">
-                      Upload Product Catalogues & PDF/Images
-                      <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-                    </h3>
-                    <p className="text-[11px] text-black/70 dark:text-zinc-400">Share your latest tile designs, price lists & PDF brochures from local device</p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setIsCatalogueCreateOpen(!isCatalogueCreateOpen)}
-                  className="bg-emerald-600 hover:bg-emerald-700 text-black font-bold px-3 py-1.5 rounded-xl text-xs transition-all shadow-sm flex items-center gap-1.5 cursor-pointer shrink-0"
-                >
-                  <Plus className="w-4 h-4" />
-                  {isCatalogueCreateOpen ? 'Close' : 'Add Catalogue'}
-                </button>
-              </div>
-
-              {isCatalogueCreateOpen && (
-                <form onSubmit={handlePublishCatalogue} className="mt-4 space-y-3">
-                  {/* Step 1: Choose Type */}
-                  <div>
-                    <label className="block text-xs font-bold text-slate-900 dark:text-zinc-100 mb-1.5">
-                      1. Choose Upload Type
-                    </label>
-                    <div className="grid grid-cols-2 gap-2">
-                      <button
-                        type="button"
-                        onClick={() => { setCatUploadType('pdf'); setCatFile(null); setCatFilePreview(null); }}
-                        className={cn(
-                          "py-2.5 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 border transition-all cursor-pointer",
-                          catUploadType === 'pdf' ? "bg-emerald-600 text-white border-emerald-500 shadow-sm" : "bg-slate-100 dark:bg-zinc-800 text-slate-800 dark:text-zinc-200 border-slate-200 dark:border-zinc-700"
-                        )}
-                      >
-                        <FileText className="w-4 h-4" />
-                        <span>Upload PDF</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => { setCatUploadType('images'); setCatFile(null); setCatFilePreview(null); }}
-                        className={cn(
-                          "py-2.5 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 border transition-all cursor-pointer",
-                          catUploadType === 'images' ? "bg-emerald-600 text-white border-emerald-500 shadow-sm" : "bg-slate-100 dark:bg-zinc-800 text-slate-800 dark:text-zinc-200 border-slate-200 dark:border-zinc-700"
-                        )}
-                      >
-                        <ImageIcon className="w-4 h-4" />
-                        <span>Upload Images</span>
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Step 2: Catalogue Name */}
-                  <div>
-                    <label className="block text-xs font-bold text-slate-900 dark:text-zinc-100 mb-1">
-                      2. Catalogue Name (नाम) *
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="e.g. 2026 Vitrified Tiles Catalogue"
-                      value={catTitle}
-                      onChange={e => setCatTitle(e.target.value)}
-                      className="w-full bg-slate-50 dark:bg-zinc-800/90 border border-slate-200 dark:border-zinc-700 rounded-xl px-3.5 py-2 text-xs sm:text-sm text-slate-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                    />
-                  </div>
-
-                  {/* Step 3: Category */}
-                  <div>
-                    <label className="block text-xs font-bold text-slate-900 dark:text-zinc-100 mb-1">
-                      3. Category (कैटेगरी) *
-                    </label>
-                    <select
-                      value={catCategory}
-                      onChange={e => setCatCategory(e.target.value)}
-                      className="w-full bg-slate-50 dark:bg-zinc-800/90 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-2 text-xs sm:text-sm text-slate-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                    >
-                      <option value="Vitrified Tiles">Vitrified Tiles</option>
-                      <option value="Ceramic Tiles">Ceramic Tiles</option>
-                      <option value="Sanitaryware">Sanitaryware</option>
-                      <option value="Marble & Granite">Marble & Granite</option>
-                      <option value="Hardware & Tools">Hardware & Tools</option>
-                      <option value="Other Catalogue">Other Catalogue</option>
-                    </select>
-                  </div>
-
-                  {/* Step 4: File Selection */}
-                  <div>
-                    <label className="block text-xs font-bold text-slate-900 dark:text-zinc-100 mb-1">
-                      4. Select {catUploadType === 'pdf' ? 'PDF File from Device' : 'Image File(s) from Device'} *
-                    </label>
-                    <input
-                      type="file"
-                      ref={catalogueFileInputRef}
-                      accept={catUploadType === 'pdf' ? '.pdf' : 'image/*'}
-                      onChange={e => {
-                        if (e.target.files && e.target.files[0]) {
-                          const file = e.target.files[0];
-                          setCatFile(file);
-                          setCatFilePreview(URL.createObjectURL(file));
-                        }
-                      }}
-                      className="w-full text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-emerald-50 file:text-emerald-700 hover:file:bg-emerald-100 cursor-pointer"
-                    />
-                    {catFilePreview && (
-                      <div className="mt-2 relative w-full h-28 rounded-xl overflow-hidden border border-slate-200 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-800 flex items-center justify-center">
-                        {catUploadType === 'images' ? (
-                          <img src={catFilePreview} alt="Preview" className="w-full h-full object-cover" />
-                        ) : (
-                          <div className="flex items-center gap-2 text-xs font-bold text-emerald-600">
-                            <FileText className="w-6 h-6" />
-                            <span>{catFile?.name || 'Selected PDF'}</span>
-                          </div>
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => { setCatFile(null); setCatFilePreview(null); }}
-                          className="absolute top-2 right-2 p-1 bg-black/60 text-white rounded-full hover:bg-black/80"
-                        >
-                          <X className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    )}
-                  </div>
-
-                  <button
-                    type="submit"
-                    disabled={isPublishingCat}
-                    className="w-full bg-emerald-600 hover:bg-emerald-700 text-black font-bold py-2.5 rounded-xl text-xs transition-colors shadow-sm flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 mt-2"
-                  >
-                    <Upload className="w-4 h-4" />
-                    <span>{isPublishingCat ? 'Uploading Catalogue...' : 'Upload Catalogue'}</span>
-                  </button>
-                </form>
-              )}
-            </div>
-          )}
-
-          {/* Catalogues Slider / Grid View */}
-          {userCatalogues.length === 0 ? (
-            <div className="text-center py-16 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-8 shadow-sm">
-              <div className="w-16 h-16 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 flex items-center justify-center mx-auto mb-3 border border-emerald-100 dark:border-emerald-900/50">
-                <FileText className="w-8 h-8" />
-              </div>
-              <h3 className="text-lg font-bold text-black dark:text-zinc-100 mb-1">No Catalogues Uploaded Yet</h3>
-              <p className="text-xs text-black/70 dark:text-zinc-400 max-w-sm mx-auto mb-4">
-                {isOwnProfile ? 'Upload your product catalogues, brochures and price lists to showcase to buyers in real-time.' : 'This member has not uploaded any catalogues yet.'}
-              </p>
-              {isOwnProfile && currentUser?.role !== 'customer' && (
-                <button
-                  onClick={() => setIsCatalogueCreateOpen(true)}
-                  className="bg-emerald-600 hover:bg-emerald-700 text-black font-bold px-5 py-2.5 rounded-xl text-xs transition-colors inline-flex items-center gap-2 shadow-sm cursor-pointer"
-                >
-                  <Plus className="w-4 h-4" /> Add First Catalogue
-                </button>
-              )}
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {userCatalogues.map((cat: any) => (
-                <div key={cat.id || Math.random()} className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-2xl p-4 shadow-sm hover:shadow-md transition-all flex flex-col justify-between group">
-                  <div>
-                    <div className="relative w-full h-40 rounded-xl overflow-hidden bg-slate-100 dark:bg-zinc-800 mb-3">
-                      <img src={cat.fileUrl || 'https://images.unsplash.com/photo-1581091226825-a6a2a5aee158?auto=format&fit=crop&q=80&w=800'} alt={cat.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
-                      <div className="absolute top-2 left-2 bg-black/60 backdrop-blur-md px-2 py-0.5 rounded-md text-[10px] text-white font-bold flex items-center gap-1">
-                        <FileText className="w-3 h-3 text-emerald-400" /> Catalogue
-                      </div>
-                    </div>
-                    <h4 className="font-bold text-sm text-black dark:text-zinc-100 mb-1">{cat.title}</h4>
-                    {cat.description && (
-                      <p className="text-xs text-black/70 dark:text-zinc-400 line-clamp-2 mb-3">{cat.description}</p>
-                    )}
-                  </div>
-
-                  <div className="flex items-center justify-between pt-3 border-t border-slate-100 dark:border-zinc-800 mt-2">
-                    <span className="text-[11px] text-slate-400">
-                      {new Date(cat.createdAt || Date.now()).toLocaleDateString()}
-                    </span>
-                    <div className="flex items-center gap-2">
-                      <a
-                        href={cat.fileUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-3 py-1.5 rounded-lg text-xs transition-colors inline-flex items-center gap-1.5 shadow-xs"
-                      >
-                        <Download className="w-3.5 h-3.5" /> View / Download
-                      </a>
-                      {isOwnProfile && (
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteCatalogue(cat.id)}
-                          className="p-1.5 bg-red-50 hover:bg-red-100 dark:bg-red-950/40 dark:hover:bg-red-900/60 text-red-600 rounded-lg transition-colors"
-                          title="Delete Catalogue"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
 
       {/* Grid Content depending on activeTab */}
       {activeTab === 'posts' && (
@@ -17170,15 +17975,128 @@ function RightSidebar({
   user, 
   suggestedUsers,
   onOpenSettingsDrawer,
-  onOpenAuthModal
+  onOpenAuthModal,
+  onUpdateUser
 }: { 
   user: any; 
   suggestedUsers: any[];
   onOpenSettingsDrawer?: () => void;
   onOpenAuthModal?: () => void;
+  onUpdateUser?: (u: any) => void;
 }) {
   const [isUploading, setIsUploading] = useState(false);
+  const [followedMap, setFollowedMap] = useState<Record<string, boolean>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const filteredSuggestedUsers = useMemo(() => {
+    if (!Array.isArray(suggestedUsers)) return [];
+    const myId = String(user?.id || '').trim().toLowerCase();
+    const myName = String(user?.name || user?.companyName || '').trim().toLowerCase();
+    const myUsername = String(user?.username || '').trim().toLowerCase();
+    return suggestedUsers.filter(u => {
+      const uid = String(u?.id || u?.userId || u?.username || '').trim().toLowerCase();
+      const uname = String(u?.name || u?.companyName || u?.displayName || '').trim().toLowerCase();
+      if (myId && (uid === myId || uname === myId)) return false;
+      if (myName && (uname === myName || uid === myName)) return false;
+      if (myUsername && (uid === myUsername || uname === myUsername)) return false;
+      return true;
+    });
+  }, [suggestedUsers, user]);
+
+  useEffect(() => {
+    const syncFollow = () => {
+      const currentFollowed = getFollowedUsers();
+      const newMap: Record<string, boolean> = {};
+      if (Array.isArray(filteredSuggestedUsers)) {
+        filteredSuggestedUsers.forEach(u => {
+          const uid = String(u?.id || u?.userId || u?.username || '');
+          if (uid) {
+            newMap[uid] = currentFollowed.includes(uid);
+          }
+        });
+      }
+      setFollowedMap(newMap);
+    };
+
+    syncFollow();
+    window.addEventListener('followedUsersUpdated', syncFollow);
+    return () => window.removeEventListener('followedUsersUpdated', syncFollow);
+  }, [filteredSuggestedUsers]);
+
+  const handleFollowToggle = async (e: React.MouseEvent, targetUser: any) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const targetId = String(targetUser.id || targetUser.userId || targetUser.username || '');
+    if (!targetId) return;
+
+    if (!user?.id) {
+      if (onOpenAuthModal) {
+        onOpenAuthModal();
+      } else {
+        toast.error('Please login to follow businesses and creators');
+      }
+      return;
+    }
+
+    const userName = targetUser.name || targetUser.companyName || targetUser.displayName || targetUser.username || 'User';
+    const nextStatus = toggleFollowUser(targetId);
+
+    // Optimistic UI state update
+    setFollowedMap(prev => ({ ...prev, [targetId]: nextStatus }));
+
+    // Update target user followers count & current user following count
+    const delta = nextStatus ? 1 : -1;
+    const currentTargetFollowers = Number(targetUser.followersCount || targetUser.followers?.length || 0);
+    const updatedTargetFollowers = Math.max(0, currentTargetFollowers + delta);
+    targetUser.followersCount = updatedTargetFollowers;
+
+    if (user) {
+      const currentMyFollowing = Number(user.followingCount || user.following?.length || 0);
+      const updatedUserFollowing = Math.max(0, currentMyFollowing + delta);
+      const updatedCurrentUser = {
+        ...user,
+        followingCount: updatedUserFollowing,
+        following: nextStatus 
+          ? Array.from(new Set([...(user.following || []), targetId]))
+          : (user.following || []).filter((id: string) => id !== targetId)
+      };
+      if (onUpdateUser) {
+        onUpdateUser(updatedCurrentUser);
+      }
+      try {
+        localStorage.setItem('user', JSON.stringify(updatedCurrentUser));
+        localStorage.setItem('Vyapar Bridge_user', JSON.stringify(updatedCurrentUser));
+        syncUserToFirestore(updatedCurrentUser).catch(() => {});
+      } catch (err) {}
+    }
+
+    // Sync target user to Firestore
+    try {
+      syncUserToFirestore({
+        ...targetUser,
+        id: targetId,
+        followersCount: updatedTargetFollowers
+      }).catch(() => {});
+    } catch (err) {}
+
+    // Call backend API
+    try {
+      await fetch(`/api/users/${targetId}/follow`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ followerId: user.id })
+      });
+    } catch (err) {
+      console.warn('Backend follow sync error:', err);
+    }
+
+    if (nextStatus) {
+      toast.success(`✓ Following ${userName}`);
+    } else {
+      toast(`Unfollowed ${userName}`, { icon: 'ℹ️' });
+    }
+  };
 
   const handleCatalogueUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -17240,7 +18158,7 @@ function RightSidebar({
             
             <button 
               onClick={onOpenSettingsDrawer}
-              className="w-full py-2.5 bg-white hover:bg-slate-100 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-black rounded-2xl font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer shadow-sm active:scale-95"
+              className="w-full py-2.5 bg-white hover:bg-slate-100 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-black dark:text-zinc-50 rounded-2xl font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer shadow-sm active:scale-95 border border-slate-200/60 dark:border-zinc-700"
             >
               <Menu className="w-4 h-4 text-blue-600" />
               <span>Account Settings & Options</span>
@@ -17250,15 +18168,12 @@ function RightSidebar({
       )}
 
       {user && user.role !== 'customer' && (
-        <div className="mb-10">
-          <h3 className="text-xs font-black text-black/60 dark:text-zinc-500 uppercase tracking-[0.2em] mb-5 flex items-center gap-2">
+        <div className="mb-8">
+          <h3 className="text-xs font-black text-black/60 dark:text-zinc-500 uppercase tracking-[0.2em] mb-4 flex items-center gap-2">
             <FileText className="w-4 h-4 text-blue-500" />
             Company Catalogue
           </h3>
-          <div className="p-5 bg-slate-50 dark:bg-zinc-900/50 rounded-3xl border border-slate-200 dark:border-zinc-800 border-dashed group transition-all hover:border-blue-500/50">
-            <p className="text-[11px] font-bold text-black/70 dark:text-zinc-400 mb-5 leading-relaxed">
-              Upload your company PDF catalogue to showcase your products to dealers and customers across India.
-            </p>
+          <div className="p-4 bg-slate-50 dark:bg-zinc-900/50 rounded-3xl border border-slate-200 dark:border-zinc-800 border-dashed group transition-all hover:border-blue-500/50">
             <input 
               type="file" 
               ref={fileInputRef} 
@@ -17269,13 +18184,13 @@ function RightSidebar({
             <button 
               onClick={() => fileInputRef.current?.click()}
               disabled={isUploading}
-              className="w-full py-3.5 bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-2xl text-[11px] font-black uppercase tracking-widest text-black dark:text-zinc-50 hover:bg-slate-50 dark:hover:bg-zinc-700 transition-all flex items-center justify-center gap-3 shadow-sm hover:shadow-md active:scale-95 disabled:opacity-50"
+              className="w-full py-3 bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-2xl text-[11px] font-black uppercase tracking-widest text-black dark:text-zinc-50 hover:bg-slate-50 dark:hover:bg-zinc-700 transition-all flex items-center justify-center gap-3 shadow-sm hover:shadow-md active:scale-95 disabled:opacity-50 cursor-pointer"
             >
               {isUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4 text-blue-500" />}
-              {user.catalogueUrl ? 'Update Catalogue' : 'Upload Catalogue'}
+              {user.catalogueUrl ? 'Update Catalogue' : 'Upload Catalogue (PDF)'}
             </button>
             {user.catalogueUrl && (
-              <div className="mt-4 flex items-center justify-center gap-2">
+              <div className="mt-3 flex items-center justify-center gap-2">
                 <a 
                   href={user.catalogueUrl} 
                   target="_blank" 
@@ -17283,7 +18198,7 @@ function RightSidebar({
                   className="text-[10px] font-black uppercase tracking-wider text-blue-500 hover:text-blue-600 transition-colors flex items-center gap-1.5"
                 >
                   <ExternalLink className="w-3 h-3" />
-                  View PDF
+                  View PDF Catalogue
                 </a>
               </div>
             )}
@@ -17291,32 +18206,71 @@ function RightSidebar({
         </div>
       )}
       
-      <div className="mb-10">
-        <div className="flex items-center justify-between mb-5">
-          <h3 className="text-xs font-black text-black/60 dark:text-zinc-500 uppercase tracking-[0.2em]">Suggested for you</h3>
-          <Link to="/explore" className="text-[10px] font-black text-blue-500 uppercase tracking-wider hover:underline">See All</Link>
+      <div className="mb-8">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <div className="w-1.5 h-1.5 rounded-full bg-blue-600 animate-pulse"></div>
+            <h3 className="text-xs font-black text-black/60 dark:text-zinc-500 uppercase tracking-[0.2em]">Suggested for you</h3>
+          </div>
+          <Link to="/explore" className="text-[10px] font-black text-blue-500 uppercase tracking-wider hover:underline flex items-center gap-0.5">
+            <span>See All</span>
+            <ChevronRight className="w-3 h-3" />
+          </Link>
         </div>
-        <div className="space-y-4">
-          {suggestedUsers.slice(0, 5).map(u => (
-            <div key={u.id} className="flex items-center justify-between group">
-              <Link to={`/profile/${u.id}`} className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-full overflow-hidden border border-slate-100 dark:border-zinc-800 shrink-0">
-                  <img src={u.avatarUrl} alt={u.name} className="w-full h-full object-cover transition-transform group-hover:scale-110" />
-                </div>
-                <div className="flex flex-col">
-                  <span className="text-xs font-bold text-black dark:text-zinc-50 truncate w-32">{u.name}</span>
-                  {u.role !== 'customer' && (
-                    <span className="text-[10px] text-black/70 dark:text-zinc-500 uppercase font-black tracking-tighter">{u.role}</span>
+        <div className="space-y-3">
+          {filteredSuggestedUsers.slice(0, 6).map((u, i) => {
+            const userId = u.id || u.userId || u.uid || u._id || u.username || `su-side-${i}`;
+            const userName = u.name || u.companyName || u.displayName || u.username || u.title || 'Vyapar Member';
+            const userRole = u.role || (u.companyName ? 'dealer' : 'member');
+            const userAvatar = resolveUserAvatar(u, userName);
+            const isFollowing = isUserFollowed(String(userId)) || Boolean(followedMap[String(userId)]);
+
+            return (
+              <div key={userId} className="flex items-center justify-between group p-1.5 rounded-2xl hover:bg-slate-50 dark:hover:bg-zinc-900/60 transition-all border border-transparent hover:border-slate-200/60 dark:hover:border-zinc-800">
+                {/* Profile tap navigates to user profile */}
+                <Link to={`/profile/${encodeURIComponent(String(userId))}`} className="flex items-center gap-2.5 min-w-0 flex-1 cursor-pointer">
+                  <div className="w-9 h-9 rounded-full overflow-hidden border border-slate-200 dark:border-zinc-800 shrink-0 bg-slate-100 dark:bg-zinc-800 flex items-center justify-center shadow-sm">
+                    <img 
+                      src={userAvatar || getInitialsAvatar(userName)} 
+                      alt={userName} 
+                      onError={(e) => {
+                        (e.currentTarget as HTMLImageElement).src = getInitialsAvatar(userName);
+                      }}
+                      className="w-full h-full object-cover transition-transform group-hover:scale-110" 
+                    />
+                  </div>
+                  <div className="flex flex-col min-w-0 flex-1">
+                    <span className="text-xs font-bold text-black dark:text-zinc-50 truncate group-hover:text-blue-600 transition-colors">
+                      {userName}
+                    </span>
+                    {userRole && userRole !== 'customer' && (
+                      <span className="text-[9.5px] text-black/60 dark:text-zinc-400 uppercase font-black tracking-tighter truncate">
+                        {userRole}
+                      </span>
+                    )}
+                  </div>
+                </Link>
+
+                {/* Live Follow / Following Button */}
+                <button 
+                  type="button"
+                  onClick={(e) => handleFollowToggle(e, u)}
+                  className={cn(
+                    "text-[10.5px] font-black uppercase tracking-wider px-3 py-1 rounded-xl transition-all active:scale-95 cursor-pointer shrink-0 ml-2 shadow-sm",
+                    isFollowing
+                      ? "bg-slate-200/80 dark:bg-zinc-800 text-slate-800 dark:text-zinc-200 border border-slate-300 dark:border-zinc-700 hover:bg-red-50 hover:text-red-600"
+                      : "bg-blue-600 hover:bg-blue-700 text-white shadow-blue-500/20"
                   )}
-                </div>
-              </Link>
-              <button className="text-[10px] font-black text-blue-500 uppercase tracking-widest hover:text-blue-600">Follow</button>
-            </div>
-          ))}
+                >
+                  {isFollowing ? 'Following' : 'Follow'}
+                </button>
+              </div>
+            );
+          })}
         </div>
       </div>
 
-      <div className="mt-auto opacity-50">
+      <div className="mt-auto opacity-50 pt-4">
         <p className="text-[10px] font-bold text-black/60 dark:text-zinc-600 uppercase tracking-widest leading-loose">
           © 2026 VYAPAR BRIDGE<br />
           B2B & B2C Trade & Commerce Network
@@ -17964,11 +18918,20 @@ function AppContent() {
               )}
             >
               <div className="w-6 h-6 rounded-full bg-slate-200 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 flex items-center justify-center overflow-hidden shrink-0 transition-transform group-hover:scale-105">
-                 {user.avatarUrl ? (
-                   <img src={user.avatarUrl} alt={user.name} className="w-full h-full object-cover" />
-                 ) : (
-                   <span className="text-[10px] font-bold text-black/80 dark:text-zinc-300">{user.name?.charAt(0) || 'U'}</span>
-                 )}
+                 {(() => {
+                   const uName = user.name || 'User';
+                   const uAv = resolveUserAvatar(user, uName);
+                   return (
+                     <img 
+                       src={uAv || getInitialsAvatar(uName)} 
+                       alt={uName} 
+                       className="w-full h-full object-cover rounded-full"
+                       onError={(e) => {
+                         (e.currentTarget as HTMLImageElement).src = getInitialsAvatar(uName);
+                       }}
+                     />
+                   );
+                 })()}
               </div>
               <span className="hidden lg:block text-[15px]">Profile</span>
               <div className="absolute left-14 bg-blue-600 text-white text-xs px-2 py-1.5 rounded-md opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-700 hidden md:block lg:hidden whitespace-nowrap z-50 pointer-events-none shadow-lg">
@@ -18229,11 +19192,20 @@ function AppContent() {
         {user ? (
           <Link to="/profile" title="Profile" className="p-1">
             <div className="w-7 h-7 rounded-full bg-slate-200 dark:bg-zinc-800 border-2 border-slate-300 dark:border-zinc-700 flex items-center justify-center overflow-hidden">
-               {user.avatarUrl ? (
-                 <img src={user.avatarUrl} alt={user.name} className="w-full h-full object-cover" />
-               ) : (
-                 <span className="text-xs font-bold text-black/80 dark:text-zinc-300">{user.name?.charAt(0) || 'U'}</span>
-               )}
+               {(() => {
+                 const uName = user.name || 'User';
+                 const uAv = resolveUserAvatar(user, uName);
+                 return (
+                   <img 
+                     src={uAv || getInitialsAvatar(uName)} 
+                     alt={uName} 
+                     className="w-full h-full object-cover rounded-full"
+                     onError={(e) => {
+                       (e.currentTarget as HTMLImageElement).src = getInitialsAvatar(uName);
+                     }}
+                   />
+                 );
+               })()}
             </div>
           </Link>
         ) : (

@@ -114,63 +114,97 @@ export async function generateVideoThumbnail(
   seekToSeconds = 0.5
 ): Promise<string> {
   return new Promise((resolve) => {
+    let createdUrl: string | null = null;
+    let resolved = false;
+
+    const cleanupAndResolve = (result: string) => {
+      if (resolved) return;
+      resolved = true;
+      if (createdUrl) {
+        try { URL.revokeObjectURL(createdUrl); } catch (e) {}
+      }
+      resolve(result);
+    };
+
     try {
       const video = document.createElement('video');
       video.muted = true;
       video.playsInline = true;
-      video.crossOrigin = 'anonymous';
+      video.preload = 'auto';
 
-      let src = typeof fileOrUrl === 'string' ? fileOrUrl : URL.createObjectURL(fileOrUrl);
+      let src = '';
+      if (typeof fileOrUrl === 'string') {
+        src = fileOrUrl;
+        if (!src.startsWith('blob:') && !src.startsWith('data:')) {
+          video.crossOrigin = 'anonymous';
+        }
+      } else {
+        createdUrl = URL.createObjectURL(fileOrUrl);
+        src = createdUrl;
+      }
       video.src = src;
 
-      let resolved = false;
-
       const captureFrame = () => {
-        if (resolved) return;
-        resolved = true;
         try {
           const canvas = document.createElement('canvas');
-          canvas.width = video.videoWidth || 640;
-          canvas.height = video.videoHeight || 360;
+          const w = video.videoWidth || 640;
+          const h = video.videoHeight || 360;
+          canvas.width = Math.min(w, 720);
+          canvas.height = Math.round((canvas.width * h) / w);
           const ctx = canvas.getContext('2d');
           if (ctx) {
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-            const thumb = canvas.toDataURL('image/jpeg', 0.8);
-            if (typeof fileOrUrl !== 'string') URL.revokeObjectURL(src);
-            resolve(thumb);
-            return;
+            const thumb = canvas.toDataURL('image/jpeg', 0.85);
+            if (thumb && thumb.length > 200) {
+              cleanupAndResolve(thumb);
+              return;
+            }
           }
         } catch (e) {}
-        if (typeof fileOrUrl !== 'string') URL.revokeObjectURL(src);
-        resolve('');
+        cleanupAndResolve('');
       };
 
       video.onloadeddata = () => {
         try {
-          video.currentTime = Math.min(seekToSeconds, video.duration || 1);
+          const targetTime = Math.min(seekToSeconds, Math.max(0.1, (video.duration || 1) * 0.1));
+          video.currentTime = targetTime;
         } catch (e) {
           captureFrame();
         }
       };
 
-      video.onseeked = captureFrame;
-      video.onerror = () => {
+      video.onseeked = () => {
+        captureFrame();
+      };
+
+      video.oncanplay = () => {
         if (!resolved) {
-          resolved = true;
-          if (typeof fileOrUrl !== 'string') URL.revokeObjectURL(src);
-          resolve('');
+          try {
+            if (video.videoWidth > 0) {
+              captureFrame();
+            }
+          } catch (e) {}
         }
       };
 
+      video.onerror = () => {
+        cleanupAndResolve('');
+      };
+
+      // Fallback timer in case seeked never fires
       setTimeout(() => {
         if (!resolved) {
-          captureFrame();
+          if (video.videoWidth > 0) {
+            captureFrame();
+          } else {
+            cleanupAndResolve('');
+          }
         }
-      }, 2000);
+      }, 2500);
 
       video.load();
     } catch (e) {
-      resolve('');
+      cleanupAndResolve('');
     }
   });
 }

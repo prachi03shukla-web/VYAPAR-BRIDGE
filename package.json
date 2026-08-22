@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@google/genai": "^2.16.0",
+    "@vidstack/react": "^0.6.15",
     "body-parser": "^2.3.0",
     "clsx": "^2.1.1",
     "cors": "^2.8.6",

@@ -1,6 +1,7 @@
 import { db, auth } from '../firebase';
 import { optimizeImageForPersistence } from '../utils/imageOptimizer';
 import { setPostLikedInLocalStorage, setPostSavedInLocalStorage, isPostLikedByUser, isPostSavedByUser } from '../utils/likeSaveHelpers';
+import { resolveUserAvatar, updateCachedUsers } from '../utils/userAvatar';
 import { 
   collection, 
   doc, 
@@ -290,16 +291,44 @@ export async function fetchPostsFromFirestore(): Promise<any[]> {
     snap.forEach((docSnap) => {
       const data = docSnap.data();
       if (data && docSnap.id) {
-        const merged = { ...data, id: docSnap.id };
-        
-        // Clean up blob URLs if present
-        if (merged.mediaUrl && merged.mediaUrl.startsWith('blob:')) {
-          merged.mediaUrl = merged.persistentMediaUrl || merged.fileDataUrl || merged.thumbnailUrl || '';
-          if (merged.mediaUrl.startsWith('blob:')) merged.mediaUrl = '';
+        const localStoredVideo = typeof localStorage !== 'undefined' ? localStorage.getItem('vyapar_video_' + docSnap.id) : null;
+        const incomingMedia = data.mediaUrl || data.persistentMediaUrl || data.videoUrl || data.thumbnailUrl || localStoredVideo || '';
+
+        // Safe recovery for mediaUrl and thumbnailUrl
+        let safeMediaUrl = incomingMedia;
+        if (safeMediaUrl && safeMediaUrl.startsWith('blob:')) {
+          safeMediaUrl = data.persistentMediaUrl || data.thumbnailUrl || localStoredVideo || safeMediaUrl;
         }
-        if (merged.thumbnailUrl && merged.thumbnailUrl.startsWith('blob:')) {
-          merged.thumbnailUrl = merged.mediaUrl || '';
+
+        let safeThumbnailUrl = data.thumbnailUrl || data.persistentMediaUrl || safeMediaUrl || '';
+        if (safeThumbnailUrl && safeThumbnailUrl.startsWith('blob:')) {
+          safeThumbnailUrl = data.persistentMediaUrl || safeMediaUrl || '';
         }
+
+        const authorAvatar = resolveUserAvatar(data, data.userName || data.user?.name);
+        const authorName = data.userName || data.user?.name || 'Member';
+        const authorRole = data.userRole || data.user?.role || 'dealer';
+        const isVerified = Boolean(data.isVerified || data.user?.isVerified);
+
+        const merged = { 
+          ...data, 
+          id: docSnap.id,
+          userName: authorName,
+          userAvatar: authorAvatar,
+          userRole: authorRole,
+          user: {
+            ...(data.user || {}),
+            id: String(data.userId || data.user?.id || docSnap.id),
+            name: authorName,
+            avatarUrl: authorAvatar,
+            avatar: authorAvatar,
+            role: authorRole,
+            isVerified
+          },
+          mediaUrl: safeMediaUrl || '',
+          thumbnailUrl: safeThumbnailUrl || '',
+          persistentMediaUrl: data.persistentMediaUrl || safeThumbnailUrl || safeMediaUrl || ''
+        };
 
         merged.isLiked = isPostLikedByUser(merged, activeUserId);
         merged.isSaved = isPostSavedByUser(merged, activeUserId);
@@ -342,8 +371,6 @@ export async function fetchPostsFromFirestore(): Promise<any[]> {
       const pId = String(p.id);
       if (deletedPostsSet.has(pId)) return false;
       if (p.status === 'rejected') return false;
-      const media = String(p.mediaUrl || p.thumbnailUrl || '');
-      if (media.startsWith('blob:')) return false;
       if (p.description === 'My tree' || p.title === 'Tree' || p.id === 'post_admin_1787027595927' || p.id === 'post_admin_1787027350660') return false;
       return true;
     })
@@ -373,24 +400,44 @@ export function subscribeToPostsFromFirestore(callback: (posts: any[]) => void):
       snapshot.forEach((docSnap) => {
         const data = docSnap.data();
         if (data && docSnap.id) {
-          const localStoredVideo = localStorage.getItem('vyapar_video_' + docSnap.id);
-          const incomingMedia = data.mediaUrl || data.persistentMediaUrl || data.videoUrl || data.thumbnailUrl || localStoredVideo;
+          const localStoredVideo = typeof localStorage !== 'undefined' ? localStorage.getItem('vyapar_video_' + docSnap.id) : null;
+          const incomingMedia = data.mediaUrl || data.persistentMediaUrl || data.videoUrl || data.thumbnailUrl || localStoredVideo || '';
+
+          // Safe recovery for mediaUrl and thumbnailUrl
+          let safeMediaUrl = incomingMedia;
+          if (safeMediaUrl && safeMediaUrl.startsWith('blob:')) {
+            safeMediaUrl = data.persistentMediaUrl || data.thumbnailUrl || localStoredVideo || safeMediaUrl;
+          }
+
+          let safeThumbnailUrl = data.thumbnailUrl || data.persistentMediaUrl || safeMediaUrl || '';
+          if (safeThumbnailUrl && safeThumbnailUrl.startsWith('blob:')) {
+            safeThumbnailUrl = data.persistentMediaUrl || safeMediaUrl || '';
+          }
+
+          const authorAvatar = resolveUserAvatar(data, data.userName || data.user?.name);
+          const authorName = data.userName || data.user?.name || 'Member';
+          const authorRole = data.userRole || data.user?.role || 'dealer';
+          const isVerified = Boolean(data.isVerified || data.user?.isVerified);
 
           const merged = { 
             ...data, 
             id: docSnap.id, 
-            mediaUrl: incomingMedia || data.mediaUrl || data.thumbnailUrl || '',
-            thumbnailUrl: data.thumbnailUrl || incomingMedia || ''
+            userName: authorName,
+            userAvatar: authorAvatar,
+            userRole: authorRole,
+            user: {
+              ...(data.user || {}),
+              id: String(data.userId || data.user?.id || docSnap.id),
+              name: authorName,
+              avatarUrl: authorAvatar,
+              avatar: authorAvatar,
+              role: authorRole,
+              isVerified
+            },
+            mediaUrl: safeMediaUrl || '',
+            thumbnailUrl: safeThumbnailUrl || '',
+            persistentMediaUrl: data.persistentMediaUrl || safeThumbnailUrl || safeMediaUrl || ''
           };
-
-          // Clean up blob URLs if present
-          if (merged.mediaUrl && merged.mediaUrl.startsWith('blob:')) {
-            merged.mediaUrl = merged.persistentMediaUrl || merged.fileDataUrl || merged.thumbnailUrl || '';
-            if (merged.mediaUrl.startsWith('blob:')) merged.mediaUrl = '';
-          }
-          if (merged.thumbnailUrl && merged.thumbnailUrl.startsWith('blob:')) {
-            merged.thumbnailUrl = merged.mediaUrl || '';
-          }
 
           // Fallback image if mediaUrl is missing on an image/video post
           if (!merged.mediaUrl && merged.thumbnailUrl) {
@@ -419,8 +466,6 @@ export function subscribeToPostsFromFirestore(callback: (posts: any[]) => void):
           const pId = String(p.id);
           if (deletedPostsSet.has(pId)) return false;
           if (p.status === 'rejected') return false;
-          const media = String(p.mediaUrl || p.thumbnailUrl || '');
-          if (media.startsWith('blob:')) return false;
           if (p.description === 'My tree' || p.title === 'Tree' || p.id === 'post_admin_1787027595927' || p.id === 'post_admin_1787027350660') return false;
           return true;
         })
@@ -461,6 +506,7 @@ export function subscribeToUsersFromFirestore(callback: (users: any[]) => void):
           list.push({ ...data, id: docSnap.id });
         }
       });
+      updateCachedUsers(list);
       callback(list);
     }, (error: any) => {
       if (error?.message?.includes('Quota') || error?.code === 'resource-exhausted') {
@@ -723,6 +769,10 @@ export async function likePostInFirestore(postId: string | number, userId: strin
   // Immediately persist in local storage
   setPostLikedInLocalStorage(pId, isNowLiked);
 
+  const fallbackLikes = typeof fullPost?.likesCount === 'number' 
+    ? fullPost.likesCount 
+    : (typeof fullPost?.likes === 'number' ? fullPost.likes : 0);
+
   try {
     const postRef = doc(db, 'posts', pId);
     const postSnap = await getDoc(postRef);
@@ -730,9 +780,9 @@ export async function likePostInFirestore(postId: string | number, userId: strin
     if (postSnap.exists()) {
       const data = postSnap.data();
       const likedBy = Array.isArray(data.likedBy) ? data.likedBy : [];
-      const currentLikes = typeof data.likesCount === 'number' && data.likesCount > 0 
-        ? data.likesCount 
-        : likedBy.length;
+      const firestoreLikes = typeof data.likesCount === 'number' ? data.likesCount : likedBy.length;
+      const currentLikes = Math.max(firestoreLikes, fallbackLikes);
+      
       let newCount = currentLikes;
       let newLikedBy = [...likedBy];
 
@@ -766,7 +816,7 @@ export async function likePostInFirestore(postId: string | number, userId: strin
 
       return { success: true, isLiked: isNowLiked, likesCount: newCount };
     } else {
-      const newCount = wasLiked ? 0 : 1;
+      const newCount = wasLiked ? Math.max(0, fallbackLikes - 1) : fallbackLikes + 1;
       const newLikedBy = wasLiked ? [] : [String(userId)];
       
       const initialDoc = sanitizeForFirestore({
@@ -783,7 +833,8 @@ export async function likePostInFirestore(postId: string | number, userId: strin
     }
   } catch (err) {
     handleFirestoreError('likePost', err);
-    return { success: true, isLiked: isNowLiked, likesCount: wasLiked ? 0 : 1 };
+    const calculatedCount = isNowLiked ? (fallbackLikes + 1) : Math.max(0, fallbackLikes - 1);
+    return { success: true, isLiked: isNowLiked, likesCount: calculatedCount };
   }
 }
 
@@ -1304,6 +1355,7 @@ export async function syncUserToFirestore(userData: any): Promise<boolean> {
 
     // 1. Instant Local Storage Backup
     try {
+      updateCachedUsers(cleanData);
       const existingStr = localStorage.getItem(LOCAL_USERS_CACHE_KEY);
       let list: any[] = existingStr ? JSON.parse(existingStr) : [];
       if (!Array.isArray(list)) list = [];
@@ -1458,6 +1510,7 @@ export async function fetchAllUsersFromFirestore(): Promise<any[]> {
   });
 
   try {
+    updateCachedUsers(result);
     localStorage.setItem(LOCAL_USERS_CACHE_KEY, JSON.stringify(result));
   } catch (e) {}
   return result;

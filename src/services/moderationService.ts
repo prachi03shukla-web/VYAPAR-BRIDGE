@@ -1,5 +1,6 @@
 // Universal B2B AI Safety & Content Moderation Guardrail for Vyapar Bridge
-// Protects against profanity/abusive language, pornography/nudity, and unverified external links.
+// Specifically allows: All business promotions, Vyapar/B2B adverts, buyer-seller text, human characters/spokespersons talking business, and background music.
+// Strictly blocks: Nudity/Pornography and Abusive language / Gaali-galoch in posts, titles, descriptions, hashtags, or comments.
 
 import { getAdminSettingsFromFirestore } from './firebaseDataSync';
 
@@ -8,7 +9,7 @@ export interface ModerationResult {
   reason?: string;
   userNotice?: string;
   pending_admin_approval?: boolean;
-  category?: 'b2b_compliance' | 'abusive_language' | 'adult_content' | 'spam_scam' | 'external_link';
+  category?: 'abusive_language' | 'adult_content';
 }
 
 const GUARDRAIL_CACHE_KEY = 'VyaparBridge_ai_guardrail_active';
@@ -35,36 +36,24 @@ export async function isGuardrailActive(): Promise<boolean> {
   } catch (err) {
     console.warn('Guardrail state fetch note:', err);
   }
-  return true; // Default to active for security
+  return true; // Default to active for safety
 }
 
-// 1. Abusive / Profane Language (Gali Galoch)
+// 1. Abusive / Profane Language (Gali Galoch / Offensive Slurs)
 const ABUSIVE_PATTERNS = [
-  /\b(gaali|chutiya|bhenchod|madarchod|harami|bhosdike|laude|randi|bastard|fuck|asshole|slut|whore|kamina|suar)\b/i,
+  /\b(gaali|chutiya|chutiye|bhenchod|behenchod|bhosad|bhosdike|bhosadi|madarchod|harami|laude|lodu|randi|rande|bastard|fuck|fucker|asshole|bitch|slut|whore|kamina|kamine|suar|harramkhor|kutte)\b/i,
   /\b(hate speech|terrorist|kill yourself)\b/i
 ];
 
 // 2. Adult / Pornography / Nudity / Explicit Content
 const EXPLICIT_PATTERNS = [
-  /\b(porn|porno|nude|naked|bikini|sensual|boobs|cleavage|lingerie|underwear|bra|sex|xxx|dating|hookup|escort|nangi|gandi video|hot video|onlyfans|item song|sex tape)\b/i
-];
-
-// 3. External Links & URLs
-const LINK_PATTERNS = [
-  /https?:\/\/[^\s]+/i,
-  /www\.[^\s]+/i,
-  /\b[a-zA-Z0-9-]+\.(com|in|org|net|xyz|info|top|site|biz|co|app|apk|online|club|me|tv|cc|io)\b/i,
-  /\b(t\.me|telegram\.me|wa\.me|chat\.whatsapp\.com|bit\.ly|tinyurl\.com)\b/i
-];
-
-// 4. Gambling / Scam / Financial Fraud
-const GAMBLING_SCAM_PATTERNS = [
-  /\b(satta|matka|casino|gambling|betting|dream11|win money|free crypto|free money hack|100% scam|double your money)\b/i
+  /\b(porn|porno|pornography|nude|naked|nudity|sex|xxx|boobs|cleavage|lingerie|underwear|bra|vagina|penis|dick|pussy|nangi|nanga|sex tape|onlyfans)\b/i
 ];
 
 /**
  * Universal Content Moderation Function
- * Fast, lightweight check for abusive text, adult content, and external link verification.
+ * Fast, lightweight check specifically for abusive text (gaali-galoch) and explicit adult nudity.
+ * Freely allows all business, adverts, commerce text, characters/spokespersons, and background music.
  */
 export async function moderateContentUniversally(params: {
   title?: string;
@@ -76,7 +65,7 @@ export async function moderateContentUniversally(params: {
   userId?: string | number;
   userRole?: string;
 }): Promise<ModerationResult> {
-  const { title = '', content = '', description = '', hashtags = '', userRole, userId, mediaType = '', mediaUrl = '' } = params;
+  const { title = '', content = '', description = '', hashtags = '', userRole, userId } = params;
 
   // 1. Whitelist Master Admin & Super Admins
   const isMasterAdmin = String(userId) === '1' || String(userId) === 'master_admin' || String(userId) === '5503' || userRole === 'admin';
@@ -90,16 +79,20 @@ export async function moderateContentUniversally(params: {
     return { approved: true, reason: 'Guardrails Disabled by Administrator' };
   }
 
-  const combinedText = `${title} ${content} ${description} ${hashtags} ${mediaUrl}`.trim();
+  // Only check user-provided text content (do not check media URLs or internal asset paths)
+  const combinedUserText = `${title} ${content} ${description} ${hashtags}`.trim();
+  if (!combinedUserText) {
+    return { approved: true, reason: 'Approved' };
+  }
 
   // 3. Check for Abusive Language / Gali Galoch
   for (const pattern of ABUSIVE_PATTERNS) {
-    if (pattern.test(combinedText)) {
+    if (pattern.test(combinedUserText)) {
       return {
         approved: false,
         pending_admin_approval: true,
-        reason: '⛔ Abusive Language Flagged: Inappropriate or offensive words detected.',
-        userNotice: '⚠️ Abusive language detect hua hai. Vyapar Bridge ek professional business network hai. Aapka post Admin Review me bhej diya gaya hai.',
+        reason: '⛔ Gaali-Galoch / Abusive Language Blocked: Inappropriate or offensive language detected.',
+        userNotice: '⚠️ Gaali-galoch ya abusive bhasha prohibited hai. Kripya shisht bhasha ka prayog karein.',
         category: 'abusive_language'
       };
     }
@@ -107,43 +100,19 @@ export async function moderateContentUniversally(params: {
 
   // 4. Check for Adult / Pornographic / Explicit Nudity Patterns
   for (const pattern of EXPLICIT_PATTERNS) {
-    if (pattern.test(combinedText)) {
+    if (pattern.test(combinedUserText)) {
       return {
         approved: false,
         pending_admin_approval: true,
-        reason: '⛔ Adult Content Flagged: Nudity, pornography, or explicit content detected.',
-        userNotice: '🚫 Pornography / Nudity strictly prohibited hai. Aapka post Admin Review ke liye hold kiya gaya hai.',
+        reason: '⛔ Adult Content / Nudity Blocked: Explicit or pornographic content detected.',
+        userNotice: '🚫 Pornography ya nude content Vyapar Bridge par strictly prohibited hai.',
         category: 'adult_content'
       };
     }
   }
 
-  // 5. Check for Gambling / Satta / Financial Fraud
-  for (const pattern of GAMBLING_SCAM_PATTERNS) {
-    if (pattern.test(combinedText)) {
-      return {
-        approved: false,
-        pending_admin_approval: true,
-        reason: '⛔ Gambling/Scam Flagged: Unverified betting or scam pattern detected.',
-        userNotice: '⏳ Business Safety Verification: Gambling ya unverified financial content detect hua hai. Admin approval ke baad approve hoga.',
-        category: 'spam_scam'
-      };
-    }
-  }
-
-  // 6. Check for External Links & Web URLs
-  for (const pattern of LINK_PATTERNS) {
-    if (pattern.test(combinedText)) {
-      return {
-        approved: false,
-        pending_admin_approval: true,
-        reason: '🔍 External Link Detected: External web address requires admin safety clearance.',
-        userNotice: '⏳ Business Verification: Aapke post me external link hai. Trusted B2B platform security ke liye hamari team link safety verify karke 24 ghante ke andar approve kar degi.',
-        category: 'external_link'
-      };
-    }
-  }
-
+  // All business advertisements, Vyapar promotions, B2B/B2C reels, music, and character presentations are 100% APPROVED!
   return { approved: true, reason: 'Approved' };
 }
+
 

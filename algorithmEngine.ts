@@ -288,14 +288,29 @@ function enrichPost(post: any, stringUserId: string | null, db: DbSchema) {
   const averageRating = postRatings.length > 0 ? Number((totalStars / postRatings.length).toFixed(1)) : (post.averageRating || 4.8);
   const ratingsCount = postRatings.length > 0 ? postRatings.length : (post.ratingsCount || 0);
 
+  const foundUser = db.users.find(u => String(u.id) === String(post.userId) || (u.name && post.userName && u.name.toLowerCase() === String(post.userName).toLowerCase()));
+  const authorAvatar = foundUser?.avatarUrl || foundUser?.avatar || foundUser?.photoURL || foundUser?.profileImage || post.user?.avatarUrl || post.user?.avatar || post.userAvatar || post.avatar || '';
+  const authorName = foundUser?.name || post.userName || post.user?.name || 'Member';
+  const authorRole = foundUser?.role || post.userRole || post.user?.role || 'factory';
+  const isVerified = Boolean(foundUser?.isVerified || post.isVerified || post.user?.isVerified);
+
+  const enrichedUser = {
+    ...(foundUser || {}),
+    ...(post.user || {}),
+    id: String(foundUser?.id || post.userId || post.user?.id || '1'),
+    name: authorName,
+    avatarUrl: authorAvatar,
+    avatar: authorAvatar,
+    role: authorRole,
+    isVerified
+  };
+
   return {
     ...post,
-    user: db.users.find(u => String(u.id) === String(post.userId)) || post.user || {
-      id: String(post.userId || '1'),
-      name: post.userName || 'Member',
-      role: post.userRole || 'factory',
-      isVerified: Boolean(post.isVerified || post.user?.isVerified)
-    },
+    user: enrichedUser,
+    userAvatar: authorAvatar,
+    userName: authorName,
+    userRole: authorRole,
     likesCount: db.likes.filter(l => String(l.postId) === postId).length,
     isLiked: stringUserId ? db.likes.some(l => String(l.postId) === postId && String(l.userId) === stringUserId) : false,
     savesCount: db.saves.filter(s => String(s.postId) === postId).length,

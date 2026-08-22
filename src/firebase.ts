@@ -21,7 +21,8 @@ const filterFirestoreIdleNoise = (args: any[]): boolean => {
     fullMsg.includes('GrpcConnection RPC') ||
     fullMsg.includes('RESOURCE_EXHAUSTED') ||
     fullMsg.includes('Quota limit exceeded') ||
-    fullMsg.includes('code=resource-exhausted')
+    fullMsg.includes('code=resource-exhausted') ||
+    fullMsg.includes('@firebase/firestore')
   );
 };
 
@@ -41,6 +42,12 @@ const originalConsoleInfo = console.info;
 console.info = (...args: any[]) => {
   if (filterFirestoreIdleNoise(args)) return;
   originalConsoleInfo(...args);
+};
+
+const originalConsoleLog = console.log;
+console.log = (...args: any[]) => {
+  if (filterFirestoreIdleNoise(args)) return;
+  originalConsoleLog(...args);
 };
 
 // Set Firestore log level to silent
@@ -70,7 +77,7 @@ let firestoreInstance: any;
 try {
   firestoreInstance = initializeFirestore(app, {
     experimentalAutoDetectLongPolling: true,
-    experimentalForceLongPolling: false,
+    experimentalForceLongPolling: true,
     useFetchStreams: false
   }, firebaseConfig.firestoreDatabaseId);
 } catch {

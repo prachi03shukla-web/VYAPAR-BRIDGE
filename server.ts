@@ -11,17 +11,60 @@ import { validateGSTIN } from './src/utils/gstinValidator';
 
 
 
+// Suppress benign Firestore gRPC idle stream disconnect and quota noise on Node backend
+const filterFirestoreServerNoise = (args: any[]): boolean => {
+  const fullMsg = args.map(a => {
+    if (typeof a === 'string') return a;
+    if (a instanceof Error) return a.message + ' ' + (a.stack || '');
+    try { return JSON.stringify(a); } catch { return String(a); }
+  }).join(' ');
+
+  return (
+    fullMsg.includes('Disconnecting idle stream') ||
+    fullMsg.includes('Timed out waiting for new targets') ||
+    fullMsg.includes('CANCELLED: Disconnecting idle stream') ||
+    fullMsg.includes('GrpcConnection RPC') ||
+    fullMsg.includes('RESOURCE_EXHAUSTED') ||
+    fullMsg.includes('Quota limit exceeded') ||
+    fullMsg.includes('code=resource-exhausted') ||
+    fullMsg.includes('@firebase/firestore')
+  );
+};
+
+const _origErr = console.error;
+console.error = (...args: any[]) => {
+  if (filterFirestoreServerNoise(args)) return;
+  _origErr(...args);
+};
+
+const _origWarn = console.warn;
+console.warn = (...args: any[]) => {
+  if (filterFirestoreServerNoise(args)) return;
+  _origWarn(...args);
+};
+
 import { initializeApp as initClientApp } from 'firebase/app';
-import { getFirestore as getClientFirestore, collection, getDocs, doc, getDoc, setDoc, deleteDoc, updateDoc } from 'firebase/firestore';
+import { initializeFirestore as initClientFirestore, getFirestore as getClientFirestore, setLogLevel, collection, getDocs, doc, getDoc, setDoc, deleteDoc, updateDoc } from 'firebase/firestore';
 import { getStorage } from 'firebase-admin/storage';
 import { applicationDefault, initializeApp as initAdminApp } from 'firebase-admin/app';
+
+try {
+  setLogLevel('silent');
+} catch {}
 
 let firestoreDb: any = null;
 let firebaseStorage: any = null;
 try {
   const firebaseConfig = JSON.parse(fs.readFileSync('./firebase-applet-config.json', 'utf8'));
   const clientApp = initClientApp(firebaseConfig);
-  firestoreDb = getClientFirestore(clientApp, firebaseConfig.firestoreDatabaseId);
+  try {
+    firestoreDb = initClientFirestore(clientApp, {
+      experimentalAutoDetectLongPolling: true,
+      useFetchStreams: false
+    }, firebaseConfig.firestoreDatabaseId);
+  } catch {
+    firestoreDb = getClientFirestore(clientApp, firebaseConfig.firestoreDatabaseId);
+  }
   
   // Initialize Admin SDK for Storage
   const adminApp = initAdminApp({
@@ -372,43 +415,41 @@ function getAI() {
   return genAI;
 }
 
-// Keyword Safety Filter for instant zero-latency protection against explicit/nude content
-const EXPLICIT_KEYWORDS = [
-  'nude', 'nudity', 'porn', 'porno', 'sex', 'sexy', 'naked', 'boobs', 'vagina', 'penis', 'dick', 'pussy',
-  'fuck', 'bitch', 'asshole', 'bastard', 'slut', 'whore', 'nude pic', 'nude video', 'adult content',
-  'gandi', 'nangi', 'chutiya', 'gaand', 'bhosdike', 'madarchod', 'behenchod'
+// Keyword Safety Filter for instant zero-latency protection against explicit/nude content & gaali-galoch
+const ABUSIVE_PATTERNS = [
+  /\b(gaali|chutiya|chutiye|bhenchod|behenchod|bhosad|bhosdike|bhosadi|madarchod|harami|laude|lodu|randi|rande|bastard|fuck|fucker|asshole|bitch|slut|whore|kamina|kamine|suar|harramkhor|kutte)\b/i,
+  /\b(hate speech|terrorist|kill yourself)\b/i
 ];
 
-const LINK_PATTERNS = [
-  /https?:\/\/[^\s]+/i,
-  /www\.[^\s]+/i,
-  /\b[a-zA-Z0-9-]+\.(com|in|org|net|xyz|info|top|site|biz|co|app|apk|online|club|me|tv|cc|io)\b/i,
-  /\b(t\.me|telegram\.me|wa\.me|chat\.whatsapp\.com|bit\.ly|tinyurl\.com)\b/i
+const EXPLICIT_PATTERNS = [
+  /\b(porn|porno|pornography|nude|naked|nudity|sex|xxx|boobs|cleavage|lingerie|underwear|bra|vagina|penis|dick|pussy|nangi|nanga|sex tape|onlyfans)\b/i
 ];
 
 // Helper: AI Content Moderation for Posts, Comments & Media
 async function moderateContentWithAI(text: string, mediaFilePath?: string, mediaBase64?: string): Promise<{ approved: boolean; reason?: string }> {
   const combinedText = (text || '').toLowerCase();
   
-  // 1. Instant Keyword Safety Guard (Abusive & Adult content)
-  const foundBadWord = EXPLICIT_KEYWORDS.find(word => combinedText.includes(word));
-  if (foundBadWord) {
-    return {
-      approved: false,
-      reason: `⛔ AI Safety Guardrail: Inappropriate language or adult content keyword detected ("${foundBadWord}"). Nudity, pornography, and abusive language are strictly prohibited.`
-    };
+  // 1. Instant Keyword Safety Guard (Abusive Gaali-Galoch)
+  for (const pattern of ABUSIVE_PATTERNS) {
+    if (pattern.test(combinedText)) {
+      return {
+        approved: false,
+        reason: '⛔ Gaali-Galoch / Abusive Language Blocked: Inappropriate or abusive language is strictly prohibited.'
+      };
+    }
   }
 
-  // 2. External Link Guard (Routes posts with links to Admin Review)
-  const hasExternalLink = LINK_PATTERNS.some(pat => pat.test(combinedText));
-  if (hasExternalLink) {
-    return {
-      approved: false,
-      reason: `🔍 External Link Detected: External web addresses and links require Admin Safety Clearance before publishing.`
-    };
+  // 2. Instant Keyword Safety Guard (Adult Nudity & Pornography)
+  for (const pattern of EXPLICIT_PATTERNS) {
+    if (pattern.test(combinedText)) {
+      return {
+        approved: false,
+        reason: '⛔ Adult Content / Nudity Blocked: Explicit adult content or pornography is strictly prohibited on Vyapar Bridge.'
+      };
+    }
   }
 
-  // 3. Optional Gemini AI Safety Guard (For images only - skip heavy video buffer reads)
+  // 3. Optional Gemini AI Safety Guard (For images only)
   if (process.env.GEMINI_API_KEY) {
     try {
       const contents: any[] = [];
@@ -423,17 +464,17 @@ async function moderateContentWithAI(text: string, mediaFilePath?: string, media
         });
       }
 
-      const promptText = `SYSTEM DIRECTIVE: You are the Content Security Moderator for "Vyapar Bridge".
-POLICY:
-- ALLOW (approved: true): All normal videos, reels, commercial posts, products, software solutions, showroom tours, user videos, personal business intros, marketing posts, trade discussions, and general media.
-- REJECT (approved: false): Explicit adult nudity/pornography, abusive hate speech/profanity, illegal gambling/scams, or dangerous unverified links.
+      const promptText = `SYSTEM DIRECTIVE: You are the Content Moderation Guardrail for "Vyapar Bridge".
+CRITICAL RULES:
+- ALWAYS APPROVE (approved: true): All business content, vyapar/B2B/B2C promotions, buyer and seller advertisements, company graphics, brand logos, product photos, software and app demos, human presenters/spokespersons/actors in suits or business attire talking about business, videos with background music, and commercial media.
+- ONLY REJECT (approved: false): Explicit adult nudity/pornography (naked genitals, bare breasts, sexual intercourse) or severe abusive hate speech / gaali-galoch.
 
 User's provided text: "${text || 'No text provided'}"
 
 Respond STRICTLY in raw JSON format:
 {"approved": true, "reason": "Approved"}
 OR
-{"approved": false, "reason": "⛔ Flagged: Questionable content detected. Sent to Admin Review."}`;
+{"approved": false, "reason": "⛔ Adult Content / Abusive Language Detected"}`;
       contents.push(promptText);
 
       const ai = getAI();
@@ -489,14 +530,15 @@ OR
           if (result.approved === false) {
             return {
               approved: false,
-              reason: result.reason || '⛔ AI Security Shield Blocked: Personal human selfies or non-B2B images are strictly prohibited. Please upload only Tiles or Sanitaryware media.'
+              reason: result.reason || '⛔ Adult Content or Abusive Language detected by AI Guardrail.'
             };
           }
         } catch (pErr) {
-          if (responseText.toLowerCase().includes('approved": false') || responseText.toLowerCase().includes('blocked') || responseText.toLowerCase().includes('selfie') || responseText.toLowerCase().includes('prohibited')) {
+          // If parse fails but mentions explicit violation
+          if (responseText.toLowerCase().includes('"approved": false') || responseText.toLowerCase().includes('"approved":false')) {
             return {
               approved: false,
-              reason: '⛔ AI Security Shield Blocked: Personal human selfies or non-B2B images are strictly prohibited. Please upload only Tiles or Sanitaryware media.'
+              reason: '⛔ Adult Content or Abusive Language detected by AI Guardrail.'
             };
           }
         }
@@ -554,15 +596,83 @@ async function startServer() {
     next();
   });
 
-  // Serve uploaded files statically
+  // High-performance video & audio streaming route with HTTP 206 Range support
+  const streamMediaFile = (filePath: string, req: express.Request, res: express.Response) => {
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).send('File not found');
+    }
+
+    const stat = fs.statSync(filePath);
+    const fileSize = stat.size;
+    const range = req.headers.range;
+
+    const ext = path.extname(filePath).toLowerCase();
+    const mimeMap: Record<string, string> = {
+      '.mp4': 'video/mp4',
+      '.webm': 'video/webm',
+      '.mov': 'video/quicktime',
+      '.m4v': 'video/x-m4v',
+      '.mkv': 'video/x-matroska',
+      '.3gp': 'video/3gpp',
+      '.mp3': 'audio/mpeg',
+      '.wav': 'audio/wav',
+      '.ogg': 'audio/ogg',
+      '.pdf': 'application/pdf',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.png': 'image/png',
+      '.webp': 'image/webp'
+    };
+    const contentType = mimeMap[ext] || 'application/octet-stream';
+
+    if (range && (contentType.startsWith('video/') || contentType.startsWith('audio/'))) {
+      const parts = range.replace(/bytes=/, "").split("-");
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+
+      if (start >= fileSize) {
+        res.status(416).send('Requested range not satisfiable\n' + start + ' >= ' + fileSize);
+        return;
+      }
+
+      const chunksize = (end - start) + 1;
+      const file = fs.createReadStream(filePath, { start, end });
+      const head = {
+        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': chunksize,
+        'Content-Type': contentType,
+        'Cache-Control': 'public, max-age=86400'
+      };
+      res.writeHead(206, head);
+      file.pipe(res);
+    } else {
+      const head = {
+        'Content-Length': fileSize,
+        'Content-Type': contentType,
+        'Accept-Ranges': 'bytes',
+        'Cache-Control': 'public, max-age=86400'
+      };
+      res.writeHead(200, head);
+      fs.createReadStream(filePath).pipe(res);
+    }
+  };
+
+  app.get('/uploads/:filename', (req, res) => {
+    const filename = path.basename(req.params.filename);
+    const filePath = path.join(uploadsDir, filename);
+    streamMediaFile(filePath, req, res);
+  });
+
+  app.get('/public/uploads/:filename', (req, res) => {
+    const filename = path.basename(req.params.filename);
+    const filePath = path.join(uploadsDir, filename);
+    streamMediaFile(filePath, req, res);
+  });
+
+  // Serve uploaded files statically as fallback
   app.use('/uploads', express.static(uploadsDir));
-  app.use('/uploads', (req, res) => {
-    res.status(404).send('File not found or was deleted. Please re-upload the file.');
-  });
   app.use('/public/uploads', express.static(uploadsDir));
-  app.use('/public/uploads', (req, res) => {
-    res.status(404).send('File not found or was deleted. Please re-upload the file.');
-  });
   app.use('/public', express.static(path.join(process.cwd(), 'public')));
   app.use(express.static(path.join(process.cwd(), 'public')));
 
@@ -946,22 +1056,28 @@ Return ONLY a valid raw JSON object (NO markdown, NO \`\`\`json backticks, NO ex
         }
       }
 
+      const resolvedId = req.body.id ? String(req.body.id) : String(Date.now());
+      
       const newPost: any = {
-        id: String(Date.now()),
+        id: resolvedId,
         userId: userId || '1',
+        userName: req.body.userName || user?.name || 'Vyapar Bridge Member',
+        userRole: req.body.userRole || user?.role || 'dealer',
+        userAvatar: req.body.userAvatar || user?.avatarUrl || user?.avatar || '',
         title: title || '',
         content: content || '',
         hashtags: hashtags || '',
         type: postType,
-        mediaUrl,
-        thumbnailUrl,
+        mediaUrl: mediaUrl || thumbnailUrl || '',
+        thumbnailUrl: thumbnailUrl || mediaUrl || '',
+        persistentMediaUrl: req.body.persistentMediaUrl || thumbnailUrl || mediaUrl || '',
         visibility: visibility || 'public',
         scheduledAt: scheduledAt ? Number(scheduledAt) : null,
         status: postStatus,
         pending_admin_approval: pendingAdminApproval,
         aiFlagReason: aiFlagReason || null,
         aiFeedback: pendingAdminApproval ? (aiFlagReason || 'Flagged for review') : 'Verified safe by Vyapar Bridge AI Guardrail',
-        createdAt: Date.now()
+        createdAt: req.body.createdAt ? Number(req.body.createdAt) : Date.now()
       };
 
       if (req.body.musicId) newPost.musicId = req.body.musicId;
@@ -971,14 +1087,20 @@ Return ONLY a valid raw JSON object (NO markdown, NO \`\`\`json backticks, NO ex
       if (req.body.musicVolume) newPost.musicVolume = parseFloat(req.body.musicVolume);
       if (req.body.originalVolume) newPost.originalVolume = parseFloat(req.body.originalVolume);
 
-      db.posts.unshift(newPost); // Put new post at top
+      // Deduplicate if already exists in memory
+      const exIdx = db.posts.findIndex(p => String(p.id) === String(newPost.id));
+      if (exIdx !== -1) {
+        db.posts[exIdx] = { ...db.posts[exIdx], ...newPost };
+      } else {
+        db.posts.unshift(newPost); // Put new post at top
+      }
       saveDatabase();
       if (firestoreDb) {
-        setDoc(doc(firestoreDb, 'posts', String(newPost.id)), newPost).catch(e => console.error('Firestore post save error', e));
+        setDoc(doc(firestoreDb, 'posts', String(newPost.id)), newPost, { merge: true }).catch(e => console.error('Firestore post save error', e));
       }
       const fullPost = {
         ...newPost,
-        user: db.users.find(u => u.id === newPost.userId) || { id: newPost.userId, name: 'Vyapar Bridge Member', role: 'Dealer' },
+        user: db.users.find(u => u.id === newPost.userId) || { id: newPost.userId, name: newPost.userName || 'Vyapar Bridge Member', role: newPost.userRole || 'Dealer' },
         likesCount: 0,
         commentsCount: 0,
         viewsCount: 0,
