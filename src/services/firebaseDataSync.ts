@@ -1,5 +1,6 @@
 import { db, auth } from '../firebase';
 import { optimizeImageForPersistence } from '../utils/imageOptimizer';
+import { saveVideoBlob, getVideoBlobUrl, cacheVideoUrlInMemory, getCachedVideoUrlInMemory } from '../utils/videoStorage';
 import { setPostLikedInLocalStorage, setPostSavedInLocalStorage, isPostLikedByUser, isPostSavedByUser } from '../utils/likeSaveHelpers';
 import { resolveUserAvatar, updateCachedUsers } from '../utils/userAvatar';
 import { 
@@ -165,27 +166,37 @@ export async function syncPostToFirestore(postData: any): Promise<boolean> {
     delete cleanData.pendingFile;
     delete cleanData.pendingReelFile;
 
-    // FIRESTORE SAFEGUARD: Limit document size to < 500 KB (Firestore max limit is 1MB)
-    const videoStreamCandidate = cleanData.videoUrl || cleanData.video || (cleanData.mediaUrl?.startsWith('data:video') ? cleanData.mediaUrl : '') || (cleanData.type === 'video' ? (cleanData.mediaUrl || cleanData.persistentMediaUrl) : '');
-    if (videoStreamCandidate && (videoStreamCandidate.startsWith('data:video') || videoStreamCandidate.startsWith('blob:'))) {
-      try {
-        localStorage.setItem('vyapar_video_' + postId, videoStreamCandidate);
-      } catch (e) {}
+    // FIRESTORE SAFEGUARD & LOCAL BLOB PRESERVATION
+    const videoStreamCandidate = cleanData.videoUrl || cleanData.video || (cleanData.mediaUrl && !cleanData.mediaUrl.startsWith('data:image') ? cleanData.mediaUrl : '');
+    if (videoStreamCandidate) {
+      cacheVideoUrlInMemory(postId, videoStreamCandidate);
+      if (videoStreamCandidate.startsWith('data:video') || videoStreamCandidate.startsWith('blob:')) {
+        try {
+          localStorage.setItem('vyapar_video_' + postId, videoStreamCandidate);
+        } catch (e) {}
+      }
     }
 
-    if (cleanData.type === 'video' || (cleanData.mediaUrl && cleanData.mediaUrl.startsWith('data:video'))) {
+    if (cleanData.type === 'video' || (cleanData.mediaUrl && (cleanData.mediaUrl.startsWith('data:video') || cleanData.mediaUrl.match(/\.(mp4|webm|mov|m4v)(\?.*)?$/i)))) {
       cleanData.type = 'video';
-      if (cleanData.mediaUrl && cleanData.mediaUrl.length > 500000) {
-        console.warn(`⚠️ Video base64 payload is large (${cleanData.mediaUrl.length} bytes). Storing locally & keeping thumbnail for Firestore...`);
-        let safeVideoThumb = cleanData.thumbnailUrl && cleanData.thumbnailUrl.startsWith('data:image') ? cleanData.thumbnailUrl : '';
-        if (!safeVideoThumb) {
-          safeVideoThumb = cleanData.posterUrl || cleanData.thumbnail || '';
-        }
-        cleanData.thumbnailUrl = safeVideoThumb;
-        // Keep video reference or local stream indicator
-        cleanData.videoUrl = cleanData.mediaUrl.length < 800000 ? cleanData.mediaUrl : '';
-        cleanData.persistentMediaUrl = safeVideoThumb || cleanData.mediaUrl;
-        cleanData.mediaUrl = safeVideoThumb || cleanData.mediaUrl;
+      
+      let safeVideoThumb = cleanData.thumbnailUrl && cleanData.thumbnailUrl.startsWith('data:image') ? cleanData.thumbnailUrl : '';
+      if (!safeVideoThumb) {
+        safeVideoThumb = cleanData.posterUrl || cleanData.thumbnail || '';
+      }
+      cleanData.thumbnailUrl = safeVideoThumb;
+
+      // If mediaUrl is a large video base64, don't store it in Firestore document directly (it exceeds 1MB limit)
+      // Instead store videoUrl or keep mediaUrl under limit, and NEVER set mediaUrl = safeVideoThumb!
+      if (cleanData.mediaUrl && cleanData.mediaUrl.length > 500000 && cleanData.mediaUrl.startsWith('data:video')) {
+        console.warn(`⚠️ Video base64 payload is large (${cleanData.mediaUrl.length} bytes). Caching stream locally for smooth playback...`);
+        cleanData.videoUrl = cleanData.mediaUrl.length < 800000 ? cleanData.mediaUrl : ('indexeddb:' + postId);
+        cleanData.mediaUrl = cleanData.videoUrl;
+        cleanData.persistentMediaUrl = cleanData.videoUrl;
+      } else if (cleanData.mediaUrl && cleanData.mediaUrl.startsWith('data:image')) {
+        // Fix legacy glitch where thumbnail image was written into mediaUrl
+        cleanData.mediaUrl = cleanData.videoUrl || ('indexeddb:' + postId);
+        cleanData.persistentMediaUrl = cleanData.mediaUrl;
       }
     } else if (cleanData.mediaUrl && cleanData.mediaUrl.startsWith('data:image') && cleanData.mediaUrl.length > 500000) {
       console.warn(`⚠️ Image base64 payload is large (${cleanData.mediaUrl.length} bytes). Optimizing image for Firestore...`);
@@ -400,16 +411,34 @@ export function subscribeToPostsFromFirestore(callback: (posts: any[]) => void):
       snapshot.forEach((docSnap) => {
         const data = docSnap.data();
         if (data && docSnap.id) {
-          const localStoredVideo = typeof localStorage !== 'undefined' ? localStorage.getItem('vyapar_video_' + docSnap.id) : null;
-          const incomingMedia = data.mediaUrl || data.persistentMediaUrl || data.videoUrl || data.thumbnailUrl || localStoredVideo || '';
+          const docId = String(docSnap.id);
+          const memoryVideo = getCachedVideoUrlInMemory(docId);
+          const localStoredVideo = memoryVideo || (typeof localStorage !== 'undefined' ? localStorage.getItem('vyapar_video_' + docId) : null);
+          
+          const isVideoPost = data.type === 'video' || (data.mediaUrl && (data.mediaUrl.match(/\.(mp4|webm|mov|m4v)(\?.*)?$/i) || data.mediaUrl.startsWith('data:video'))) || Boolean(data.videoUrl);
 
-          // Safe recovery for mediaUrl and thumbnailUrl
-          let safeMediaUrl = incomingMedia;
-          if (safeMediaUrl && safeMediaUrl.startsWith('blob:')) {
-            safeMediaUrl = data.persistentMediaUrl || data.thumbnailUrl || localStoredVideo || safeMediaUrl;
+          let safeMediaUrl = data.mediaUrl || data.persistentMediaUrl || data.videoUrl || '';
+          let safeThumbnailUrl = data.thumbnailUrl || data.posterUrl || data.persistentMediaUrl || '';
+
+          if (isVideoPost) {
+            // NEVER assign image data URLs to mediaUrl of a video post
+            if (!safeMediaUrl || safeMediaUrl.startsWith('data:image') || safeMediaUrl.match(/\.(jpg|jpeg|png|webp|gif)(\?.*)?$/i)) {
+              if (localStoredVideo && !localStoredVideo.startsWith('data:image')) {
+                safeMediaUrl = localStoredVideo;
+              } else if (data.videoUrl && !data.videoUrl.startsWith('data:image')) {
+                safeMediaUrl = data.videoUrl;
+              } else if (data.video && !data.video.startsWith('data:image')) {
+                safeMediaUrl = data.video;
+              } else {
+                safeMediaUrl = 'indexeddb:' + docId;
+              }
+            }
+          } else {
+            if (!safeMediaUrl || safeMediaUrl.startsWith('blob:')) {
+              safeMediaUrl = data.persistentMediaUrl || data.thumbnailUrl || safeMediaUrl || '';
+            }
           }
 
-          let safeThumbnailUrl = data.thumbnailUrl || data.persistentMediaUrl || safeMediaUrl || '';
           if (safeThumbnailUrl && safeThumbnailUrl.startsWith('blob:')) {
             safeThumbnailUrl = data.persistentMediaUrl || safeMediaUrl || '';
           }
@@ -421,13 +450,14 @@ export function subscribeToPostsFromFirestore(callback: (posts: any[]) => void):
 
           const merged = { 
             ...data, 
-            id: docSnap.id, 
+            id: docId, 
+            type: isVideoPost ? 'video' : (data.type || 'image'),
             userName: authorName,
             userAvatar: authorAvatar,
             userRole: authorRole,
             user: {
               ...(data.user || {}),
-              id: String(data.userId || data.user?.id || docSnap.id),
+              id: String(data.userId || data.user?.id || docId),
               name: authorName,
               avatarUrl: authorAvatar,
               avatar: authorAvatar,
@@ -435,6 +465,7 @@ export function subscribeToPostsFromFirestore(callback: (posts: any[]) => void):
               isVerified
             },
             mediaUrl: safeMediaUrl || '',
+            videoUrl: isVideoPost ? (safeMediaUrl !== safeThumbnailUrl ? safeMediaUrl : (data.videoUrl || safeMediaUrl)) : undefined,
             thumbnailUrl: safeThumbnailUrl || '',
             persistentMediaUrl: data.persistentMediaUrl || safeThumbnailUrl || safeMediaUrl || ''
           };

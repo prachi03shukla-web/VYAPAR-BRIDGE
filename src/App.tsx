@@ -32,6 +32,7 @@ import { fetchPostsFromFirestore, syncPostToFirestore, subscribeToPostsFromFires
 import { ConnectUserModal } from './components/ConnectUserModal';
 import { suggestHashtagsWithAI } from './services/aiService';
 import { optimizeImageForPersistence, fileToDataURL, generateVideoThumbnail } from './utils/imageOptimizer';
+import { saveVideoBlob, getVideoBlobUrl, cacheVideoUrlInMemory, getCachedVideoUrlInMemory } from './utils/videoStorage';
 import { decodeUpiIdFromImageFile, extractUpiIdFromPayload } from './utils/qrUpiDecoder';
 import { moderateContentUniversally } from './services/moderationService';
 import { playBubblePopSound, playLikeSound, playSaveSound, playShareSound, playEnquirySound, playMessageSound, getSoundSettingsSync, updateSoundSettings } from './utils/audioEffects';
@@ -3209,6 +3210,30 @@ function FeedVideoPlayer({
   const lastTapTimeRef = React.useRef(0);
   const clickTimeoutRef = React.useRef<any>(null);
 
+  const [resolvedVideoSrc, setResolvedVideoSrc] = useState<string>(src || '');
+
+  useEffect(() => {
+    let active = true;
+    async function resolveSource() {
+      if (!src) return;
+      if (src.startsWith('indexeddb:')) {
+        const id = src.replace('indexeddb:', '');
+        const blobUrl = await getVideoBlobUrl(id);
+        if (blobUrl && active) {
+          setResolvedVideoSrc(blobUrl);
+          return;
+        }
+      }
+      if (src.startsWith('data:image')) {
+        setResolvedVideoSrc('');
+        return;
+      }
+      setResolvedVideoSrc(src);
+    }
+    resolveSource();
+    return () => { active = false; };
+  }, [src]);
+
   const getVideoElement = (): HTMLVideoElement | null => {
     return videoRef.current || containerRef.current?.querySelector('video') || null;
   };
@@ -3227,7 +3252,7 @@ function FeedVideoPlayer({
         attemptPlay();
       }
     }
-  }, [src, isReel]);
+  }, [resolvedVideoSrc, isReel]);
 
   // Unmount cleanup & visibility handling
   useEffect(() => {
@@ -3549,7 +3574,7 @@ function FeedVideoPlayer({
 
       <video
         ref={videoRef}
-        src={src}
+        src={resolvedVideoSrc || poster || ''}
         poster={hasStartedPlaying ? undefined : poster}
         playsInline
         webkit-playsinline="true"
@@ -5927,24 +5952,29 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
       formData.append('persistentMediaUrl', persistentMediaUrl || videoThumbnailUrl || localMediaUrl);
       formData.append('media', pendingReelFile);
       
+      if (pendingReelFile && isVideo) {
+        saveVideoBlob(reelId, pendingReelFile).catch(() => {});
+        cacheVideoUrlInMemory(reelId, localMediaUrl);
+      }
+
       fetch('/api/posts', { method: 'POST', body: formData })
         .then(res => res.json())
         .then(data => {
           if (data && data.success && data.post && data.post.mediaUrl) {
             const serverMediaUrl = data.post.mediaUrl;
-            const isPersistent = serverMediaUrl.startsWith('data:') || serverMediaUrl.startsWith('https://') || serverMediaUrl.startsWith('http://') || serverMediaUrl.startsWith('/uploads/') || serverMediaUrl.startsWith('/public/uploads/');
-            if (isPersistent) {
-              const updatedPost = { 
-                ...finalReelPost, 
-                mediaUrl: serverMediaUrl, 
-                videoUrl: serverMediaUrl,
-                video: serverMediaUrl,
-                persistentMediaUrl: serverMediaUrl,
-                thumbnailUrl: data.post.thumbnailUrl || finalReelPost.thumbnailUrl
-              };
-              setPosts(prev => prev.map(p => p.id === reelId ? updatedPost : p));
-              syncPostToFirestore(updatedPost).catch(() => {});
-            }
+            const isPersistent = (serverMediaUrl.startsWith('data:') || serverMediaUrl.startsWith('https://') || serverMediaUrl.startsWith('http://')) && !serverMediaUrl.includes('localhost');
+            const targetUrl = isPersistent ? serverMediaUrl : localMediaUrl;
+            
+            const updatedPost = { 
+              ...finalReelPost, 
+              mediaUrl: targetUrl, 
+              videoUrl: targetUrl,
+              video: targetUrl,
+              persistentMediaUrl: targetUrl,
+              thumbnailUrl: data.post.thumbnailUrl || finalReelPost.thumbnailUrl
+            };
+            setPosts(prev => prev.map(p => p.id === reelId ? updatedPost : p));
+            syncPostToFirestore(updatedPost).catch(() => {});
           }
         })
         .catch(() => {});
@@ -13424,17 +13454,28 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
         );
         const sorted = sortReelsByFollowedFirst(videoPosts);
         setReels(prev => {
-          if (prev.length === 0) return sorted;
+          const mergedWithBlobs = sorted.map(newReel => {
+            const idStr = String(newReel.id);
+            const cached = getCachedVideoUrlInMemory(idStr);
+            const oldReel = prev.find(p => String(p.id) === idStr);
+            const validVideo = cached || (oldReel?.mediaUrl && !oldReel.mediaUrl.startsWith('data:image') ? oldReel.mediaUrl : null) || (oldReel?.videoUrl && !oldReel.videoUrl.startsWith('data:image') ? oldReel.videoUrl : null) || newReel.mediaUrl;
+            return {
+              ...newReel,
+              mediaUrl: validVideo,
+              videoUrl: validVideo
+            };
+          });
+
+          if (prev.length === 0) return mergedWithBlobs;
           const prevIds = prev.map(r => String(r.id)).join(',');
-          const newIds = sorted.map(r => String(r.id)).join(',');
+          const newIds = mergedWithBlobs.map(r => String(r.id)).join(',');
           if (prevIds === newIds) {
-            // Update stats without replacing array references that trigger video restart
             return prev.map(oldReel => {
-              const fresh = sorted.find(s => String(s.id) === String(oldReel.id));
+              const fresh = mergedWithBlobs.find(s => String(s.id) === String(oldReel.id));
               return fresh ? { ...oldReel, likesCount: fresh.likesCount, commentsCount: fresh.commentsCount, viewsCount: fresh.viewsCount } : oldReel;
             });
           }
-          return sorted;
+          return mergedWithBlobs;
         });
       }
     });
@@ -13674,12 +13715,15 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
         const isPersistentUrl = publishedReel?.mediaUrl && (
           publishedReel.mediaUrl.startsWith('data:') || 
           publishedReel.mediaUrl.startsWith('https://') || 
-          publishedReel.mediaUrl.startsWith('http://') ||
-          publishedReel.mediaUrl.startsWith('/uploads/') ||
-          publishedReel.mediaUrl.startsWith('/public/uploads/')
-        );
-        const resolvedUrl = isPersistentUrl ? publishedReel.mediaUrl : localMediaUrl;
+          publishedReel.mediaUrl.startsWith('http://')
+        ) && !publishedReel.mediaUrl.includes('localhost');
+        const resolvedUrl = (isPersistentUrl ? publishedReel.mediaUrl : null) || localMediaUrl || videoStreamUrl || ('indexeddb:' + generatedReelId);
         const resolvedThumb = publishedReel?.thumbnailUrl || videoThumbnailUrl || resolvedUrl;
+
+        if (pendingFile && isVideoFile) {
+          saveVideoBlob(generatedReelId, pendingFile).catch(() => {});
+          cacheVideoUrlInMemory(generatedReelId, resolvedUrl);
+        }
 
         const finalReel = publishedReel ? {
           ...publishedReel,
@@ -16174,6 +16218,8 @@ function ProfilePage({
               videoThumbUrl = fileDataUrl;
             } else if (isVideo) {
               videoThumbUrl = await generateVideoThumbnail(postFile);
+              saveVideoBlob(generatedId, postFile).catch(() => {});
+              cacheVideoUrlInMemory(generatedId, initialMedia);
               if (postFile.size <= 3.5 * 1024 * 1024) {
                 try {
                   const videoBase64 = await fileToDataURL(postFile);
@@ -16182,7 +16228,6 @@ function ProfilePage({
                   }
                 } catch (e) {}
               }
-              if (!fileDataUrl) fileDataUrl = videoThumbUrl;
             } else {
               fileDataUrl = postFilePreview && !postFilePreview.startsWith('blob:') ? postFilePreview : '';
             }
@@ -16191,7 +16236,7 @@ function ProfilePage({
           }
         }
 
-        const resolvedProfileMedia = fileDataUrl || videoThumbUrl || (postFilePreview && !postFilePreview.startsWith('blob:') ? postFilePreview : '');
+        const resolvedProfileMedia = isVideo ? (initialMedia || fileDataUrl) : (fileDataUrl || videoThumbUrl || (postFilePreview && !postFilePreview.startsWith('blob:') ? postFilePreview : ''));
 
         const formData = new FormData();
         formData.append('title', postTitle);
