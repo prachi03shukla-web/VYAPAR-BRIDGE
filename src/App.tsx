@@ -44,7 +44,7 @@ import { BoostBusinessModal } from './components/BoostBusinessModal';
 import { AdminUserDetailModal } from './components/AdminUserDetailModal';
 import { captureReferralCodeFromUrl, recordNewUserReferral, checkAndUpdateReferralOnPost, getOrCreateFingerprint, getReferralStats, getUserReferralLink } from './utils/referralManager';
 import { resolveUserAvatar, getInitialsAvatar, updateCachedUsers, resolveAuthorInfo } from './utils/userAvatar';
-import { MediaPlayer, MediaOutlet, type MediaPlayerInstance } from '@vidstack/react';
+
 
 export function renderSafeCommentText(content: string, isAuthorOrAdmin = false): { text: string; masked: boolean } {
   if (!content) return { text: '', masked: false };
@@ -57,6 +57,47 @@ export function renderSafeCommentText(content: string, isAuthorOrAdmin = false):
   }
 
   return { text: content, masked: false };
+}
+
+export class GlobalErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean }> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: any, errorInfo: any) {
+    console.error("Vyapar Bridge Error Boundary Caught Exception:", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen w-full bg-slate-50 dark:bg-zinc-950 flex flex-col items-center justify-center p-6 text-center">
+          <div className="max-w-md w-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-6 shadow-xl space-y-4">
+            <div className="w-12 h-12 rounded-2xl bg-amber-50 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400 flex items-center justify-center mx-auto">
+              <RefreshCw className="w-6 h-6 animate-spin" />
+            </div>
+            <h2 className="text-lg font-black text-slate-900 dark:text-white">vyapar bridge</h2>
+            <p className="text-xs text-slate-600 dark:text-zinc-400">Application auto-recovered from a temporary loading issue.</p>
+            <button
+              onClick={() => {
+                this.setState({ hasError: false });
+                window.location.reload();
+              }}
+              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 rounded-xl text-xs transition-all shadow-md cursor-pointer"
+            >
+              Reload & Refresh App 🔄
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
 }
 
 function cn(...inputs: ClassValue[]) {
@@ -3144,7 +3185,7 @@ function FeedVideoPlayer({
   defaultMuted?: boolean;
 }) {
   const location = useLocation();
-  const playerRef = React.useRef<MediaPlayerInstance>(null);
+  const videoRef = React.useRef<HTMLVideoElement>(null);
   const audioRef = React.useRef<HTMLAudioElement>(null);
   const containerRef = React.useRef<HTMLDivElement>(null);
   const progressBarRef = React.useRef<HTMLDivElement>(null);
@@ -3169,7 +3210,7 @@ function FeedVideoPlayer({
   const clickTimeoutRef = React.useRef<any>(null);
 
   const getVideoElement = (): HTMLVideoElement | null => {
-    return containerRef.current?.querySelector('video') || null;
+    return videoRef.current || containerRef.current?.querySelector('video') || null;
   };
 
   useEffect(() => {
@@ -3181,7 +3222,7 @@ function FeedVideoPlayer({
     setCurrentTime(0);
     const video = getVideoElement();
     if (video) {
-      video.load();
+      try { video.load(); } catch(e) {}
       if (isReel || autoPlay) {
         attemptPlay();
       }
@@ -3209,38 +3250,26 @@ function FeedVideoPlayer({
       if (isReelActive || location.pathname !== '/') return;
     }
     
-    if (playerRef.current) {
-      try {
-        if (typeof (playerRef.current as any).play === 'function') {
-          const p = (playerRef.current as any).play();
-          if (p && p.catch) p.catch(() => {});
-        }
-      } catch (e) {}
-    }
-
     const video = getVideoElement();
     if (video) {
-      const playPromise = video.play();
-      if (playPromise !== undefined) {
-        playPromise
-          .then(() => {
-            setIsPlaying(true);
-            setHasStartedPlaying(true);
-            if (audioRef.current && !isMuted) audioRef.current.play().catch(() => {});
-          })
-          .catch(() => setIsPlaying(false));
+      try {
+        const playPromise = video.play();
+        if (playPromise !== undefined) {
+          playPromise
+            .then(() => {
+              setIsPlaying(true);
+              setHasStartedPlaying(true);
+              if (audioRef.current && !isMuted) audioRef.current.play().catch(() => {});
+            })
+            .catch(() => setIsPlaying(false));
+        }
+      } catch (e) {
+        setIsPlaying(false);
       }
     }
   };
 
   const attemptPause = () => {
-    if (playerRef.current) {
-      try {
-        if (typeof (playerRef.current as any).pause === 'function') {
-          (playerRef.current as any).pause();
-        }
-      } catch (e) {}
-    }
     const video = getVideoElement();
     if (video) {
       try { video.pause(); } catch(e) {}
@@ -3518,31 +3547,28 @@ function FeedVideoPlayer({
         />
       )}
 
-      <MediaPlayer
-        ref={playerRef}
+      <video
+        ref={videoRef}
         src={src}
         poster={hasStartedPlaying ? undefined : poster}
-        title="Vyapar Video"
         playsInline
+        webkit-playsinline="true"
         loop
         muted={isMuted}
-        load="eager"
         preload="auto"
-        autoplay={isReel || autoPlay}
         onPlay={() => { setIsPlaying(true); setHasStartedPlaying(true); }}
         onPause={() => setIsPlaying(false)}
         onWaiting={() => setIsLoading(true)}
         onCanPlay={() => setIsLoading(false)}
         onPlaying={() => { setIsLoading(false); setIsPlaying(true); setHasStartedPlaying(true); }}
+        onLoadedMetadata={handleLoadedMetadata}
         onTimeUpdate={handleTimeUpdate}
         onError={() => {
           setIsLoading(false);
           setHasError(true);
         }}
         className={className || "w-full h-full max-h-[80vh] object-contain bg-black transform-gpu will-change-transform relative z-10"}
-      >
-        <MediaOutlet />
-      </MediaPlayer>
+      />
       {audioSrc && <audio ref={audioRef} src={audioSrc} loop preload="none" muted={isMuted} />}
 
       {/* Tap to play/pause overlay */}
@@ -19309,12 +19335,14 @@ export default function App() {
   };
 
   return (
-    <ThemeContext.Provider value={{ isDark, toggleDark }}>
-      <BrowserRouter>
-        <div className="min-h-screen bg-[#FAFAFA] dark:bg-black text-zinc-900 dark:text-zinc-100 transition-colors duration-300 w-full max-w-full overflow-x-hidden">
-          <AppContent />
-        </div>
-      </BrowserRouter>
-    </ThemeContext.Provider>
+    <GlobalErrorBoundary>
+      <ThemeContext.Provider value={{ isDark, toggleDark }}>
+        <BrowserRouter>
+          <div className="min-h-screen bg-[#FAFAFA] dark:bg-black text-zinc-900 dark:text-zinc-100 transition-colors duration-300 w-full max-w-full overflow-x-hidden">
+            <AppContent />
+          </div>
+        </BrowserRouter>
+      </ThemeContext.Provider>
+    </GlobalErrorBoundary>
   );
 }
