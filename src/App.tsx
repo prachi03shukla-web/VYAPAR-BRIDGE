@@ -40,6 +40,10 @@ import { moderateContentUniversally } from './services/moderationService';
 import { playBubblePopSound, playLikeSound, playSaveSound, playShareSound, playEnquirySound, playMessageSound, getSoundSettingsSync, updateSoundSettings } from './utils/audioEffects';
 import { CommentMediaLightbox } from './components/CommentMediaLightbox';
 import { GifPickerModal } from './components/GifPickerModal';
+import { VideoUploadingModal } from './components/VideoUploadingModal';
+import { ImageUploadingModal } from './components/ImageUploadingModal';
+import { PdfUploadingModal } from './components/PdfUploadingModal';
+import { LinkUploadingModal } from './components/LinkUploadingModal';
 import { handleClipboardMediaPaste } from './utils/clipboardHelper';
 import { isPostLikedByUser, isPostSavedByUser, setPostLikedInLocalStorage, setPostSavedInLocalStorage, getUserEngagementCounts, incrementUserEngagement, getNewEngagementCounts, recordTokenGeneration, resetEngagementBaselinesForTest } from './utils/likeSaveHelpers';
 import { ReferralRewardsModal } from './components/ReferralRewardsModal';
@@ -2286,7 +2290,7 @@ function ReelCard({
       reel.mediaUrl.includes('youtu.be')
     ) ? reel.mediaUrl : '') || 
     reel?.video || 
-    (reel?.type === 'video' || reel?.type === 'reel' || reel?.isReel ? (reel?.mediaUrl || ('indexeddb:' + reel?.id)) : '') ||
+    (reel?.type === 'video' || reel?.type === 'reel' || reel?.isReel ? (reel?.mediaUrl || '') : '') ||
     ''
   );
   
@@ -5009,7 +5013,7 @@ function PostItem({
   ) : null;
 
   const mediaSrc = isVideoPost
-    ? (rawVideoUrl || ('indexeddb:' + post.id))
+    ? (rawVideoUrl || '')
     : (post.mediaUrl || post.persistentMediaUrl || post.thumbnailUrl || (post.id ? localStorage.getItem('vyapar_video_' + post.id) : null) || '');
   const [imageLoadError, setImageLoadError] = useState(false);
   const postMusic = post.music || (post.musicTitle ? { title: post.musicTitle, artist: post.musicArtist, audioUrl: post.musicUrl } : null);
@@ -6107,7 +6111,7 @@ function PostItem({
           onTouchEnd={handleTouchEndImage}
         >
           {isPdfPost || post.type === 'pdf' || (mediaSrc && (mediaSrc.match(/\.pdf(\?.*)?$/i) || mediaSrc.startsWith('data:application/pdf'))) ? (
-            <PdfCardViewer post={{ ...post, mediaUrl: mediaSrc || post.mediaUrl || post.pdfUrl || ('indexeddb:' + post.id) }} variant="feed" />
+            <PdfCardViewer post={{ ...post, mediaUrl: mediaSrc || post.mediaUrl || post.pdfUrl || '' }} variant="feed" />
           ) : isVideoPost || (mediaSrc && (
               mediaSrc.includes('youtube.com') || 
               mediaSrc.includes('youtu.be') ||
@@ -8575,6 +8579,15 @@ function CreatePost({ user }: { user: any }) {
   const [scheduledAt, setScheduledAt] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSuggestingTags, setIsSuggestingTags] = useState(false);
+  const [isVideoModalOpen, setIsVideoModalOpen] = useState(false);
+  const [isImageModalOpen, setIsImageModalOpen] = useState(false);
+  const [isPdfModalOpen, setIsPdfModalOpen] = useState(false);
+  const [isLinkModalOpen, setIsLinkModalOpen] = useState(false);
+
+  const [uploadedMediaVideoUrl, setUploadedMediaVideoUrl] = useState<string>('');
+  const [uploadedMediaImageUrl, setUploadedMediaImageUrl] = useState<string>('');
+  const [uploadedMediaImages, setUploadedMediaImages] = useState<string[]>([]);
+  const [uploadedMediaPdfUrl, setUploadedMediaPdfUrl] = useState<string>('');
   const navigate = useNavigate();
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const multiImageInputRef = React.useRef<HTMLInputElement>(null);
@@ -8714,8 +8727,8 @@ function CreatePost({ user }: { user: any }) {
     }
   };
 
-  const isVideo = file?.type.startsWith('video') || file?.name.match(/\.(mp4|webm|mov|m4v)$/i);
-  const isPdf = file?.type === 'application/pdf' || file?.name.match(/\.pdf$/i);
+  const isVideo = (file?.type.startsWith('video') || file?.name.match(/\.(mp4|webm|mov|m4v)$/i)) || Boolean(uploadedMediaVideoUrl);
+  const isPdf = (file?.type === 'application/pdf' || file?.name.match(/\.pdf$/i)) || Boolean(uploadedMediaPdfUrl);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -8724,7 +8737,7 @@ function CreatePost({ user }: { user: any }) {
       window.dispatchEvent(new CustomEvent('openAuthModal'));
       return;
     }
-    if (!content.trim() && !file && imageFiles.length === 0 && !postExternalLink.trim()) {
+    if (!content.trim() && !file && imageFiles.length === 0 && !postExternalLink.trim() && !uploadedMediaVideoUrl && !uploadedMediaPdfUrl && uploadedMediaImages.length === 0) {
       toast.error('Please add content, photos (up to 10), external link, or media catalogue');
       return;
     }
@@ -8757,7 +8770,22 @@ function CreatePost({ user }: { user: any }) {
     let persistentImages: string[] = [];
     let videoStreamUrl = filePreview || (file ? URL.createObjectURL(file) : '');
 
-    if (imageFiles.length > 0) {
+    if (uploadedMediaVideoUrl) {
+      videoStreamUrl = uploadedMediaVideoUrl;
+      persistentMediaUrl = uploadedMediaVideoUrl;
+      persistentThumbnailUrl = thumbnailPreview || '';
+    } else if (uploadedMediaPdfUrl) {
+      persistentMediaUrl = uploadedMediaPdfUrl;
+      persistentThumbnailUrl = thumbnailPreview || '';
+    } else if (uploadedMediaImages.length > 0) {
+      persistentImages = [...uploadedMediaImages];
+      persistentMediaUrl = uploadedMediaImages[0];
+      persistentThumbnailUrl = persistentMediaUrl;
+    }
+
+    if (uploadedMediaVideoUrl || uploadedMediaPdfUrl || uploadedMediaImages.length > 0) {
+      // Pre-uploaded via specialized upload modals, bypass local processing
+    } else if (imageFiles.length > 0) {
       try {
         const compressedList = await Promise.all(
           imageFiles.map(img => optimizeImageForPersistence(img).catch(() => ''))
@@ -8789,11 +8817,11 @@ function CreatePost({ user }: { user: any }) {
           fileToDataURL(file).catch(() => ''),
           extractPdfFirstPageThumbnail(file).catch(() => ({ thumbnailUrl: '', numPages: 0 }))
         ]);
-        persistentMediaUrl = pdfDataUrl || filePreview || ('indexeddb:' + generatedId);
+        persistentMediaUrl = pdfDataUrl || filePreview || '';
         persistentThumbnailUrl = pdfThumbResult.thumbnailUrl || thumbnailPreview || generateFallbackPdfCover(title || 'Product Catalogue', authorName);
         persistentImages = [persistentThumbnailUrl];
       } catch (e) {
-        persistentMediaUrl = filePreview || ('indexeddb:' + generatedId);
+        persistentMediaUrl = filePreview || '';
         persistentThumbnailUrl = generateFallbackPdfCover(title || 'Product Catalogue', authorName);
         persistentImages = [persistentThumbnailUrl];
       }
@@ -8850,9 +8878,9 @@ function CreatePost({ user }: { user: any }) {
     const aiFlagReason = isPendingApproval ? (moderation.reason || 'Flagged for Admin Review by AI Guardrail') : null;
 
     const resolvedMediaUrl = isActualVideo 
-      ? (videoStreamUrl || (isLinkVideo ? resolvedPostLink : '') || ('indexeddb:' + generatedId)) 
+      ? (videoStreamUrl || (isLinkVideo ? resolvedPostLink : '') || '') 
       : isPdf 
-        ? ((persistentMediaUrl && !persistentMediaUrl.startsWith('blob:')) ? persistentMediaUrl : ('indexeddb:' + generatedId))
+        ? ((persistentMediaUrl && !persistentMediaUrl.startsWith('blob:')) ? persistentMediaUrl : '')
         : (persistentMediaUrl || imagePreviews[0] || filePreview || '');
     const resolvedThumbUrl = persistentThumbnailUrl || (isActualVideo ? (isLinkVideo ? '' : persistentThumbnailUrl) : (persistentMediaUrl || imagePreviews[0] || filePreview || ''));
 
@@ -8873,7 +8901,7 @@ function CreatePost({ user }: { user: any }) {
       mediaUrl: resolvedMediaUrl,
       images: isActualVideo ? [] : (persistentImages.length > 0 ? persistentImages : (resolvedMediaUrl ? [resolvedMediaUrl] : [])),
       mediaUrls: isActualVideo ? [] : (persistentImages.length > 0 ? persistentImages : (resolvedMediaUrl ? [resolvedMediaUrl] : [])),
-      pdfUrl: isPdf ? (resolvedMediaUrl || ('indexeddb:' + generatedId)) : undefined,
+      pdfUrl: isPdf ? (resolvedMediaUrl || '') : undefined,
       videoUrl: isActualVideo ? (videoStreamUrl || resolvedMediaUrl) : undefined,
       video: isActualVideo ? (videoStreamUrl || resolvedMediaUrl) : undefined,
       thumbnailUrl: resolvedThumbUrl,
@@ -8966,7 +8994,17 @@ function CreatePost({ user }: { user: any }) {
         if (visibility === 'scheduled' && scheduledAt) {
           formData.append('scheduledAt', String(new Date(scheduledAt).getTime()));
         }
-        if (imageFiles.length > 0) {
+        if (uploadedMediaImages.length > 0) {
+          formData.append('images', JSON.stringify(persistentImages));
+          formData.append('mediaUrls', JSON.stringify(persistentImages));
+        } else if (uploadedMediaVideoUrl) {
+          formData.append('mediaUrl', videoStreamUrl);
+          formData.append('persistentMediaUrl', videoStreamUrl);
+          formData.append('videoUrl', videoStreamUrl);
+        } else if (uploadedMediaPdfUrl) {
+          formData.append('mediaUrl', persistentMediaUrl);
+          formData.append('pdfUrl', persistentMediaUrl);
+        } else if (imageFiles.length > 0) {
           imageFiles.forEach(img => formData.append('media', img));
           formData.append('images', JSON.stringify(persistentImages));
           formData.append('mediaUrls', JSON.stringify(persistentImages));
@@ -9043,9 +9081,9 @@ function CreatePost({ user }: { user: any }) {
           : (isPersistentServerUrl 
               ? savedPost.mediaUrl 
               : (isVideo 
-                  ? (videoStreamUrl || filePreview || ('indexeddb:' + generatedId)) 
+                  ? (videoStreamUrl || filePreview || '') 
                   : isPdf 
-                    ? (bgMediaUrl || filePreview || ('indexeddb:' + generatedId))
+                    ? (bgMediaUrl || filePreview || '')
                     : (bgMediaUrl || filePreview || (persistentImages[0] || ''))));
         const finalThumb = savedPost?.thumbnailUrl || bgThumbUrl || (isVideo ? bgThumbUrl : finalMedia);
 
@@ -9058,7 +9096,7 @@ function CreatePost({ user }: { user: any }) {
           mediaUrl: finalMedia,
           images: persistentImages.length > 0 ? persistentImages : (savedPost.images || [finalMedia]),
           mediaUrls: persistentImages.length > 0 ? persistentImages : (savedPost.mediaUrls || [finalMedia]),
-          pdfUrl: isPdf ? (finalMedia || ('indexeddb:' + generatedId)) : undefined,
+          pdfUrl: isPdf ? (finalMedia || '') : undefined,
           videoUrl: isVideo ? finalMedia : undefined,
           video: isVideo ? finalMedia : undefined,
           thumbnailUrl: finalThumb,
@@ -9074,7 +9112,7 @@ function CreatePost({ user }: { user: any }) {
           mediaUrl: finalMedia || instantPost.mediaUrl,
           images: persistentImages.length > 0 ? persistentImages : instantPost.images,
           mediaUrls: persistentImages.length > 0 ? persistentImages : instantPost.mediaUrls,
-          pdfUrl: isPdf ? (finalMedia || instantPost.pdfUrl || ('indexeddb:' + generatedId)) : undefined,
+          pdfUrl: isPdf ? (finalMedia || instantPost.pdfUrl || '') : undefined,
           videoUrl: isVideo ? (finalMedia || instantPost.mediaUrl) : undefined,
           video: isVideo ? (finalMedia || instantPost.mediaUrl) : undefined,
           thumbnailUrl: finalThumb || instantPost.thumbnailUrl,
@@ -9104,7 +9142,13 @@ function CreatePost({ user }: { user: any }) {
     })();
   };
 
-  const hasMediaSelected = Boolean(filePreview || imagePreviews.length > 0);
+  const hasMediaSelected = Boolean(
+    filePreview || 
+    imagePreviews.length > 0 || 
+    uploadedMediaVideoUrl || 
+    uploadedMediaPdfUrl || 
+    uploadedMediaImages.length > 0
+  );
 
   return (
     <div className="max-w-2xl mx-auto w-full pt-8 pb-24 px-4">
@@ -9122,30 +9166,63 @@ function CreatePost({ user }: { user: any }) {
           <div className="relative group">
             {!hasMediaSelected ? (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {/* 1. Video Uploading Button */}
                 <div 
-                  onClick={() => multiImageInputRef.current?.click()}
-                  className="aspect-video w-full border-2 border-dashed border-slate-200 dark:border-zinc-800 rounded-2xl flex flex-col items-center justify-center gap-3 cursor-pointer hover:bg-slate-50 dark:hover:bg-zinc-950/50 transition-all hover:border-blue-500/50 p-6 text-center group/btn"
+                  onClick={() => setIsVideoModalOpen(true)}
+                  className="aspect-video w-full border-2 border-dashed border-amber-200 dark:border-amber-900/50 rounded-2xl flex flex-col items-center justify-center gap-2 cursor-pointer bg-amber-500/[0.02] hover:bg-amber-500/[0.05] dark:hover:bg-amber-500/[0.03] transition-all hover:border-amber-500 p-6 text-center group/btn shadow-sm"
                 >
-                  <div className="p-4 bg-blue-50 dark:bg-blue-900/20 rounded-full group-hover/btn:scale-110 transition-transform">
-                    <ImagePlus className="w-8 h-8 text-blue-500" />
+                  <div className="p-3 bg-amber-500/10 text-amber-600 dark:text-amber-400 rounded-2xl group-hover/btn:scale-105 transition-transform">
+                    <Video className="w-7 h-7" />
                   </div>
                   <div>
-                    <p className="text-sm font-bold text-black dark:text-zinc-50">Upload Photos (Up to 10) or Video</p>
-                    <p className="text-xs text-blue-600 dark:text-blue-400 font-bold mt-1">Facebook-Style Collage Grid</p>
-                    <p className="text-[10px] text-black/60 dark:text-zinc-500 mt-0.5">PNG, JPG, WEBP, MP4</p>
+                    <p className="text-sm font-bold text-slate-800 dark:text-zinc-100">Upload B2B Reels / Videos</p>
+                    <p className="text-xs text-amber-600 dark:text-amber-400 font-semibold mt-0.5">High-Speed Video Stream CDN</p>
+                    <p className="text-[10px] text-slate-400 dark:text-zinc-500 mt-0.5">MP4, WebM, MOV up to 150MB</p>
                   </div>
                 </div>
 
+                {/* 2. Photo Showcase Button */}
                 <div 
-                  onClick={() => pdfInputRef.current?.click()}
-                  className="aspect-video w-full border-2 border-dashed border-emerald-200 dark:border-emerald-800/50 rounded-2xl flex flex-col items-center justify-center gap-3 cursor-pointer hover:bg-emerald-50/50 dark:hover:bg-emerald-950/20 transition-all hover:border-emerald-500 p-6 text-center group/btn"
+                  onClick={() => setIsImageModalOpen(true)}
+                  className="aspect-video w-full border-2 border-dashed border-blue-200 dark:border-blue-900/50 rounded-2xl flex flex-col items-center justify-center gap-2 cursor-pointer bg-blue-500/[0.02] hover:bg-blue-500/[0.05] dark:hover:bg-blue-500/[0.03] transition-all hover:border-blue-500 p-6 text-center group/btn shadow-sm"
                 >
-                  <div className="p-4 bg-emerald-50 dark:bg-emerald-900/20 rounded-full group-hover/btn:scale-110 transition-transform">
-                    <FileText className="w-8 h-8 text-emerald-600 dark:text-emerald-400" />
+                  <div className="p-3 bg-blue-500/10 text-blue-600 dark:text-blue-400 rounded-2xl group-hover/btn:scale-105 transition-transform">
+                    <ImagePlus className="w-7 h-7" />
                   </div>
                   <div>
-                    <p className="text-sm font-bold text-black dark:text-zinc-50">Upload PDF Catalogue</p>
-                    <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-1 font-bold">Product Brochure (.PDF)</p>
+                    <p className="text-sm font-bold text-slate-800 dark:text-zinc-100">Upload Showcase Photos</p>
+                    <p className="text-xs text-blue-600 dark:text-blue-400 font-semibold mt-0.5">Up to 10 Images Collage</p>
+                    <p className="text-[10px] text-slate-400 dark:text-zinc-500 mt-0.5">Auto-Optimized JPEG, PNG, WEBP</p>
+                  </div>
+                </div>
+
+                {/* 3. PDF Catalog Button */}
+                <div 
+                  onClick={() => setIsPdfModalOpen(true)}
+                  className="aspect-video w-full border-2 border-dashed border-emerald-200 dark:border-emerald-900/50 rounded-2xl flex flex-col items-center justify-center gap-2 cursor-pointer bg-emerald-500/[0.02] hover:bg-emerald-500/[0.05] dark:hover:bg-emerald-500/[0.03] transition-all hover:border-emerald-500 p-6 text-center group/btn shadow-sm"
+                >
+                  <div className="p-3 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 rounded-2xl group-hover/btn:scale-105 transition-transform">
+                    <FileText className="w-7 h-7" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-bold text-slate-800 dark:text-zinc-100">Upload PDF Catalogues</p>
+                    <p className="text-xs text-emerald-600 dark:text-emerald-400 font-semibold mt-0.5">Full Brochure with Cover Preview</p>
+                    <p className="text-[10px] text-slate-400 dark:text-zinc-500 mt-0.5">Standard PDF up to 50MB</p>
+                  </div>
+                </div>
+
+                {/* 4. External URL / Video Link Button */}
+                <div 
+                  onClick={() => setIsLinkModalOpen(true)}
+                  className="aspect-video w-full border-2 border-dashed border-purple-200 dark:border-purple-900/50 rounded-2xl flex flex-col items-center justify-center gap-2 cursor-pointer bg-purple-500/[0.02] hover:bg-purple-500/[0.05] dark:hover:bg-purple-500/[0.03] transition-all hover:border-purple-500 p-6 text-center group/btn shadow-sm"
+                >
+                  <div className="p-3 bg-purple-500/10 text-purple-600 dark:text-purple-400 rounded-2xl group-hover/btn:scale-105 transition-transform">
+                    <ExternalLink className="w-7 h-7" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-bold text-slate-800 dark:text-zinc-100">Attach Product Links</p>
+                    <p className="text-xs text-purple-600 dark:text-purple-400 font-semibold mt-0.5">YouTube Stream or Portfolio Link</p>
+                    <p className="text-[10px] text-slate-400 dark:text-zinc-500 mt-0.5">Embeddable players & product web links</p>
                   </div>
                 </div>
               </div>
@@ -9168,11 +9245,11 @@ function CreatePost({ user }: { user: any }) {
                     </button>
                     <PdfCardViewer post={{ title: title || file?.name || 'Catalogue', mediaUrl: filePreview || '', user: user }} variant="feed" />
                   </div>
-                ) : isVideo && filePreview ? (
+                ) : isVideo && (uploadedMediaVideoUrl || filePreview) ? (
                   <div className="relative w-full h-full">
                     <video preload="metadata" playsInline
                       ref={videoRef}
-                      src={filePreview} 
+                      src={uploadedMediaVideoUrl || filePreview || ''} 
                       className="w-full h-full object-cover max-h-[450px]" 
                       onLoadedMetadata={() => {
                         if (videoRef.current) setVideoDuration(videoRef.current.duration);
@@ -9241,20 +9318,20 @@ function CreatePost({ user }: { user: any }) {
 
                     <button 
                       type="button"
-                      onClick={() => { setFile(null); setFilePreview(null); setThumbnailFile(null); setThumbnailPreview(null); }}
+                      onClick={() => { setFile(null); setFilePreview(null); setThumbnailFile(null); setThumbnailPreview(null); setUploadedMediaVideoUrl(''); }}
                       className="absolute top-4 right-4 p-2 bg-black/70 text-white rounded-full hover:bg-red-600 transition-colors z-30 cursor-pointer shadow-lg"
                       title="Remove Video"
                     >
                       <X className="w-5 h-5" />
                     </button>
                   </div>
-                ) : imagePreviews.length > 0 ? (
+                ) : (imagePreviews.length > 0 || uploadedMediaImages.length > 0) ? (
                   <div className="space-y-3">
                     {/* Header bar with count and actions */}
                     <div className="flex items-center justify-between pb-2 border-b border-white/10">
                       <div className="flex items-center gap-2">
                         <span className="px-2.5 py-1 rounded-full bg-blue-500/20 border border-blue-400/30 text-blue-400 font-black text-xs">
-                          📸 {imagePreviews.length} / 10 Photos
+                          📸 {uploadedMediaImages.length > 0 ? uploadedMediaImages.length : imagePreviews.length} / 10 Photos
                         </span>
                         <span className="text-[11px] text-white/70 font-semibold hidden sm:inline">
                           Facebook-style Collage layout
@@ -9278,6 +9355,7 @@ function CreatePost({ user }: { user: any }) {
                             setImagePreviews([]);
                             setThumbnailFile(null);
                             setThumbnailPreview(null);
+                            setUploadedMediaImages([]);
                           }}
                           className="flex items-center gap-1 px-2.5 py-1 bg-red-600/20 hover:bg-red-600/40 text-red-400 text-xs font-bold rounded-lg border border-red-500/30 transition-all cursor-pointer"
                         >
@@ -9289,14 +9367,14 @@ function CreatePost({ user }: { user: any }) {
 
                     {/* Multi-Image Collage Live Preview */}
                     <div className="rounded-xl overflow-hidden border border-white/10 bg-black">
-                      <MultiImageCollage images={imagePreviews} title={title || "Preview"} />
+                      <MultiImageCollage images={uploadedMediaImages.length > 0 ? uploadedMediaImages : imagePreviews} title={title || "Preview"} />
                     </div>
 
                     {/* Image Thumbnails Grid with Delete & Reorder Controls */}
                     <div className="pt-2">
                       <p className="text-[11px] font-bold text-white/60 mb-2 uppercase tracking-wider">Selected Image List (Tap &times; to remove)</p>
                       <div className="grid grid-cols-5 sm:grid-cols-10 gap-2">
-                        {imagePreviews.map((preview, idx) => (
+                        {(uploadedMediaImages.length > 0 ? uploadedMediaImages : imagePreviews).map((preview, idx) => (
                           <div key={idx} className="relative aspect-square rounded-lg overflow-hidden border-2 border-white/20 group bg-zinc-900 shadow">
                             <img src={preview} alt={`Upload ${idx + 1}`} className="w-full h-full object-cover" />
                             <div className="absolute top-0 left-0 bg-black/70 text-white text-[9px] font-black px-1 rounded-br">
@@ -9569,6 +9647,47 @@ function CreatePost({ user }: { user: any }) {
           </button>
         </form>
       </div>
+
+      {/* 4 Modular Uploading Engine Modals */}
+      <VideoUploadingModal
+        isOpen={isVideoModalOpen}
+        onClose={() => setIsVideoModalOpen(false)}
+        onUploadSuccess={({ mediaUrl, thumbnailUrl, duration }) => {
+          setUploadedMediaVideoUrl(mediaUrl);
+          setThumbnailPreview(thumbnailUrl);
+          setVideoDuration(duration);
+        }}
+        userId={user.id}
+      />
+
+      <ImageUploadingModal
+        isOpen={isImageModalOpen}
+        onClose={() => setIsImageModalOpen(false)}
+        onUploadSuccess={(urls) => {
+          setUploadedMediaImages(urls);
+        }}
+        userId={user.id}
+      />
+
+      <PdfUploadingModal
+        isOpen={isPdfModalOpen}
+        onClose={() => setIsPdfModalOpen(false)}
+        onUploadSuccess={({ mediaUrl, thumbnailUrl }) => {
+          setUploadedMediaPdfUrl(mediaUrl);
+          setFilePreview(mediaUrl);
+          setThumbnailPreview(thumbnailUrl);
+        }}
+        userId={user.id}
+      />
+
+      <LinkUploadingModal
+        isOpen={isLinkModalOpen}
+        onClose={() => setIsLinkModalOpen(false)}
+        onUploadSuccess={({ url, title, provider }) => {
+          setPostExternalLink(url);
+          setTitle(title);
+        }}
+      />
     </div>
   );
 }
@@ -11999,11 +12118,11 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
       if (!isBlocked) {
         const finalAdminPost = adminPostObj ? {
           ...adminPostObj,
-          mediaUrl: (mediaType === 'video' ? (videoStreamUrl || persistentMediaUrl || adminPostObj.mediaUrl || ('indexeddb:' + adminPostId)) : (persistentMediaUrl || (adminPostObj.mediaUrl && !adminPostObj.mediaUrl.startsWith('blob:') ? adminPostObj.mediaUrl : '') || adminPostObj.mediaUrl || '')),
-          videoUrl: mediaType === 'video' ? (videoStreamUrl || persistentMediaUrl || adminPostObj.mediaUrl || ('indexeddb:' + adminPostId)) : undefined,
-          video: mediaType === 'video' ? (videoStreamUrl || persistentMediaUrl || adminPostObj.mediaUrl || ('indexeddb:' + adminPostId)) : undefined,
+          mediaUrl: (mediaType === 'video' ? (videoStreamUrl || persistentMediaUrl || adminPostObj.mediaUrl || '') : (persistentMediaUrl || (adminPostObj.mediaUrl && !adminPostObj.mediaUrl.startsWith('blob:') ? adminPostObj.mediaUrl : '') || adminPostObj.mediaUrl || '')),
+          videoUrl: mediaType === 'video' ? (videoStreamUrl || persistentMediaUrl || adminPostObj.mediaUrl || '') : undefined,
+          video: mediaType === 'video' ? (videoStreamUrl || persistentMediaUrl || adminPostObj.mediaUrl || '') : undefined,
           thumbnailUrl: (persistentThumbnailUrl || (adminPostObj.thumbnailUrl && !adminPostObj.thumbnailUrl.startsWith('blob:') ? adminPostObj.thumbnailUrl : '') || adminPostObj.thumbnailUrl || ''),
-          persistentMediaUrl: (mediaType === 'video' ? (videoStreamUrl || persistentMediaUrl || adminPostObj.mediaUrl || ('indexeddb:' + adminPostId)) : (persistentMediaUrl || (adminPostObj.mediaUrl && !adminPostObj.mediaUrl.startsWith('blob:') ? adminPostObj.mediaUrl : '') || ''))
+          persistentMediaUrl: (mediaType === 'video' ? (videoStreamUrl || persistentMediaUrl || adminPostObj.mediaUrl || '') : (persistentMediaUrl || (adminPostObj.mediaUrl && !adminPostObj.mediaUrl.startsWith('blob:') ? adminPostObj.mediaUrl : '') || ''))
         } : {
           id: adminPostId,
           userId: authorId,
@@ -12014,11 +12133,11 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
           description: newContent,
           hashtags: '#AdminUpdate #OfficialAnnouncement',
           type: mediaType === 'video' ? 'video' : (mediaFile ? 'image' : 'text'),
-          mediaUrl: mediaType === 'video' ? (videoStreamUrl || persistentMediaUrl || ('indexeddb:' + adminPostId)) : (persistentMediaUrl || mediaPreview || ''),
-          videoUrl: mediaType === 'video' ? (videoStreamUrl || persistentMediaUrl || ('indexeddb:' + adminPostId)) : undefined,
-          video: mediaType === 'video' ? (videoStreamUrl || persistentMediaUrl || ('indexeddb:' + adminPostId)) : undefined,
+          mediaUrl: mediaType === 'video' ? (videoStreamUrl || persistentMediaUrl || '') : (persistentMediaUrl || mediaPreview || ''),
+          videoUrl: mediaType === 'video' ? (videoStreamUrl || persistentMediaUrl || '') : undefined,
+          video: mediaType === 'video' ? (videoStreamUrl || persistentMediaUrl || '') : undefined,
           thumbnailUrl: persistentThumbnailUrl || (mediaType === 'video' ? persistentThumbnailUrl : (persistentMediaUrl || mediaPreview || '')),
-          persistentMediaUrl: mediaType === 'video' ? (videoStreamUrl || persistentMediaUrl || ('indexeddb:' + adminPostId)) : (persistentMediaUrl || mediaPreview || ''),
+          persistentMediaUrl: mediaType === 'video' ? (videoStreamUrl || persistentMediaUrl || '') : (persistentMediaUrl || mediaPreview || ''),
           category: 'Official Announcement',
           visibility: 'public',
           status: 'approved',
@@ -16162,7 +16281,7 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
           publishedReel.mediaUrl.startsWith('https://') || 
           publishedReel.mediaUrl.startsWith('http://') || publishedReel.mediaUrl.startsWith('/uploads')
         ) && !publishedReel.mediaUrl.includes('localhost');
-        const resolvedUrl = (isPersistentUrl ? publishedReel.mediaUrl : null) || localMediaUrl || videoStreamUrl || ('indexeddb:' + generatedReelId);
+        const resolvedUrl = (isPersistentUrl ? publishedReel.mediaUrl : null) || localMediaUrl || videoStreamUrl || '';
         const resolvedThumb = publishedReel?.thumbnailUrl || videoThumbnailUrl || resolvedUrl;
 
         if (pendingFile && isVideoFile) {
@@ -19290,7 +19409,7 @@ function ProfilePage({
           savedPost.mediaUrl.startsWith('http://') || savedPost.mediaUrl.startsWith('/uploads')
         ) && !savedPost.mediaUrl.includes('localhost');
 
-        const profileMedia = isLinkVideo ? resolvedProfileLink : (isPersistentUrl ? savedPost.mediaUrl : (resolvedProfileMedia || initialMedia || ('indexeddb:' + generatedId)));
+        const profileMedia = isLinkVideo ? resolvedProfileLink : (isPersistentUrl ? savedPost.mediaUrl : (resolvedProfileMedia || initialMedia || ''));
         const profileThumb = videoThumbUrl || savedPost?.thumbnailUrl || profileMedia;
 
         const finalProfilePost = savedPost ? {

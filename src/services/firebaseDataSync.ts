@@ -328,11 +328,11 @@ export async function syncPostToFirestore(postData: any): Promise<boolean> {
       // If mediaUrl is a large video base64, store clean stream reference
       if (cleanData.mediaUrl && cleanData.mediaUrl.length > 500000 && cleanData.mediaUrl.startsWith('data:video')) {
         console.warn(`⚠️ Video base64 payload is large (${cleanData.mediaUrl.length} bytes). Caching stream locally for smooth playback...`);
-        cleanData.videoUrl = cleanData.mediaUrl.length < 800000 ? cleanData.mediaUrl : ('indexeddb:' + postId);
+        cleanData.videoUrl = cleanData.mediaUrl.length < 800000 ? cleanData.mediaUrl : '';
         cleanData.mediaUrl = cleanData.videoUrl;
         cleanData.persistentMediaUrl = '';
       } else if (cleanData.mediaUrl && cleanData.mediaUrl.startsWith('data:image')) {
-        cleanData.mediaUrl = cleanData.videoUrl || ('indexeddb:' + postId);
+        cleanData.mediaUrl = cleanData.videoUrl || '';
         cleanData.persistentMediaUrl = '';
       }
     } else if (cleanData.mediaUrl && cleanData.mediaUrl.startsWith('data:image')) {
@@ -349,7 +349,7 @@ export async function syncPostToFirestore(postData: any): Promise<boolean> {
       if (!cleanData.mediaUrl || cleanData.mediaUrl.startsWith('blob:') || cleanData.mediaUrl.startsWith('data:image')) {
         const validStream = (cleanData.videoUrl && !cleanData.videoUrl.startsWith('data:image') && !cleanData.videoUrl.startsWith('blob:')) 
           ? cleanData.videoUrl 
-          : (cleanData.mediaUrl && !cleanData.mediaUrl.startsWith('blob:') ? cleanData.mediaUrl : ('indexeddb:' + postId));
+          : (cleanData.mediaUrl && !cleanData.mediaUrl.startsWith('blob:') ? cleanData.mediaUrl : '');
         cleanData.mediaUrl = validStream;
         cleanData.videoUrl = validStream;
         cleanData.persistentMediaUrl = '';
@@ -366,9 +366,9 @@ export async function syncPostToFirestore(postData: any): Promise<boolean> {
       cleanData.persistentMediaUrl = cleanData.mediaUrl;
     }
 
-    // Double check and strip any remaining blob: values from all fields
+    // Double check and strip any remaining blob: or indexeddb: values from all fields
     Object.keys(cleanData).forEach(k => {
-      if (typeof cleanData[k] === 'string' && cleanData[k].startsWith('blob:')) {
+      if (typeof cleanData[k] === 'string' && (cleanData[k].startsWith('blob:') || cleanData[k].startsWith('indexeddb:'))) {
         cleanData[k] = '';
       }
     });
@@ -382,11 +382,11 @@ export async function syncPostToFirestore(postData: any): Promise<boolean> {
             if (cleanData[key].startsWith('data:image')) {
                 cleanData[key] = await optimizeImageForPersistence(cleanData[key], 800, 800, 0.65);
             } else if (cleanData[key].startsWith('data:video') || cleanData.type === 'video') {
-                cleanData[key] = 'indexeddb:' + postId;
+                cleanData[key] = '';
             } else if (cleanData[key].startsWith('data:application/pdf') || cleanData.type === 'pdf' || cleanData.isPdf) {
-                cleanData[key] = 'indexeddb:' + postId;
+                cleanData[key] = '';
             } else {
-                cleanData[key] = 'indexeddb:' + postId; // Fallback for other oversized strings
+                cleanData[key] = ''; // Fallback for other oversized strings
             }
         }
     }
@@ -464,7 +464,7 @@ export async function syncPostToFirestore(postData: any): Promise<boolean> {
       // Scrub oversized keys from emergency data too
       for (const key of ['mediaUrl', 'videoUrl', 'persistentMediaUrl', 'video', 'thumbnailUrl', 'posterUrl']) {
           if (typeof emergencyData[key] === 'string' && emergencyData[key].length > 300000) {
-              emergencyData[key] = emergencyData[key].startsWith('data:image') ? safeThumb : ('indexeddb:' + postId);
+              emergencyData[key] = emergencyData[key].startsWith('data:image') ? safeThumb : '';
           }
       }
 
@@ -642,7 +642,7 @@ export function subscribeToPostsFromFirestore(callback: (posts: any[]) => void):
               } else if (data.video && !data.video.startsWith('data:image')) {
                 safeMediaUrl = data.video;
               } else {
-                safeMediaUrl = 'indexeddb:' + docId;
+                safeMediaUrl = '';
               }
             }
           } else {
