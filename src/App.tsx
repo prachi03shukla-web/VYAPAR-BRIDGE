@@ -8541,6 +8541,7 @@ function CreatePost({ user }: { user: any }) {
   const [maxPrice, setMaxPrice] = useState('');
   const [priceUnit, setPriceUnit] = useState('Box');
   const [hashtags, setHashtags] = useState('');
+  const [postExternalLink, setPostExternalLink] = useState('');
 
   // Single Video / PDF
   const [file, setFile] = useState<File | null>(null);
@@ -8871,7 +8872,7 @@ function CreatePost({ user }: { user: any }) {
       aiFlagReason: aiFlagReason,
       postedFrom: 'profile',
       isPermanent: true,
-      externalLink: resolvedProfileLink || '',
+      externalLink: resolvedPostLink || '',
       likesCount: 0,
       viewsCount: 1,
       createdAt: Date.now(),
@@ -9424,6 +9425,19 @@ function CreatePost({ user }: { user: any }) {
                   </select>
                 </div>
               </div>
+            </div>
+
+            <div className="mb-4">
+              <label className="block text-xs font-black text-black/60 uppercase tracking-widest mb-2">
+                External Link / URL (YouTube, Instagram, Website, etc.)
+              </label>
+              <input
+                type="url"
+                value={postExternalLink}
+                onChange={(e) => setPostExternalLink(e.target.value)}
+                placeholder="https://example.com or YouTube video link..."
+                className="w-full bg-slate-50 dark:bg-zinc-950 border border-slate-200 dark:border-zinc-800 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
+              />
             </div>
 
             <div className="relative group/hashtags">
