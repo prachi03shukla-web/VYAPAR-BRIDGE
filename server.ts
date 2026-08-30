@@ -140,6 +140,27 @@ async function uploadToUguuServer(fileBuffer: Buffer, fileName: string, mimeType
   return null;
 }
 
+async function uploadToPixeldrainServer(fileBuffer: Buffer, fileName: string): Promise<string | null> {
+  try {
+    const url = `https://pixeldrain.com/api/file/${encodeURIComponent(fileName || 'upload.mp4')}`;
+    const response = await fetch(url, {
+      method: 'PUT',
+      body: fileBuffer
+    });
+    if (response.ok) {
+      const data = await response.json();
+      if (data && data.success && data.id) {
+        const streamUrl = `https://pixeldrain.com/api/file/${data.id}`;
+        console.log('⚡ Pixeldrain upload success:', streamUrl);
+        return streamUrl;
+      }
+    }
+  } catch (err) {
+    console.warn('Pixeldrain upload error:', err);
+  }
+  return null;
+}
+
 async function uploadToFirebaseOrLocal(file: Express.Multer.File): Promise<string> {
   try {
     if (file && (file.filename || file.path)) {
@@ -169,13 +190,19 @@ async function uploadToFirebaseOrLocal(file: Express.Multer.File): Promise<strin
           }
         }
 
-        // [JUGAD] 2. Try Catbox.moe (Unlimited free permanent cloud hosting - preserves Firebase Storage Quota 100%!)
+        // [JUGAD] 2. Try Pixeldrain (Ultra-fast, permanent free CDN with seekable streaming support!)
+        const pixeldrainUrl = await uploadToPixeldrainServer(fileBuffer, file.originalname);
+        if (pixeldrainUrl) {
+          return pixeldrainUrl;
+        }
+
+        // [JUGAD] 2b. Try Catbox.moe (Unlimited free permanent cloud hosting - preserves Firebase Storage Quota 100%!)
         const catboxUrl = await uploadToCatboxServer(fileBuffer, file.originalname, mimeType);
         if (catboxUrl) {
           return catboxUrl;
         }
 
-        // [JUGAD] 2b. Try Uguu.se (Simple free hosting with instant server CDN URL!)
+        // [JUGAD] 2c. Try Uguu.se (Simple free hosting with instant server CDN URL!)
         const uguuUrl = await uploadToUguuServer(fileBuffer, file.originalname, mimeType);
         if (uguuUrl) {
           return uguuUrl;

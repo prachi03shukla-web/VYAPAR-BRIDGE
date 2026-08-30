@@ -51,28 +51,8 @@ export async function uploadFileToFirebaseStorage(
     }
   }
 
-  // [JUGAD] 2. Prioritize Backend Server Upload (to completely bypass Firebase Storage and use Catbox/local server)
-  try {
-    const formData = new FormData();
-    formData.append('media', fileToUpload);
-    const res = await fetch('/api/upload', {
-      method: 'POST',
-      body: formData
-    });
-    if (res.ok) {
-      const data = await res.json();
-      if (data && data.url && (data.url.startsWith('http') || data.url.startsWith('/uploads/') || data.url.startsWith('data:'))) {
-        console.log('⚡ Uploaded via backend API successfully (Bypassed Firebase Storage!):', data.url);
-        if (typeof onProgress === 'function') onProgress(100);
-        return data.url;
-      }
-    }
-  } catch (apiErr) {
-    console.warn('Backend API upload fallback note:', apiErr);
-  }
-
-  // 3. Last Resort Fallback: Direct Firebase Client SDK Storage Upload (Normally never hit)
-  const ext = (fileToUpload instanceof File && fileToUpload.name) ? fileToUpload.name.split('.').pop() : 'mp4';
+  // 2. PRIORITIZE: Direct Firebase Client SDK Storage Upload (Most Reliable and Permanent!)
+  const ext = (fileToUpload instanceof File && fileToUpload.name) ? fileToUpload.name.split('.').pop() : (fileToUpload.type && fileToUpload.type.includes('video') ? 'mp4' : 'jpg');
   const filePath = customPath || `uploads/${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${ext}`;
   try {
     const storageRef = ref(storage, filePath);
@@ -109,7 +89,27 @@ export async function uploadFileToFirebaseStorage(
       return downloadUrl;
     }
   } catch (err) {
-    console.warn('Firebase Storage client direct upload not available, using Data URL fallback:', err);
+    console.warn('Firebase Storage client direct upload not available, trying backend API upload fallback:', err);
+  }
+
+  // 3. Fallback: Backend Server Upload (Catbox/Pixeldrain/local server fallback)
+  try {
+    const formData = new FormData();
+    formData.append('media', fileToUpload);
+    const res = await fetch('/api/upload', {
+      method: 'POST',
+      body: formData
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.url && (data.url.startsWith('http') || data.url.startsWith('/uploads/') || data.url.startsWith('data:'))) {
+        console.log('⚡ Uploaded via backend API successfully:', data.url);
+        if (typeof onProgress === 'function') onProgress(100);
+        return data.url;
+      }
+    }
+  } catch (apiErr) {
+    console.warn('Backend API upload fallback note:', apiErr);
   }
 
   // 4. Fallback: Standalone Data URL for small/medium files (< 15MB)
