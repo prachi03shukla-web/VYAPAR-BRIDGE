@@ -8865,7 +8865,7 @@ function CreatePost({ user }: { user: any }) {
       minRate: (minPrice || maxPrice) ? minPrice : undefined,
       maxRate: (minPrice || maxPrice) ? maxPrice : undefined,
       unit: (minPrice || maxPrice) ? priceUnit : undefined,
-      category: 'Commercial Wholesale', postedFrom: 'navbar', isPermanent: false,
+      category: 'Commercial Wholesale',
       visibility: visibility || 'public',
       status: isPendingApproval ? 'pending' : 'approved',
       pending_admin_approval: isPendingApproval,
@@ -8939,8 +8939,8 @@ function CreatePost({ user }: { user: any }) {
         formData.append('userRole', authorRole);
         formData.append('userAvatar', authorAvatar);
         formData.append('type', postMediaType);
-        formData.append('postedFrom', 'navbar');
-        formData.append('isPermanent', 'false');
+        formData.append('postedFrom', 'profile');
+        formData.append('isPermanent', 'true');
         formData.append('visibility', visibility);
         if (minPrice || maxPrice) {
           formData.append('minRate', minPrice);
@@ -9047,7 +9047,9 @@ function CreatePost({ user }: { user: any }) {
           video: isVideo ? finalMedia : undefined,
           thumbnailUrl: finalThumb,
           persistentMediaUrl: finalMedia,
-          status: isPendingApproval ? 'pending' : (savedPost.status || 'approved'), postedFrom: 'navbar', isPermanent: false,
+          status: isPendingApproval ? 'pending' : (savedPost.status || 'approved'),
+          postedFrom: 'profile',
+          isPermanent: true,
           pending_admin_approval: isPendingApproval,
           aiFlagReason: aiFlagReason || null
         } : {
@@ -16198,7 +16200,7 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
           stockStatus,
           isShortcut: isShortage,
           isShortage,
-          category: 'Commercial Wholesale', postedFrom: 'navbar', isPermanent: false,
+          category: 'Commercial Wholesale', postedFrom: 'profile', isPermanent: true,
           visibility: 'public',
           status: isPendingApproval ? 'pending' : 'approved',
           pending_admin_approval: isPendingApproval,
@@ -19124,7 +19126,7 @@ function ProfilePage({
       minRate: (postMinPrice || postMaxPrice) ? postMinPrice : undefined,
       maxRate: (postMinPrice || postMaxPrice) ? postMaxPrice : undefined,
       unit: (postMinPrice || postMaxPrice) ? postPriceUnit : undefined,
-      category: 'Commercial Wholesale', postedFrom: 'navbar', isPermanent: false,
+      category: 'Commercial Wholesale',
       visibility: 'public',
       status: isPendingApproval ? 'pending' : 'approved',
       pending_admin_approval: isPendingApproval,

@@ -124,13 +124,34 @@ async function uploadToFirebaseOrLocal(file: Express.Multer.File): Promise<strin
         const fileBuffer = fs.readFileSync(filePath);
         const mimeType = file.mimetype || (file.filename?.endsWith('.mp4') ? 'video/mp4' : 'image/jpeg');
 
-        // [JUGAD] 1. Try Catbox.moe (Unlimited free permanent cloud hosting - preserves Firebase Storage Quota 100%!)
+        // 1. Direct Backend Firebase Storage Upload (Most Reliable and Permanent!)
+        if (firebaseStorage) {
+          try {
+            const ext = path.extname(file.originalname) || (file.mimetype && file.mimetype.includes('video') ? '.mp4' : '.jpg');
+            const storagePath = `uploads/${Date.now()}_${Math.round(Math.random() * 1e9)}${ext}`;
+            const bucketFile = firebaseStorage.file(storagePath);
+            await bucketFile.save(fileBuffer, {
+              metadata: {
+                contentType: mimeType
+              }
+            });
+            await bucketFile.makePublic().catch(() => {});
+            const bName = firebaseStorage.name || (firebaseConfig && firebaseConfig.storageBucket);
+            const publicUrl = `https://firebasestorage.googleapis.com/v0/b/${bName}/o/${encodeURIComponent(storagePath)}?alt=media`;
+            console.log('✅ Firebase Storage backend upload success:', publicUrl);
+            return publicUrl;
+          } catch (storageErr) {
+            console.error('Firebase Storage backend upload note, trying fallbacks:', storageErr);
+          }
+        }
+
+        // [JUGAD] 2. Try Catbox.moe (Unlimited free permanent cloud hosting - preserves Firebase Storage Quota 100%!)
         const catboxUrl = await uploadToCatboxServer(fileBuffer, file.originalname, mimeType);
         if (catboxUrl) {
           return catboxUrl;
         }
 
-        // [JUGAD] 2. Cloudinary Upload Integration (if credentials are set)
+        // [JUGAD] 3. Cloudinary Upload Integration (if credentials are set)
         const cloudName = process.env.CLOUDINARY_CLOUD_NAME || process.env.VITE_CLOUDINARY_CLOUD_NAME;
         const uploadPreset = process.env.CLOUDINARY_UPLOAD_PRESET || process.env.VITE_CLOUDINARY_UPLOAD_PRESET;
 
@@ -154,7 +175,7 @@ async function uploadToFirebaseOrLocal(file: Express.Multer.File): Promise<strin
           }
         }
 
-        // [JUGAD] 3. Local Server Disk Storage (Completely free, served directly by Express `/uploads/...`!)
+        // [JUGAD] 4. Local Server Disk Storage (Completely free, served directly by Express `/uploads/...`!)
         const localUrl = `/uploads/${file.filename}`;
         console.log('⚡ Saved file locally on server to save Firebase Storage Quota:', localUrl);
         return localUrl;
@@ -1405,24 +1426,29 @@ Return ONLY a valid raw JSON object (NO markdown, NO \`\`\`json backticks, NO ex
   // Delete a post
   app.delete('/api/posts/:id', (req, res) => {
     const targetId = String(req.params.id);
+    
+    // Always attempt Firestore deletion first if configured
+    if (firestoreDb) {
+      deleteDoc(doc(firestoreDb, 'posts', targetId))
+        .then(() => console.log(`🗑️ Successfully deleted post ${targetId} from Firestore via API`))
+        .catch(e => console.error('Firestore post delete error via API', e));
+    }
+
     const postIndex = db.posts.findIndex(p => String(p.id) === targetId);
     if (postIndex > -1) {
       db.posts.splice(postIndex, 1);
-      if (firestoreDb) {
-        deleteDoc(doc(firestoreDb, 'posts', targetId)).catch(e => console.error('Firestore post delete error', e));
-      }
-      // Clean up likes, saves, comments, views, shares, and notInterested records
-      db.likes = db.likes.filter(l => String(l.postId) !== targetId);
-      db.saves = db.saves.filter(s => String(s.postId) !== targetId);
-      db.comments = db.comments.filter(c => String(c.postId) !== targetId);
-      db.views = db.views.filter(v => String(v.postId) !== targetId);
-      db.shares = (db.shares || []).filter(s => String(s.postId) !== targetId);
-      db.notInterested = (db.notInterested || []).filter(ni => String(ni.postId) !== targetId);
-      saveDatabase();
-      res.json({ success: true });
-    } else {
-      res.status(404).json({ error: 'Post not found' });
     }
+
+    // Clean up likes, saves, comments, views, shares, and notInterested records
+    db.likes = db.likes.filter(l => String(l.postId) !== targetId);
+    db.saves = db.saves.filter(s => String(s.postId) !== targetId);
+    db.comments = db.comments.filter(c => String(c.postId) !== targetId);
+    db.views = db.views.filter(v => String(v.postId) !== targetId);
+    db.shares = (db.shares || []).filter(s => String(s.postId) !== targetId);
+    db.notInterested = (db.notInterested || []).filter(ni => String(ni.postId) !== targetId);
+    
+    saveDatabase();
+    res.json({ success: true });
   });
 
   // Toggle Like on a post
