@@ -774,19 +774,7 @@ export function AdMediaDisplay({ ad, className, onMediaEnded }: { ad: any; class
           allowFullScreen
         />
 
-        {/* Open Direct HD Facebook Watch Button Overlay */}
-        <a
-          href={activeFbUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          onClick={(e) => e.stopPropagation()}
-          className="absolute top-3 right-3 z-20 flex items-center gap-1.5 px-3 py-1.5 bg-blue-600/90 hover:bg-blue-600 text-white text-xs font-bold rounded-full shadow-lg backdrop-blur-md transition-all hover:scale-105"
-          title="Watch in HD with Sound on Facebook"
-        >
-          <Facebook className="w-3.5 h-3.5 fill-current" />
-          <span>Facebook</span>
-          <ExternalLink className="w-3 h-3 ml-0.5 opacity-80" />
-        </a>
+
 
         {/* Stretch / Full Screen Control */}
         <button
@@ -821,18 +809,7 @@ export function AdMediaDisplay({ ad, className, onMediaEnded }: { ad: any; class
             allow="autoplay; clipboard-write; encrypted-media; picture-in-picture; web-share; fullscreen"
             allowFullScreen
           />
-          <a
-            href={rawMediaUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={(e) => e.stopPropagation()}
-            className="absolute top-3 right-3 z-20 flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white text-xs font-bold rounded-full shadow-lg backdrop-blur-md transition-all hover:scale-105"
-            title="Open on Instagram"
-          >
-            <Instagram className="w-3.5 h-3.5" />
-            <span>Instagram</span>
-            <ExternalLink className="w-3 h-3 ml-0.5 opacity-80" />
-          </a>
+
           <button
             type="button"
             onClick={toggleFullscreen}
