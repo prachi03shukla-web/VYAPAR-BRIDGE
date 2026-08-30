@@ -343,57 +343,29 @@ export function cleanFacebookUrl(rawUrl: string): string {
   let url = rawUrl.trim();
   url = url.replace(/^https?:\/\/(?:m|web|touch|mbasic)\.facebook\.com/i, 'https://www.facebook.com');
 
-  // 1. Direct Reel with alphanumeric/numeric ID
-  const reelMatch = url.match(/facebook\.com\/(?:reel|reels)\/([0-9a-zA-Z_-]+)/i);
-  if (reelMatch && reelMatch[1]) {
-    return `https://www.facebook.com/reel/${reelMatch[1]}/`;
+  // 1. Check for any numeric ID in Reel, Share, Video, Watch, or FBID:
+  // (Facebook plugins/video.php ONLY renders watch/?v=NUMERIC_ID - converting to watch/?v= fixes 'Video unavailable')
+  const numericIdMatch = url.match(/(?:facebook\.com\/(?:reel|reels|videos|share\/r|share\/v)\/|watch\/?\?(?:.*&)?v=|(?:story_fbid|fbid)=)([0-9]+)/i);
+  if (numericIdMatch && numericIdMatch[1]) {
+    return `https://www.facebook.com/watch/?v=${numericIdMatch[1]}`;
   }
 
-  // 2. Share Reel links: facebook.com/share/r/ID
-  const shareReelMatch = url.match(/facebook\.com\/share\/r\/([0-9a-zA-Z_-]+)/i);
-  if (shareReelMatch && shareReelMatch[1]) {
-    return `https://www.facebook.com/share/r/${shareReelMatch[1]}/`;
-  }
-
-  // 3. Share Video links: facebook.com/share/v/ID
-  const shareVideoMatch = url.match(/facebook\.com\/share\/v\/([0-9a-zA-Z_-]+)/i);
-  if (shareVideoMatch && shareVideoMatch[1]) {
-    return `https://www.facebook.com/share/v/${shareVideoMatch[1]}/`;
-  }
-
-  // 4. Direct Watch URL with query param ?v=...
+  // 2. Direct Watch URL with query param ?v=...
   const watchMatch = url.match(/facebook\.com\/watch\/?\?(?:.*&)?v=([0-9a-zA-Z_-]+)/i);
   if (watchMatch && watchMatch[1]) {
     return `https://www.facebook.com/watch/?v=${watchMatch[1]}`;
   }
 
-  // 5. Page video URL: facebook.com/page_name/videos/1234567890/
-  const pageVideoMatch = url.match(/facebook\.com\/[^/]+\/videos\/([0-9]+)/i) || url.match(/facebook\.com\/videos\/([0-9]+)/i);
-  if (pageVideoMatch && pageVideoMatch[1]) {
-    return `https://www.facebook.com/watch/?v=${pageVideoMatch[1]}`;
+  // 3. Alphanumeric Reel / Share: /reel/ID or /share/r/ID
+  const shareReelMatch = url.match(/facebook\.com\/share\/r\/([0-9a-zA-Z_-]+)/i);
+  if (shareReelMatch && shareReelMatch[1]) {
+    return `https://www.facebook.com/share/r/${shareReelMatch[1]}/`;
   }
 
-  // 6. Any numeric ID in story_fbid or fbid
-  const storyMatch = url.match(/[?&](?:story_fbid|fbid)=([0-9]+)/i);
-  if (storyMatch && storyMatch[1]) {
-    return `https://www.facebook.com/watch/?v=${storyMatch[1]}`;
+  const reelMatch = url.match(/facebook\.com\/(?:reel|reels)\/([0-9a-zA-Z_-]+)/i);
+  if (reelMatch && reelMatch[1]) {
+    return `https://www.facebook.com/watch/?v=${reelMatch[1]}`;
   }
-
-  // 7. Clean query params for tracking
-  try {
-    const urlObj = new URL(url);
-    if (urlObj.hostname.includes('facebook.com') || urlObj.hostname.includes('fb.watch')) {
-      const paramsToKeep = ['v', 'id', 'story_fbid'];
-      const newSearchParams = new URLSearchParams();
-      for (const key of paramsToKeep) {
-        if (urlObj.searchParams.has(key)) {
-          newSearchParams.set(key, urlObj.searchParams.get(key)!);
-        }
-      }
-      urlObj.search = newSearchParams.toString();
-      url = urlObj.toString();
-    }
-  } catch (e) {}
 
   return url;
 }
@@ -778,7 +750,7 @@ export function AdMediaDisplay({ ad, className, onMediaEnded }: { ad: any; class
     }
   }
 
-  // 2. Facebook Embed (Stable URL - never unmounts or resets on fullscreen/stretch)
+  // 2. Facebook Embed with Direct HD Watch & App Fallback
   const rawMediaUrl = mediaSrc || ad?.mediaUrl || ad?.externalLink || '';
   const isFacebook = rawMediaUrl && (rawMediaUrl.includes('facebook.com') || rawMediaUrl.includes('fb.watch'));
 
@@ -802,6 +774,20 @@ export function AdMediaDisplay({ ad, className, onMediaEnded }: { ad: any; class
           allowFullScreen
         />
 
+        {/* Open Direct HD Facebook Watch Button Overlay */}
+        <a
+          href={activeFbUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          className="absolute top-3 right-3 z-20 flex items-center gap-1.5 px-3 py-1.5 bg-blue-600/90 hover:bg-blue-600 text-white text-xs font-bold rounded-full shadow-lg backdrop-blur-md transition-all hover:scale-105"
+          title="Watch in HD with Sound on Facebook"
+        >
+          <Facebook className="w-3.5 h-3.5 fill-current" />
+          <span>Facebook</span>
+          <ExternalLink className="w-3 h-3 ml-0.5 opacity-80" />
+        </a>
+
         {/* Stretch / Full Screen Control */}
         <button
           type="button"
@@ -813,6 +799,83 @@ export function AdMediaDisplay({ ad, className, onMediaEnded }: { ad: any; class
         </button>
       </div>
     );
+  }
+
+  // 2b. Instagram Embed
+  const isInstagram = rawMediaUrl && (rawMediaUrl.includes('instagram.com/p/') || rawMediaUrl.includes('instagram.com/reel/') || rawMediaUrl.includes('instagram.com/tv/'));
+  if (isInstagram) {
+    const igMatch = rawMediaUrl.match(/instagram\.com\/(?:reel|p|tv)\/([0-9a-zA-Z_-]+)/i);
+    const igCode = igMatch && igMatch[1];
+    if (igCode) {
+      return (
+        <div 
+          ref={containerRef} 
+          className={`relative w-full bg-slate-950 overflow-hidden flex flex-col items-center justify-center group ${getContainerClasses()}`}
+          style={getContainerStyle()}
+        >
+          <iframe
+            ref={iframeRef}
+            src={`https://www.instagram.com/p/${igCode}/embed/captioned/`}
+            className="w-full h-full border-0 pointer-events-auto"
+            style={{ minHeight: '100%', minWidth: '100%' }}
+            allow="autoplay; clipboard-write; encrypted-media; picture-in-picture; web-share; fullscreen"
+            allowFullScreen
+          />
+          <a
+            href={rawMediaUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            className="absolute top-3 right-3 z-20 flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white text-xs font-bold rounded-full shadow-lg backdrop-blur-md transition-all hover:scale-105"
+            title="Open on Instagram"
+          >
+            <Instagram className="w-3.5 h-3.5" />
+            <span>Instagram</span>
+            <ExternalLink className="w-3 h-3 ml-0.5 opacity-80" />
+          </a>
+          <button
+            type="button"
+            onClick={toggleFullscreen}
+            className="absolute bottom-3 right-3 z-20 p-2 bg-black/60 hover:bg-black/80 text-white rounded-full transition-all duration-200 border border-white/15 shadow-md flex items-center justify-center cursor-pointer active:scale-95"
+            title="Stretch / Full Screen"
+          >
+            <Maximize2 className="w-4 h-4 text-white" />
+          </button>
+        </div>
+      );
+    }
+  }
+
+  // 2c. Vimeo Embed
+  const isVimeo = rawMediaUrl && rawMediaUrl.includes('vimeo.com');
+  if (isVimeo) {
+    const vimeoMatch = rawMediaUrl.match(/vimeo\.com\/(?:video\/)?([0-9]+)/i);
+    const vimeoId = vimeoMatch && vimeoMatch[1];
+    if (vimeoId) {
+      return (
+        <div 
+          ref={containerRef} 
+          className={`relative w-full bg-slate-950 overflow-hidden flex flex-col items-center justify-center group ${getContainerClasses()}`}
+          style={getContainerStyle()}
+        >
+          <iframe
+            ref={iframeRef}
+            src={`https://player.vimeo.com/video/${vimeoId}?autoplay=1&muted=1`}
+            className="w-full h-full border-0 pointer-events-auto"
+            allow="autoplay; fullscreen; picture-in-picture"
+            allowFullScreen
+          />
+          <button
+            type="button"
+            onClick={toggleFullscreen}
+            className="absolute bottom-3 right-3 z-20 p-2 bg-black/60 hover:bg-black/80 text-white rounded-full transition-all duration-200 border border-white/15 shadow-md flex items-center justify-center cursor-pointer active:scale-95"
+            title="Stretch / Full Screen"
+          >
+            <Maximize2 className="w-4 h-4 text-white" />
+          </button>
+        </div>
+      );
+    }
   }
 
   // 3. Fallback when no media
@@ -3045,7 +3108,7 @@ function ReelCard({
         )}
 
         {/* Interaction Overlay - only active when not embedded player to allow direct control */}
-        {!(mediaSrc && (mediaSrc.includes('youtube.com') || mediaSrc.includes('youtu.be') || mediaSrc.includes('facebook.com') || mediaSrc.includes('fb.watch'))) && (
+        {!(mediaSrc && (mediaSrc.includes('youtube.com') || mediaSrc.includes('youtu.be') || mediaSrc.includes('facebook.com') || mediaSrc.includes('fb.watch') || mediaSrc.includes('instagram.com') || mediaSrc.includes('vimeo.com') || mediaSrc.includes('tiktok.com'))) && (
           <div 
             className="absolute inset-0 z-20 cursor-pointer" 
             onClick={handleInteractionClick}
@@ -3082,7 +3145,7 @@ function ReelCard({
           <div className="relative z-10 w-full h-full flex items-center justify-center bg-slate-950 p-2 sm:p-4 overflow-y-auto">
             <PdfCardViewer post={{ ...reel, mediaUrl: mediaSrc || reel?.mediaUrl }} variant="feed" />
           </div>
-        ) : (mediaSrc.includes('youtube.com') || mediaSrc.includes('youtu.be') || mediaSrc.includes('facebook.com') || mediaSrc.includes('fb.watch')) ? (
+        ) : (mediaSrc.includes('youtube.com') || mediaSrc.includes('youtu.be') || mediaSrc.includes('facebook.com') || mediaSrc.includes('fb.watch') || mediaSrc.includes('instagram.com') || mediaSrc.includes('vimeo.com') || mediaSrc.includes('tiktok.com')) ? (
           <AdMediaDisplay ad={{ ...reel, type: 'video', mediaUrl: mediaSrc, aspectRatio: reel?.aspectRatio || '9:16', isReel: true }} className="relative z-10 w-full h-full object-contain pointer-events-auto" />
         ) : isVideo && mediaSrc ? (
           <FeedVideoPlayer
@@ -6222,18 +6285,18 @@ function PostItem({
         >
           {isPdfPost || post.type === 'pdf' || (mediaSrc && (mediaSrc.match(/\.pdf(\?.*)?$/i) || mediaSrc.startsWith('data:application/pdf'))) ? (
             <PdfCardViewer post={{ ...post, mediaUrl: mediaSrc || post.mediaUrl || post.pdfUrl || ('indexeddb:' + post.id) }} variant="feed" />
-          ) : mediaSrc && (mediaSrc.includes('youtube.com') || mediaSrc.includes('youtu.be') || mediaSrc.includes('facebook.com') || mediaSrc.includes('fb.watch')) ? (
-            <AdMediaDisplay ad={{ ...post, type: 'video', mediaUrl: mediaSrc, aspectRatio: post?.aspectRatio || (post?.isReel || mediaSrc.includes('facebook.com') || mediaSrc.includes('fb.watch') ? '9:16' : undefined), externalLink: post?.externalLink }} className="w-full h-full pointer-events-auto" />
-          ) : isVideoPost ? (
-            <FeedVideoPlayer 
-              id={post.id ? String(post.id) : undefined} 
-              src={mediaSrc} 
-              poster={post.thumbnailUrl || post.posterUrl || post.persistentMediaUrl || (typeof post.mediaUrl === 'string' && (post.mediaUrl.startsWith('data:image') || post.mediaUrl.match(/\.(jpg|jpeg|png|webp|gif)(\?.*)?$/i)) ? post.mediaUrl : '')} 
-              className="w-full h-full object-contain" 
-              audioSrc={postMusic?.audioUrl}
-              isReel={Boolean(post.isReel || post.type === 'reel' || post.aspectRatio === '9:16' || post.aspectRatio === '9/16')}
-              aspectRatio={post.aspectRatio || (post.isReel || post.type === 'reel' ? '9:16' : undefined)}
-            />
+          ) : isVideoPost || (mediaSrc && (
+              mediaSrc.includes('youtube.com') || 
+              mediaSrc.includes('youtu.be') || 
+              mediaSrc.includes('facebook.com') || 
+              mediaSrc.includes('fb.watch') ||
+              mediaSrc.includes('instagram.com') ||
+              mediaSrc.includes('vimeo.com') ||
+              mediaSrc.includes('tiktok.com') ||
+              mediaSrc.includes('dailymotion.com') ||
+              /\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(mediaSrc)
+            )) ? (
+            <AdMediaDisplay ad={{ ...post, type: 'video', mediaUrl: mediaSrc || rawVideoUrl || post.externalLink, aspectRatio: post?.aspectRatio || (post?.isReel || isVerticalContent ? '9:16' : undefined), externalLink: post?.externalLink }} className="w-full h-full pointer-events-auto" />
           ) : post.type === 'audio' || mediaSrc.match(/\.(mp3|wav|ogg|m4a)(\?.*)?$/i) ? (
             <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-indigo-900 to-purple-900 p-8">
                <div className="w-32 h-32 bg-white/10 rounded-full flex items-center justify-center mb-6 shadow-2xl animate-pulse">
@@ -19193,7 +19256,14 @@ function ProfilePage({
         postExternalLink.includes('youtube.com') ||
         postExternalLink.includes('youtu.be') ||
         postExternalLink.includes('facebook.com') ||
-        postExternalLink.includes('fb.watch')
+        postExternalLink.includes('fb.watch') ||
+        postExternalLink.includes('instagram.com') ||
+        postExternalLink.includes('vimeo.com') ||
+        postExternalLink.includes('tiktok.com') ||
+        postExternalLink.includes('dailymotion.com') ||
+        /\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(postExternalLink) ||
+        postExternalLink.startsWith('http://') ||
+        postExternalLink.startsWith('https://')
       )
     );
     const isVideo = postFile?.type.startsWith('video') || (postFile?.name && /\.(mp4|webm|mov|m4v)$/i.test(postFile.name)) || isLinkVideo;
