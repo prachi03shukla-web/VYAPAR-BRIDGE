@@ -1,3 +1,4 @@
+import { UniversalYouTubePlayer, extractYouTubeId, isYouTubeUrl } from './components/UniversalYouTubePlayer';
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { BrowserRouter, Routes, Route, Link, useNavigate, useLocation, useParams } from 'react-router-dom';
 import { Facebook, Twitter, Instagram, Home, Shield, Moon, Sun, PlusSquare, MessageCircle, MessageSquare, Menu, LogOut, LogIn, Check, X, XCircle, Search, Compass, Film, Heart, Calculator, Bookmark, Info, MoreHorizontal, MoreVertical, Music, Image, ImageIcon, ImagePlus, Eye, EyeOff, Camera, Upload, Trash2, Plus, ShieldCheck, BadgeCheck, Sparkles, QrCode, CheckCircle, CheckCircle2, Award, Smile, Volume2, VolumeX, Play, Pause, ChevronUp, ChevronDown, ArrowLeft, ChevronLeft, ChevronRight, UserPlus, UserCheck, Share2, Phone, Mail, Globe, Building2, Store, MapPin, Locate, Navigation, Tag, Filter, ShieldAlert, User, UserX, Lock, Key, Clock, FileText, FileCheck, Maximize2, Crop, Loader2, Send, BarChart2, Users, Map as MapIcon, Hash, Pencil, Rocket, ExternalLink, Star, Scale, Video, TrendingUp, ClipboardList, Bell, CreditCard, Calendar, Copy, RefreshCw, AlertTriangle, Gift, Fingerprint, Megaphone, Download, Settings, ShoppingCart, Scan } from 'lucide-react';
@@ -201,11 +202,9 @@ export function filterOutHiddenContent(items: any[], userId?: string | number) {
     if (itemId && notInterestedSet.has(itemId)) return false;
     if (itemUserId && blockedSet.has(itemUserId)) return false;
 
-    // Auto-delete / auto-hide posts/videos from the navbar '+' icon (not permanent) if they are older than 24 hours
-    const isNavbarUpload = item.postedFrom === 'navbar' || item.title === 'New B2B Reel' || item.content === 'Uploaded from Reels';
-    const isPermanent = item.isPermanent === true || item.postedFrom === 'profile' || item.isPermanent == 'true';
-    
-    if (isNavbarUpload && !isPermanent) {
+    // Ephemeral story check (only true 24-hour stories expire after 24h, regular posts and reels remain permanent)
+    const isEphemeralStory = item.type === 'story' || item.isStory === true;
+    if (isEphemeralStory) {
       let createdAtMs = Date.now();
       if (item.createdAt) {
         if (typeof item.createdAt === 'number' && item.createdAt > 1000000000) {
@@ -219,7 +218,7 @@ export function filterOutHiddenContent(items: any[], userId?: string | number) {
       }
       const ageMs = Date.now() - createdAtMs;
       if (ageMs > 24 * 60 * 60 * 1000) {
-        return false; // Automatically filter out (hide/delete) after 24 hours
+        return false;
       }
     }
 
@@ -682,37 +681,16 @@ export function AdMediaDisplay({ ad, className, onMediaEnded }: { ad: any; class
     }
   };
 
-  // 1. YouTube Embed (Stable URL - never unmounts or resets on fullscreen/stretch)
-  if (finalSrc && (finalSrc.includes('youtube.com') || finalSrc.includes('youtu.be'))) {
-    const ytIdMatch = finalSrc.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|shorts\/|watch\?.+&v=))([^#\&\?]*)/);
-    const ytId = ytIdMatch && ytIdMatch[1];
-    if (ytId) {
-      return (
-        <div 
-          ref={containerRef} 
-          className={`relative w-full bg-slate-900/10 dark:bg-zinc-950/40 overflow-hidden flex items-center justify-center group ${getContainerClasses()}`}
-          style={getContainerStyle()}
-        >
-          <iframe 
-            ref={iframeRef}
-            className={`w-full h-full object-cover pointer-events-auto border-0 ${className || ''}`} 
-            src={`https://www.youtube.com/embed/${ytId}?autoplay=1&mute=1&rel=0&controls=1&modestbranding=1&enablejsapi=1${isVertical916 ? `&loop=1&playlist=${ytId}` : ''}`} 
-            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen" 
-            frameBorder="0" 
-            allowFullScreen
-          />
-          {/* Fullscreen / Stretch Button */}
-          <button
-            type="button"
-            onClick={toggleFullscreen}
-            className="absolute bottom-3 right-3 z-20 p-2 bg-black/60 hover:bg-black/80 text-white rounded-full transition-all duration-200 border border-white/15 shadow-md flex items-center justify-center cursor-pointer active:scale-95"
-            title="Stretch / Full Screen"
-          >
-            <Maximize2 className="w-4 h-4 text-white" />
-          </button>
-        </div>
-      );
-    }
+  // 1. Universal YouTube Player (Fast, Smooth, Zero Stutter)
+  if (finalSrc && isYouTubeUrl(finalSrc)) {
+    return (
+      <UniversalYouTubePlayer 
+        url={finalSrc} 
+        isReel={ad?.isReel || isVertical916} 
+        aspectRatio={activeAspectRatio} 
+        className={className} 
+      />
+    );
   }
 
 
@@ -2991,8 +2969,13 @@ function ReelCard({
           <div className="relative z-10 w-full h-full flex items-center justify-center bg-slate-950 p-2 sm:p-4 overflow-y-auto">
             <PdfCardViewer post={{ ...reel, mediaUrl: mediaSrc || reel?.mediaUrl }} variant="feed" />
           </div>
-        ) : (mediaSrc.includes('youtube.com') || mediaSrc.includes('youtu.be')) ? (
-          <AdMediaDisplay ad={{ ...reel, type: 'video', mediaUrl: mediaSrc, aspectRatio: reel?.aspectRatio || '9:16', isReel: true }} className="relative z-10 w-full h-full object-contain pointer-events-auto" />
+        ) : (isYouTubeUrl(mediaSrc) || isYouTubeUrl(reel?.externalLink) || isYouTubeUrl(rawVideoSrc)) ? (
+          <UniversalYouTubePlayer 
+            url={mediaSrc || reel?.externalLink || rawVideoSrc} 
+            isReel={true} 
+            aspectRatio="9:16" 
+            className="relative z-10 w-full h-full object-contain pointer-events-auto" 
+          />
         ) : isVideo && mediaSrc ? (
           <FeedVideoPlayer
             id={reel?.id ? String(reel.id) : undefined}
@@ -4291,6 +4274,16 @@ function FeedVideoPlayer({
   isMutedProp?: boolean;
   onMuteToggle?: (muted: boolean) => void;
 }) {
+  if (isYouTubeUrl(src)) {
+    return (
+      <UniversalYouTubePlayer 
+        url={src} 
+        isReel={isReel} 
+        aspectRatio={aspectRatio || (isReel ? '9:16' : undefined)} 
+        className={className} 
+      />
+    );
+  }
   const localVideoRef = React.useRef<HTMLVideoElement>(null);
   const videoRef = videoRefProp || localVideoRef;
   const audioRef = React.useRef<HTMLAudioElement>(null);
@@ -7114,28 +7107,15 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
     const cleanRealtime = filterOutHiddenContent(posts, user?.id);
     const reelGroups = new Map<string, any>();
     
-    const isReelPost = (p: any) => {
+    const isStoryPost = (p: any) => {
       if (!p) return false;
-      if (p.type === 'video' || p.type === 'reel' || p.isReel) return true;
-      if (p.hashtags && (p.hashtags.includes('#reel') || p.hashtags.includes('#story'))) return true;
-      if (p.mediaUrl && (p.mediaUrl.endsWith('.mp4') || p.mediaUrl.endsWith('.webm') || p.mediaUrl.startsWith('data:video') || p.mediaUrl.includes('video') || p.mediaUrl.includes('cloudinary'))) return true;
-      if (p.videoUrl || p.video) return true;
+      if (p.type === 'video' || p.type === 'reel' || p.type === 'story' || p.type === 'image' || p.type === 'photo' || p.isReel || p.isStory) return true;
+      if (p.hashtags && (p.hashtags.includes('#reel') || p.hashtags.includes('#story') || p.hashtags.includes('#tiles'))) return true;
+      if (p.mediaUrl || p.videoUrl || p.video || (p.images && p.images.length > 0) || p.thumbnailUrl || p.externalLink) return true;
       return false;
     };
 
-    const validReels = cleanRealtime.filter(p => {
-      if (!isReelPost(p)) return false;
-      let createdAtMs = Date.now();
-      if (p.createdAt) {
-        if (typeof p.createdAt === 'number' && p.createdAt > 1000000000) createdAtMs = p.createdAt;
-        else if (typeof p.createdAt === 'object' && p.createdAt.seconds) createdAtMs = p.createdAt.seconds * 1000;
-        else {
-          const parsed = new Date(p.createdAt).getTime();
-          if (!isNaN(parsed) && parsed > 1000000000) createdAtMs = parsed;
-        }
-      }
-      return (Date.now() - createdAtMs) <= 24 * 60 * 60 * 1000;
-    });
+    const validReels = cleanRealtime.filter(p => isStoryPost(p));
     
     validReels.forEach(reel => {
       const uId = String(reel.userId || reel.user?.id || reel.userName || 'unknown');
@@ -15935,10 +15915,11 @@ function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: nu
       const isReelVideo = (p: any) => {
         if (!p) return false;
         if (p.type === 'video' || p.type === 'reel' || p.isReel) return true;
-        const m = p.mediaUrl || p.videoUrl || p.video || '';
-        if (m.startsWith('indexeddb:') || m.startsWith('data:video') || m.startsWith('blob:')) return true;
+        const m = String(p.mediaUrl || p.videoUrl || p.video || p.externalLink || '');
+        if (isYouTubeUrl(m)) return true;
+        if (m.startsWith('indexeddb:') || m.startsWith('data:video') || m.startsWith('blob:') || m.startsWith('/uploads/') || m.startsWith('http')) return true;
         if (m.match(/\.(mp4|webm|mov|m4v|mkv|3gp)(\?.*)?$/i)) return true;
-        if (p.hashtags && p.hashtags.includes('#reel')) return true;
+        if (p.hashtags && (p.hashtags.includes('#reel') || p.hashtags.includes('#reels') || p.hashtags.includes('#video'))) return true;
         if (p.title === 'New B2B Reel' || p.content === 'Uploaded from Reels') return true;
         return false;
       };
