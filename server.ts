@@ -1466,6 +1466,12 @@ Return ONLY a valid raw JSON object (NO markdown, NO \`\`\`json backticks, NO ex
   app.delete('/api/posts/:id', (req, res) => {
     const targetId = String(req.params.id);
     
+    // Always track in deletedPostIds to permanently prevent resurrection on refresh or Firestore resync
+    if (!db.deletedPostIds) db.deletedPostIds = [];
+    if (!db.deletedPostIds.includes(targetId)) {
+      db.deletedPostIds.push(targetId);
+    }
+
     // Always attempt Firestore deletion first if configured
     if (firestoreDb) {
       deleteDoc(doc(firestoreDb, 'posts', targetId))
@@ -2757,15 +2763,42 @@ Assistant:`;
 
   // Admin: update post status
   app.put('/api/admin/posts/:id/status', (req, res) => {
-    const post = db.posts.find(p => p.id === req.params.id);
-    if (post) {
-      post.status = req.body.status;
-      if (firestoreDb) {
-        setDoc(doc(firestoreDb, 'posts', String(post.id)), { status: post.status }, { merge: true }).catch(e => console.error('Firestore post update error', e));
+    const targetId = String(req.params.id);
+    const newStatus = req.body.status || 'approved';
+    const post = db.posts.find(p => String(p.id) === targetId);
+
+    if (newStatus === 'rejected') {
+      if (!db.deletedPostIds) db.deletedPostIds = [];
+      if (!db.deletedPostIds.includes(targetId)) {
+        db.deletedPostIds.push(targetId);
       }
+      const postIndex = db.posts.findIndex(p => String(p.id) === targetId);
+      if (postIndex > -1) {
+        db.posts.splice(postIndex, 1);
+      }
+      if (firestoreDb) {
+        setDoc(doc(firestoreDb, 'posts', targetId), { status: 'rejected', pending_admin_approval: false }, { merge: true })
+          .catch(e => console.error('Firestore post update error', e));
+      }
+      saveDatabase();
+      return res.json({ success: true, status: 'rejected' });
+    }
+
+    if (post) {
+      post.status = newStatus;
+      post.pending_admin_approval = false;
+      if (firestoreDb) {
+        setDoc(doc(firestoreDb, 'posts', targetId), { status: newStatus, pending_admin_approval: false }, { merge: true })
+          .catch(e => console.error('Firestore post update error', e));
+      }
+      saveDatabase();
       res.json({ success: true, post });
     } else {
-      res.status(404).json({ error: 'Post not found' });
+      if (firestoreDb) {
+        setDoc(doc(firestoreDb, 'posts', targetId), { status: newStatus, pending_admin_approval: false }, { merge: true })
+          .catch(e => console.error('Firestore post update error', e));
+      }
+      res.json({ success: true });
     }
   });
 

@@ -51,9 +51,9 @@ const EXPLICIT_PATTERNS = [
 ];
 
 /**
- * Universal Content Moderation Function
- * Fast, lightweight check specifically for abusive text (gaali-galoch) and explicit adult nudity.
- * Freely allows all business, adverts, commerce text, characters/spokespersons, and background music.
+ * Universal Content Moderation Function - ALL POSTS DIRECTLY APPROVED
+ * Admin controls: AI guardrail blocks removed; all posts, reels, text, images, and videos
+ * are directly approved and published to the live stream immediately without pending hold.
  */
 export async function moderateContentUniversally(params: {
   title?: string;
@@ -65,54 +65,11 @@ export async function moderateContentUniversally(params: {
   userId?: string | number;
   userRole?: string;
 }): Promise<ModerationResult> {
-  const { title = '', content = '', description = '', hashtags = '', userRole, userId } = params;
-
-  // 1. Whitelist Master Admin & Super Admins
-  const isMasterAdmin = String(userId) === '1' || String(userId) === 'master_admin' || String(userId) === '5503' || userRole === 'admin';
-  if (isMasterAdmin) {
-    return { approved: true, reason: 'Approved (Admin Whitelist)' };
-  }
-
-  // 2. Check if Guardrail is toggled ON
-  const active = await isGuardrailActive();
-  if (!active) {
-    return { approved: true, reason: 'Guardrails Disabled by Administrator' };
-  }
-
-  // Only check user-provided text content (do not check media URLs or internal asset paths)
-  const combinedUserText = `${title} ${content} ${description} ${hashtags}`.trim();
-  if (!combinedUserText) {
-    return { approved: true, reason: 'Approved' };
-  }
-
-  // 3. Check for Abusive Language / Gali Galoch
-  for (const pattern of ABUSIVE_PATTERNS) {
-    if (pattern.test(combinedUserText)) {
-      return {
-        approved: false,
-        pending_admin_approval: true,
-        reason: '⛔ Gaali-Galoch / Abusive Language Blocked: Inappropriate or offensive language detected.',
-        userNotice: '⚠️ Gaali-galoch ya abusive bhasha prohibited hai. Kripya shisht bhasha ka prayog karein.',
-        category: 'abusive_language'
-      };
-    }
-  }
-
-  // 4. Check for Adult / Pornographic / Explicit Nudity Patterns
-  for (const pattern of EXPLICIT_PATTERNS) {
-    if (pattern.test(combinedUserText)) {
-      return {
-        approved: false,
-        pending_admin_approval: true,
-        reason: '⛔ Adult Content / Nudity Blocked: Explicit or pornographic content detected.',
-        userNotice: '🚫 Pornography ya nude content Vyapar Bridge par strictly prohibited hai.',
-        category: 'adult_content'
-      };
-    }
-  }
-
-  // All business advertisements, Vyapar promotions, B2B/B2C reels, music, and character presentations are 100% APPROVED!
-  return { approved: true, reason: 'Approved' };
+  return { 
+    approved: true, 
+    pending_admin_approval: false, 
+    reason: 'Approved by Universal Admin Settings' 
+  };
 }
 
 
