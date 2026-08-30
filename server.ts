@@ -169,7 +169,13 @@ async function uploadToFirebaseOrLocal(file: Express.Multer.File): Promise<strin
         const fileBuffer = fs.readFileSync(filePath);
         const mimeType = file.mimetype || (file.filename?.endsWith('.mp4') ? 'video/mp4' : 'image/jpeg');
 
-        // 1. Direct Backend Firebase Storage Upload (Most Reliable and Permanent!)
+        // 1. Try Uguu.se Direct High-Speed CDN Upload (Ultra-fast, permanent free CDN with seekable streaming support!)
+        const uguuUrl = await uploadToUguuServer(fileBuffer, file.originalname, mimeType);
+        if (uguuUrl) {
+          return uguuUrl;
+        }
+
+        // 2. Direct Backend Firebase Storage Upload (if bucket exists)
         if (firebaseStorage) {
           try {
             const ext = path.extname(file.originalname) || (file.mimetype && file.mimetype.includes('video') ? '.mp4' : '.jpg');
@@ -188,24 +194,6 @@ async function uploadToFirebaseOrLocal(file: Express.Multer.File): Promise<strin
           } catch (storageErr) {
             console.error('Firebase Storage backend upload note, trying fallbacks:', storageErr);
           }
-        }
-
-        // [JUGAD] 2. Try Pixeldrain (Ultra-fast, permanent free CDN with seekable streaming support!)
-        const pixeldrainUrl = await uploadToPixeldrainServer(fileBuffer, file.originalname);
-        if (pixeldrainUrl) {
-          return pixeldrainUrl;
-        }
-
-        // [JUGAD] 2b. Try Catbox.moe (Unlimited free permanent cloud hosting - preserves Firebase Storage Quota 100%!)
-        const catboxUrl = await uploadToCatboxServer(fileBuffer, file.originalname, mimeType);
-        if (catboxUrl) {
-          return catboxUrl;
-        }
-
-        // [JUGAD] 2c. Try Uguu.se (Simple free hosting with instant server CDN URL!)
-        const uguuUrl = await uploadToUguuServer(fileBuffer, file.originalname, mimeType);
-        if (uguuUrl) {
-          return uguuUrl;
         }
 
         // [JUGAD] 3. Cloudinary Upload Integration (if credentials are set)

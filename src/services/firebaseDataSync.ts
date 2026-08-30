@@ -255,6 +255,21 @@ export async function syncPostToFirestore(postData: any): Promise<boolean> {
   if (!postData) return false;
   try {
     const postId = postData.id ? String(postData.id) : `post_${Date.now()}`;
+
+    // 0. Store immediately in Local Storage Cache so post is ALWAYS preserved across refreshes
+    try {
+      const localStr = localStorage.getItem(LOCAL_POSTS_CACHE_KEY);
+      let localList = localStr ? JSON.parse(localStr) : [];
+      if (!Array.isArray(localList)) localList = [];
+      const existingIdx = localList.findIndex((p: any) => p && String(p.id) === String(postId));
+      const postWithId = { ...postData, id: postId };
+      if (existingIdx >= 0) {
+        localList[existingIdx] = { ...localList[existingIdx], ...postWithId };
+      } else {
+        localList.unshift(postWithId);
+      }
+      localStorage.setItem(LOCAL_POSTS_CACHE_KEY, JSON.stringify(localList.slice(0, 100)));
+    } catch (e) {}
     
     // Ensure mediaUrl is a persistent cloud/data URL or valid media path (DO NOT wipe /uploads/ or base64)
     let resolvedMediaUrl = postData.persistentMediaUrl || postData.mediaUrl || postData.fileDataUrl || postData.mediaBase64 || postData.thumbnailUrl || '';
@@ -558,6 +573,20 @@ export async function fetchPostsFromFirestore(): Promise<any[]> {
         }
       }
     } catch (e) {}
+
+    // Server fallback if local cache is still empty
+    if (postsMap.size === 0) {
+      try {
+        const resp = await fetch('/api/posts');
+        if (resp.ok) {
+          const sData = await resp.json();
+          const pList = sData?.posts || (Array.isArray(sData) ? sData : []);
+          pList.forEach((p: any) => {
+            if (p && p.id) postsMap.set(String(p.id), p);
+          });
+        }
+      } catch (serverErr) {}
+    }
   }
 
   let deletedPostsSet = new Set<string>();
@@ -734,6 +763,25 @@ export function subscribeToPostsFromFirestore(callback: (posts: any[]) => void):
       } else {
         console.warn('Firestore real-time posts subscription note:', error);
       }
+
+      // Safe immediate delivery of cached or server posts so screen is NEVER blank
+      try {
+        const localStr = localStorage.getItem(LOCAL_POSTS_CACHE_KEY);
+        if (localStr) {
+          const parsed = JSON.parse(localStr);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            callback(parsed);
+          }
+        }
+      } catch (e) {}
+
+      // Background fetch from /api/posts
+      fetch('/api/posts').then(r => r.json()).then(d => {
+        const serverPosts = d?.posts || (Array.isArray(d) ? d : []);
+        if (serverPosts && serverPosts.length > 0) {
+          callback(serverPosts);
+        }
+      }).catch(() => {});
     });
     return unsubscribe;
   } catch (err) {

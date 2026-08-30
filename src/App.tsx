@@ -8827,10 +8827,16 @@ function CreatePost({ user }: { user: any }) {
       }
     } else if (file && isVideo) {
       try {
-        saveVideoBlob(generatedId, file).catch(() => {});
+        await saveVideoBlob(generatedId, file);
+        const objUrl = URL.createObjectURL(file);
+        cacheVideoUrlInMemory(generatedId, objUrl);
+        try {
+          localStorage.setItem('vyapar_video_' + generatedId, objUrl);
+        } catch (e) {}
+
         persistentThumbnailUrl = await generateVideoThumbnail(file);
         
-        // Direct Firebase Storage Upload for Persistent Multi-device Video Streaming
+        // Direct Cloud CDN / Server upload for Persistent Multi-device Video Streaming
         try {
           const sanitizedName = (file.name || 'video.mp4').replace(/[^a-zA-Z0-9.-]/g, '_');
           const storagePath = `posts/${generatedId}_${sanitizedName}`;
@@ -8838,19 +8844,15 @@ function CreatePost({ user }: { user: any }) {
           if (storageUrl) {
             videoStreamUrl = storageUrl;
             persistentMediaUrl = storageUrl;
+            cacheVideoUrlInMemory(generatedId, storageUrl);
           }
         } catch (storageErr) {
-          console.warn('Firebase Storage upload note for post video:', storageErr);
+          console.warn('Media upload note for post video:', storageErr);
         }
 
-        if (!videoStreamUrl && file.size <= 0.5 * 1024 * 1024) {
-          try {
-            const videoBase64 = await fileToDataURL(file);
-            if (videoBase64 && videoBase64.startsWith('data:video')) {
-              videoStreamUrl = videoBase64;
-              persistentMediaUrl = videoBase64;
-            }
-          } catch (e) {}
+        if (!videoStreamUrl) {
+          videoStreamUrl = `indexeddb:${generatedId}`;
+          persistentMediaUrl = `indexeddb:${generatedId}`;
         }
       } catch (e) {
         console.warn('Video thumbnail generation note:', e);

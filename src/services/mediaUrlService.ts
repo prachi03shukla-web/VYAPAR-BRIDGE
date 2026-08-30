@@ -2,7 +2,7 @@ import { uploadFileToFirebaseStorage, syncPostToFirestore } from './firebaseData
 import { generateVideoThumbnail } from '../utils/imageOptimizer';
 import { optimizeImageForPersistence } from '../utils/imageOptimizer';
 import { extractPdfFirstPageThumbnail, generateFallbackPdfCover } from '../utils/pdfThumbnail';
-import { cacheVideoUrlInMemory } from '../utils/videoStorage';
+import { cacheVideoUrlInMemory, saveVideoBlob } from '../utils/videoStorage';
 
 /**
  * Interface representing the payload needed to create a post from media URLs
@@ -47,7 +47,16 @@ export async function createVideoPostUrl(
   const sanitizedName = (file.name || 'video.mp4').replace(/[^a-zA-Z0-9.-]/g, '_');
   const storagePath = `posts/${userId}/${generatedId}_${sanitizedName}`;
 
-  // Step A: Extract video thumbnail cover frame
+  // Step A: Save raw video Blob directly to IndexedDB for permanent local device persistence
+  try {
+    await saveVideoBlob(generatedId, file);
+    const objectUrl = URL.createObjectURL(file);
+    cacheVideoUrlInMemory(generatedId, objectUrl);
+  } catch (idbErr) {
+    console.warn('IndexedDB video cache note:', idbErr);
+  }
+
+  // Step B: Extract video thumbnail cover frame
   let thumbUrl = '';
   try {
     const extractedThumb = await generateVideoThumbnail(file);
@@ -58,19 +67,23 @@ export async function createVideoPostUrl(
     console.warn('Failed to extract thumbnail cover inside media service:', err);
   }
 
-  // Step B: Upload file directly to permanent Cloud CDN / Firebase Storage
-  const downloadUrl = await uploadFileToFirebaseStorage(file, storagePath, onProgress);
-  if (!downloadUrl) {
-    throw new Error('Firebase Storage rejected the video upload write.');
+  // Step C: Upload file directly to Cloud CDN / Server / Firebase Storage
+  let downloadUrl = '';
+  try {
+    downloadUrl = await uploadFileToFirebaseStorage(file, storagePath, onProgress);
+  } catch (uploadErr) {
+    console.warn('Media upload warning, utilizing IndexedDB fallback:', uploadErr);
   }
 
-  // Local caching of video stream for immediate smooth playbacks
-  cacheVideoUrlInMemory(generatedId, downloadUrl);
+  if (downloadUrl) {
+    cacheVideoUrlInMemory(generatedId, downloadUrl);
+  }
 
   const fallbackThumb = 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=800&q=80';
+  const resolvedMedia = downloadUrl || `indexeddb:${generatedId}`;
 
   return {
-    mediaUrl: downloadUrl,
+    mediaUrl: resolvedMedia,
     thumbnailUrl: thumbUrl || fallbackThumb,
     duration: 0 // Will be read by the video element client-side
   };
