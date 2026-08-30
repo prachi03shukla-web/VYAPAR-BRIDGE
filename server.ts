@@ -116,6 +116,30 @@ async function uploadToCatboxServer(fileBuffer: Buffer, fileName: string, mimeTy
   return null;
 }
 
+async function uploadToUguuServer(fileBuffer: Buffer, fileName: string, mimeType: string): Promise<string | null> {
+  try {
+    const formData = new FormData();
+    const blob = new Blob([fileBuffer], { type: mimeType });
+    formData.append('files[]', blob, fileName || 'upload.mp4');
+
+    const response = await fetch('https://uguu.se/upload', {
+      method: 'POST',
+      body: formData
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      if (data && data.success && data.files && data.files[0] && data.files[0].url) {
+        console.log('⚡ Uguu.se upload success:', data.files[0].url);
+        return data.files[0].url;
+      }
+    }
+  } catch (err) {
+    console.warn('Uguu upload note:', err);
+  }
+  return null;
+}
+
 async function uploadToFirebaseOrLocal(file: Express.Multer.File): Promise<string> {
   try {
     if (file && (file.filename || file.path)) {
@@ -149,6 +173,12 @@ async function uploadToFirebaseOrLocal(file: Express.Multer.File): Promise<strin
         const catboxUrl = await uploadToCatboxServer(fileBuffer, file.originalname, mimeType);
         if (catboxUrl) {
           return catboxUrl;
+        }
+
+        // [JUGAD] 2b. Try Uguu.se (Simple free hosting with instant server CDN URL!)
+        const uguuUrl = await uploadToUguuServer(fileBuffer, file.originalname, mimeType);
+        if (uguuUrl) {
+          return uguuUrl;
         }
 
         // [JUGAD] 3. Cloudinary Upload Integration (if credentials are set)

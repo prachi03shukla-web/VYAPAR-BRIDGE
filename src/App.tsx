@@ -428,6 +428,7 @@ export function AdMediaDisplay({ ad, className, onMediaEnded }: { ad: any; class
 
   const [serverAspectRatio, setServerAspectRatio] = useState<string | null>(ad?.aspectRatio || null);
   const [thumbnailAspectRatio, setThumbnailAspectRatio] = useState<string | null>(null);
+  const [detectedVideoAspectRatio, setDetectedVideoAspectRatio] = useState<string | null>(null);
   const resolvedFbUrl = '';
 
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -521,6 +522,8 @@ export function AdMediaDisplay({ ad, className, onMediaEnded }: { ad: any; class
       if (r === '16:9' || r === '16/9' || r === 'landscape') return '16:9';
     }
 
+    if (detectedVideoAspectRatio) return detectedVideoAspectRatio;
+
     if (ad?.isReel || ad?.isShort || ad?.isVertical) return '9:16';
 
     const allUrls = [
@@ -554,13 +557,13 @@ export function AdMediaDisplay({ ad, className, onMediaEnded }: { ad: any; class
     if (thumbnailAspectRatio) return thumbnailAspectRatio;
 
     return '16:9';
-  }, [ad, resolvedFbUrl, mediaSrc, serverAspectRatio, thumbnailAspectRatio]);
+  }, [ad, resolvedFbUrl, mediaSrc, serverAspectRatio, thumbnailAspectRatio, detectedVideoAspectRatio]);
 
   const isVertical916 = activeAspectRatio === '9:16';
 
   // Sizing Class Generator for Responsive Container
     const getContainerClasses = () => {
-    return 'w-full mx-auto rounded-xl overflow-hidden shadow-md bg-black';
+    return 'w-full mx-auto rounded-xl overflow-hidden shadow-sm bg-transparent';
   };
 
   const getContainerStyle = (): React.CSSProperties => {
@@ -744,7 +747,7 @@ export function AdMediaDisplay({ ad, className, onMediaEnded }: { ad: any; class
     return (
       <div 
         ref={containerRef} 
-        className={`relative w-full bg-black flex items-center justify-center overflow-hidden group border border-zinc-800/80 ${getContainerClasses()}`}
+        className={`relative w-full bg-transparent flex items-center justify-center overflow-hidden group border-0 ${getContainerClasses()}`}
         style={getContainerStyle()}
       >
         <video
@@ -764,7 +767,18 @@ export function AdMediaDisplay({ ad, className, onMediaEnded }: { ad: any; class
           onError={() => {
             setVideoError(false);
           }}
-          className={className || "w-full h-full object-contain bg-black"}
+          onLoadedMetadata={(e) => {
+            const video = e.currentTarget;
+            if (video && video.videoWidth && video.videoHeight) {
+              const r = video.videoWidth / video.videoHeight;
+              if (r < 0.75) setDetectedVideoAspectRatio('9:16');
+              else if (r <= 0.9) setDetectedVideoAspectRatio('4:5');
+              else if (r <= 1.15) setDetectedVideoAspectRatio('1:1');
+              else if (r <= 1.45) setDetectedVideoAspectRatio('4:3');
+              else setDetectedVideoAspectRatio('16:9');
+            }
+          }}
+          className={className || "w-full h-full object-contain bg-transparent rounded-xl"}
         />
 
         {/* Tap to Play / Pause Overlay for HTML5 video */}
@@ -824,7 +838,7 @@ export function AdMediaDisplay({ ad, className, onMediaEnded }: { ad: any; class
           setVideoError(true);
           if (onMediaEnded) onMediaEnded();
         }}
-        className={className || "w-full max-h-[480px] object-contain bg-black transform-gpu will-change-transform"}
+        className={className || "w-full max-h-[480px] object-contain bg-transparent transform-gpu will-change-transform"}
       />
     );
   }
@@ -7329,7 +7343,9 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
       const newPost = e.detail;
       if (newPost && newPost.id) {
         setPosts(prev => {
-          if (prev.some(p => String(p.id) === String(newPost.id))) return prev;
+          if (prev.some(p => String(p.id) === String(newPost.id))) {
+            return prev.map(p => String(p.id) === String(newPost.id) ? { ...p, ...newPost } : p);
+          }
           return [newPost, ...prev];
         });
       }
