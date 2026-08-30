@@ -1,0 +1,118 @@
+{
+  "entities": {
+    "Post": {
+      "collectionName": "posts",
+      "fields": {
+        "id": "string",
+        "userId": "string",
+        "userName": "string",
+        "userRole": "string",
+        "title": "string",
+        "content": "string",
+        "hashtags": "string",
+        "type": "string",
+        "mediaUrl": "string",
+        "images": "array",
+        "mediaUrls": "array",
+        "pdfUrl": "string",
+        "thumbnailUrl": "string",
+        "minRate": "string",
+        "maxRate": "string",
+        "unit": "string",
+        "category": "string",
+        "visibility": "string",
+        "status": "string",
+        "likesCount": "number",
+        "viewsCount": "number",
+        "sharesCount": "number",
+        "createdAt": "timestamp",
+        "user": "object"
+      }
+    },
+    "User": {
+      "collectionName": "users",
+      "fields": {
+        "id": "string",
+        "name": "string",
+        "username": "string",
+        "email": "string",
+        "phone": "string",
+        "role": "string",
+        "companyName": "string",
+        "businessName": "string",
+        "category": "string",
+        "city": "string",
+        "state": "string",
+        "isVerified": "boolean",
+        "avatarUrl": "string",
+        "upiId": "string",
+        "qrCodeUrl": "string",
+        "membershipType": "string",
+        "createdAt": "timestamp"
+      }
+    },
+    "Requirement": {
+      "collectionName": "requirements",
+      "fields": {
+        "id": "string",
+        "userId": "string",
+        "title": "string",
+        "description": "string",
+        "category": "string",
+        "quantity": "string",
+        "targetPrice": "string",
+        "contactNumber": "string",
+        "status": "string",
+        "createdAt": "timestamp"
+      }
+    },
+    "Payment": {
+      "collectionName": "payments",
+      "fields": {
+        "id": "string",
+        "userId": "string",
+        "userName": "string",
+        "userPhone": "string",
+        "plan": "string",
+        "membershipType": "string",
+        "utr": "string",
+        "amount": "number",
+        "status": "string",
+        "submittedAt": "timestamp",
+        "verifiedAt": "timestamp"
+      }
+    },
+    "AdminSettings": {
+      "collectionName": "system",
+      "fields": {
+        "upiId": "string",
+        "adminPhone": "string",
+        "adminEmail": "string",
+        "maintenanceMode": "boolean",
+        "paymentQrUrl": "string",
+        "updatedAt": "timestamp"
+      }
+    },
+    "BrandAd": {
+      "collectionName": "brandAds",
+      "fields": {
+        "id": "string",
+        "title": "string",
+        "companyName": "string",
+        "mediaUrl": "string",
+        "linkUrl": "string",
+        "isActive": "boolean",
+        "createdAt": "timestamp"
+      }
+    },
+    "Feedback": {
+      "collectionName": "feedback",
+      "fields": {
+        "userId": "string",
+        "rating": "number",
+        "comment": "string",
+        "createdAt": "timestamp"
+      }
+    }
+  }
+}
