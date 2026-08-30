@@ -20663,7 +20663,7 @@ function ProfilePage({
                     createdAtMs = Date.now() - ((i % 6) * 3.5 * 60 * 60 * 1000 + 45 * 60 * 1000);
                   }
 
-                  const isPermanentStory = story.isPermanent === true || story.postedFrom === 'profile' || story.isPermanent == 'true';
+                  const isPermanentStory = p.isPermanent === true || p.postedFrom === 'profile' || p.isPermanent == 'true';
                   const hoursRemaining = isPermanentStory ? 24 : Math.max(0.1, 24 - (Date.now() - createdAtMs) / (3600 * 1000));
                   const percentRemaining = (hoursRemaining / 24) * 100;
                   const radius = 28;
