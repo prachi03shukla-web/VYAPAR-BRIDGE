@@ -8871,7 +8871,7 @@ function CreatePost({ user }: { user: any }) {
       aiFlagReason: aiFlagReason,
       postedFrom: 'profile',
       isPermanent: true,
-      externalLink: resolvedPostLink || '',
+      externalLink: resolvedProfileLink || '',
       likesCount: 0,
       viewsCount: 1,
       createdAt: Date.now(),
@@ -19117,7 +19117,7 @@ function ProfilePage({
       aiFlagReason: aiFlagReason,
       postedFrom: 'profile',
       isPermanent: true,
-      externalLink: resolvedPostLink || '',
+      externalLink: resolvedProfileLink || '',
       likesCount: 0,
       viewsCount: 1,
       createdAt: Date.now(),
@@ -19275,7 +19275,7 @@ function ProfilePage({
           status: isPendingApproval ? 'pending' : (savedPost.status || 'approved'),
           postedFrom: 'profile',
           isPermanent: true,
-          externalLink: resolvedPostLink || '',
+          externalLink: resolvedProfileLink || '',
           pending_admin_approval: isPendingApproval,
           aiFlagReason: aiFlagReason || null
         } : {
