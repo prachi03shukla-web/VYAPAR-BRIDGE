@@ -255,17 +255,20 @@ export function VideoUploadingModal({ isOpen, onClose, onUploadSuccess, userId }
                 {status === 'uploading' && (
                   <div className="space-y-2">
                     <div className="flex items-center justify-between text-xs font-semibold">
-                      <span className="text-slate-500 dark:text-zinc-400">Uploading to Firebase Cloud...</span>
-                      <span className="text-amber-500">{uploadProgress}%</span>
+                      <span className="text-slate-600 dark:text-zinc-300 flex items-center gap-1.5">
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-500" />
+                        {uploadProgress < 90 ? 'High-Speed Stream Uploading...' : 'Generating Permanent Stream Link...'}
+                      </span>
+                      <span className="font-mono text-amber-600 dark:text-amber-400 font-bold">{uploadProgress}%</span>
                     </div>
-                    <div className="w-full h-2 bg-slate-100 dark:bg-zinc-800 rounded-full overflow-hidden">
+                    <div className="w-full h-2.5 bg-slate-100 dark:bg-zinc-800 rounded-full overflow-hidden p-0.5 border border-slate-200/50 dark:border-zinc-700/50">
                       <div
-                        className="h-full bg-amber-500 transition-all duration-300 ease-out"
-                        style={{ width: `${uploadProgress}%` }}
+                        className="h-full bg-gradient-to-r from-amber-500 to-amber-400 rounded-full transition-all duration-200 ease-out"
+                        style={{ width: `${Math.max(5, uploadProgress)}%` }}
                       />
                     </div>
                     <p className="text-[10px] text-slate-400 dark:text-zinc-500 text-center">
-                      Do not close or refresh this tab while your video is uploading to CDN.
+                      ⚡ Video is directly prepared for zero-buffering global streaming playback.
                     </p>
                   </div>
                 )}

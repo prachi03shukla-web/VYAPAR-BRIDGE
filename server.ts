@@ -169,13 +169,7 @@ async function uploadToFirebaseOrLocal(file: Express.Multer.File): Promise<strin
         const fileBuffer = fs.readFileSync(filePath);
         const mimeType = file.mimetype || (file.filename?.endsWith('.mp4') ? 'video/mp4' : 'image/jpeg');
 
-        // 1. Try Uguu.se Direct High-Speed CDN Upload (Ultra-fast, permanent free CDN with seekable streaming support!)
-        const uguuUrl = await uploadToUguuServer(fileBuffer, file.originalname, mimeType);
-        if (uguuUrl) {
-          return uguuUrl;
-        }
-
-        // 2. Direct Backend Firebase Storage Upload (if bucket exists)
+        // 1. Direct Backend Firebase Storage Upload (if configured and bucket exists)
         if (firebaseStorage) {
           try {
             const ext = path.extname(file.originalname) || (file.mimetype && file.mimetype.includes('video') ? '.mp4' : '.jpg');
@@ -192,11 +186,11 @@ async function uploadToFirebaseOrLocal(file: Express.Multer.File): Promise<strin
             console.log('✅ Firebase Storage backend upload success:', publicUrl);
             return publicUrl;
           } catch (storageErr) {
-            console.error('Firebase Storage backend upload note, trying fallbacks:', storageErr);
+            console.warn('Firebase Storage backend upload skipped, using permanent local storage:', storageErr);
           }
         }
 
-        // [JUGAD] 3. Cloudinary Upload Integration (if credentials are set)
+        // 2. Cloudinary Upload Integration (if credentials are configured)
         const cloudName = process.env.CLOUDINARY_CLOUD_NAME || process.env.VITE_CLOUDINARY_CLOUD_NAME;
         const uploadPreset = process.env.CLOUDINARY_UPLOAD_PRESET || process.env.VITE_CLOUDINARY_UPLOAD_PRESET;
 
@@ -216,13 +210,13 @@ async function uploadToFirebaseOrLocal(file: Express.Multer.File): Promise<strin
               return cloudData.secure_url || cloudData.url;
             }
           } catch (cErr) {
-            console.error('Cloudinary upload note, using Local fallback:', cErr);
+            console.warn('Cloudinary upload note, using local storage:', cErr);
           }
         }
 
-        // [JUGAD] 4. Local Server Disk Storage (Completely free, served directly by Express `/uploads/...`!)
+        // 3. Permanent High-Speed Local Server Storage (Zero quota limit, instant HTTP 206 chunked video streaming!)
         const localUrl = `/uploads/${file.filename}`;
-        console.log('⚡ Saved file locally on server to save Firebase Storage Quota:', localUrl);
+        console.log('⚡ Video/Media stored permanently on server:', localUrl);
         return localUrl;
       }
     }

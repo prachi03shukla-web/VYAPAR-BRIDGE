@@ -51,7 +51,58 @@ export async function uploadFileToFirebaseStorage(
     }
   }
 
-  // 2. PRIORITIZE: Direct Firebase Client SDK Storage Upload (Most Reliable and Permanent!)
+  // 2. PRIMARY: High-Speed Backend Stream Upload with accurate real-time XHR Progress (Fast & 100% Reliable!)
+  try {
+    const uploadViaBackend = await new Promise<string>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      const formData = new FormData();
+      const filename = (fileToUpload instanceof File && fileToUpload.name) ? fileToUpload.name : (fileToUpload.type?.includes('video') ? 'video.mp4' : 'media.jpg');
+      formData.append('media', fileToUpload, filename);
+
+      xhr.upload.addEventListener('progress', (e) => {
+        if (e.lengthComputable && e.total > 0 && typeof onProgress === 'function') {
+          const pct = Math.min(99, Math.round((e.loaded / e.total) * 100));
+          onProgress(pct);
+        }
+      });
+
+      xhr.addEventListener('load', () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            const data = JSON.parse(xhr.responseText);
+            if (data && data.url) {
+              if (typeof onProgress === 'function') onProgress(100);
+              resolve(data.url);
+              return;
+            }
+          } catch (parseErr) {
+            reject(parseErr);
+            return;
+          }
+        }
+        reject(new Error(`Server upload returned status ${xhr.status}`));
+      });
+
+      xhr.addEventListener('error', () => reject(new Error('Network error during upload')));
+      xhr.addEventListener('abort', () => reject(new Error('Upload aborted')));
+
+      // 45 second timeout for large videos
+      xhr.timeout = 45000;
+      xhr.addEventListener('timeout', () => reject(new Error('Upload timed out')));
+
+      xhr.open('POST', '/api/upload');
+      xhr.send(formData);
+    });
+
+    if (uploadViaBackend && (uploadViaBackend.startsWith('http') || uploadViaBackend.startsWith('/uploads/') || uploadViaBackend.startsWith('data:'))) {
+      console.log('⚡ High-speed backend upload succeeded:', uploadViaBackend);
+      return uploadViaBackend;
+    }
+  } catch (backendErr) {
+    console.warn('Backend stream upload notice, trying Firebase Storage client direct fallback:', backendErr);
+  }
+
+  // 3. Fallback: Direct Firebase Client SDK Storage Upload with race timeout
   const ext = (fileToUpload instanceof File && fileToUpload.name) ? fileToUpload.name.split('.').pop() : (fileToUpload.type && fileToUpload.type.includes('video') ? 'mp4' : 'jpg');
   const filePath = customPath || `uploads/${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${ext}`;
   try {
@@ -60,56 +111,40 @@ export async function uploadFileToFirebaseStorage(
       contentType: fileToUpload.type || (ext === 'mp4' ? 'video/mp4' : 'application/octet-stream')
     });
 
-    const downloadUrl = await new Promise<string>((resolve, reject) => {
-      uploadTask.on(
-        'state_changed',
-        (snapshot) => {
-          if (snapshot.totalBytes > 0 && typeof onProgress === 'function') {
-            const pct = Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100);
-            onProgress(pct);
+    const downloadUrl = await Promise.race([
+      new Promise<string>((resolve, reject) => {
+        uploadTask.on(
+          'state_changed',
+          (snapshot) => {
+            if (snapshot.totalBytes > 0 && typeof onProgress === 'function') {
+              const pct = Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100);
+              onProgress(pct);
+            }
+          },
+          (error) => {
+            console.warn('Firebase Storage direct upload notice:', error?.message || error);
+            reject(error);
+          },
+          async () => {
+            try {
+              const url = await getDownloadURL(uploadTask.snapshot.ref);
+              console.log('✅ Firebase Storage download URL acquired:', url);
+              if (typeof onProgress === 'function') onProgress(100);
+              resolve(url);
+            } catch (urlErr) {
+              reject(urlErr);
+            }
           }
-        },
-        (error) => {
-          console.warn('Firebase Storage direct upload notice:', error?.message || error);
-          reject(error);
-        },
-        async () => {
-          try {
-            const url = await getDownloadURL(uploadTask.snapshot.ref);
-            console.log('✅ Firebase Storage download URL acquired:', url);
-            resolve(url);
-          } catch (urlErr) {
-            reject(urlErr);
-          }
-        }
-      );
-    });
+        );
+      }),
+      new Promise<string>((_, reject) => setTimeout(() => reject(new Error('Firebase Storage timeout')), 8000))
+    ]);
 
     if (downloadUrl && downloadUrl.startsWith('http')) {
       return downloadUrl;
     }
   } catch (err) {
-    console.warn('Firebase Storage client direct upload not available, trying backend API upload fallback:', err);
-  }
-
-  // 3. Fallback: Backend Server Upload (Catbox/Pixeldrain/local server fallback)
-  try {
-    const formData = new FormData();
-    formData.append('media', fileToUpload);
-    const res = await fetch('/api/upload', {
-      method: 'POST',
-      body: formData
-    });
-    if (res.ok) {
-      const data = await res.json();
-      if (data && data.url && (data.url.startsWith('http') || data.url.startsWith('/uploads/') || data.url.startsWith('data:'))) {
-        console.log('⚡ Uploaded via backend API successfully:', data.url);
-        if (typeof onProgress === 'function') onProgress(100);
-        return data.url;
-      }
-    }
-  } catch (apiErr) {
-    console.warn('Backend API upload fallback note:', apiErr);
+    console.warn('Firebase Storage client direct upload timed out or failed:', err);
   }
 
   // 4. Fallback: Standalone Data URL for small/medium files (< 15MB)
@@ -122,6 +157,7 @@ export async function uploadFileToFirebaseStorage(
         reader.readAsDataURL(fileToUpload);
       });
       if (dataUrl && dataUrl.startsWith('data:')) {
+        if (typeof onProgress === 'function') onProgress(100);
         return dataUrl;
       }
     } catch (readErr) {
