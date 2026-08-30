@@ -1,0 +1,8 @@
+node_modules
+dist
+.DS_Store
+*.log
+database2.json
+database.json
+admin_settings.json
+admin_settings*.json
