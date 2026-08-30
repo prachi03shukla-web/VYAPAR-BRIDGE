@@ -339,35 +339,11 @@ export async function getMediaFromLocalDisk(key: string): Promise<string | null>
 }
 
 export function cleanFacebookUrl(rawUrl: string): string {
-  if (!rawUrl) return '';
-  let url = rawUrl.trim();
-  url = url.replace(/^https?:\/\/(?:m|web|touch|mbasic)\.facebook\.com/i, 'https://www.facebook.com');
+  return rawUrl || '';
+}
 
-  // 1. Check for any numeric ID in Reel, Share, Video, Watch, or FBID:
-  // (Facebook plugins/video.php ONLY renders watch/?v=NUMERIC_ID - converting to watch/?v= fixes 'Video unavailable')
-  const numericIdMatch = url.match(/(?:facebook\.com\/(?:reel|reels|videos|share\/r|share\/v)\/|watch\/?\?(?:.*&)?v=|(?:story_fbid|fbid)=)([0-9]+)/i);
-  if (numericIdMatch && numericIdMatch[1]) {
-    return `https://www.facebook.com/watch/?v=${numericIdMatch[1]}`;
-  }
-
-  // 2. Direct Watch URL with query param ?v=...
-  const watchMatch = url.match(/facebook\.com\/watch\/?\?(?:.*&)?v=([0-9a-zA-Z_-]+)/i);
-  if (watchMatch && watchMatch[1]) {
-    return `https://www.facebook.com/watch/?v=${watchMatch[1]}`;
-  }
-
-  // 3. Alphanumeric Reel / Share: /reel/ID or /share/r/ID
-  const shareReelMatch = url.match(/facebook\.com\/share\/r\/([0-9a-zA-Z_-]+)/i);
-  if (shareReelMatch && shareReelMatch[1]) {
-    return `https://www.facebook.com/share/r/${shareReelMatch[1]}/`;
-  }
-
-  const reelMatch = url.match(/facebook\.com\/(?:reel|reels)\/([0-9a-zA-Z_-]+)/i);
-  if (reelMatch && reelMatch[1]) {
-    return `https://www.facebook.com/watch/?v=${reelMatch[1]}`;
-  }
-
-  return url;
+export async function resolveVideoLinkForPost(rawLink: string): Promise<string> {
+  return rawLink || '';
 }
 
 export function openFacebookVideo(rawUrl: string) {
@@ -452,7 +428,7 @@ export function AdMediaDisplay({ ad, className, onMediaEnded }: { ad: any; class
 
   const [serverAspectRatio, setServerAspectRatio] = useState<string | null>(ad?.aspectRatio || null);
   const [thumbnailAspectRatio, setThumbnailAspectRatio] = useState<string | null>(null);
-  const [resolvedFbUrl, setResolvedFbUrl] = useState<string>(() => cleanFacebookUrl(ad?.mediaUrl || ''));
+  const resolvedFbUrl = '';
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -515,24 +491,7 @@ export function AdMediaDisplay({ ad, className, onMediaEnded }: { ad: any; class
     };
   }, [ad?.id, ad?.mediaUrl, ad?.localMediaKey]);
 
-  // Auto-resolve Facebook URLs
-  useEffect(() => {
-    const raw = mediaSrc || ad?.mediaUrl || ad?.externalLink || '';
-    if (!raw || (!raw.includes('facebook.com') && !raw.includes('fb.watch'))) return;
 
-    const initialClean = cleanFacebookUrl(raw);
-    setResolvedFbUrl(initialClean);
-
-    fetch(`/api/resolve-facebook-url?url=${encodeURIComponent(raw)}`)
-      .then(res => res.json())
-      .then(data => {
-        if (data?.resolvedUrl) {
-          setResolvedFbUrl(data.resolvedUrl);
-          if (data.aspectRatio) setServerAspectRatio(data.aspectRatio);
-        }
-      })
-      .catch(() => {});
-  }, [mediaSrc, ad?.mediaUrl, ad?.externalLink]);
 
   // Client-side image dimension analysis from thumbnail
   useEffect(() => {
@@ -575,8 +534,7 @@ export function AdMediaDisplay({ ad, className, onMediaEnded }: { ad: any; class
 
     for (const u of allUrls) {
       if (
-        u.includes('facebook.com') ||
-        u.includes('fb.watch') ||
+
         u.includes('/reel/') ||
         u.includes('/reels/') ||
         u.includes('/r/') ||
@@ -750,110 +708,7 @@ export function AdMediaDisplay({ ad, className, onMediaEnded }: { ad: any; class
     }
   }
 
-  // 2. Facebook Embed with Direct HD Watch & App Fallback
-  const rawMediaUrl = mediaSrc || ad?.mediaUrl || ad?.externalLink || '';
-  const isFacebook = rawMediaUrl && (rawMediaUrl.includes('facebook.com') || rawMediaUrl.includes('fb.watch'));
 
-  if (isFacebook) {
-    const activeFbUrl = resolvedFbUrl || cleanFacebookUrl(rawMediaUrl) || rawMediaUrl;
-    const encodedFbUrl = encodeURIComponent(activeFbUrl);
-    const fbEmbedUrl = `https://www.facebook.com/plugins/video.php?href=${encodedFbUrl}&show_text=0&autoplay=1&mute=1&allowfullscreen=true`;
-
-    return (
-      <div 
-        ref={containerRef} 
-        className={`relative w-full bg-slate-950 overflow-hidden flex flex-col items-center justify-center group ${getContainerClasses()}`}
-        style={getContainerStyle()}
-      >
-        <iframe
-          ref={iframeRef}
-          src={fbEmbedUrl}
-          className="w-full h-full border-0 pointer-events-auto"
-          style={{ minHeight: '100%', minWidth: '100%' }}
-          allow="autoplay; clipboard-write; encrypted-media; picture-in-picture; web-share; fullscreen"
-          allowFullScreen
-        />
-
-
-
-        {/* Stretch / Full Screen Control */}
-        <button
-          type="button"
-          onClick={toggleFullscreen}
-          className="absolute bottom-3 right-3 z-20 p-2 bg-black/60 hover:bg-black/80 text-white rounded-full transition-all duration-200 border border-white/15 shadow-md flex items-center justify-center cursor-pointer active:scale-95"
-          title="Stretch / Full Screen"
-        >
-          <Maximize2 className="w-4 h-4 text-white" />
-        </button>
-      </div>
-    );
-  }
-
-  // 2b. Instagram Embed
-  const isInstagram = rawMediaUrl && (rawMediaUrl.includes('instagram.com/p/') || rawMediaUrl.includes('instagram.com/reel/') || rawMediaUrl.includes('instagram.com/tv/'));
-  if (isInstagram) {
-    const igMatch = rawMediaUrl.match(/instagram\.com\/(?:reel|p|tv)\/([0-9a-zA-Z_-]+)/i);
-    const igCode = igMatch && igMatch[1];
-    if (igCode) {
-      return (
-        <div 
-          ref={containerRef} 
-          className={`relative w-full bg-slate-950 overflow-hidden flex flex-col items-center justify-center group ${getContainerClasses()}`}
-          style={getContainerStyle()}
-        >
-          <iframe
-            ref={iframeRef}
-            src={`https://www.instagram.com/p/${igCode}/embed/captioned/`}
-            className="w-full h-full border-0 pointer-events-auto"
-            style={{ minHeight: '100%', minWidth: '100%' }}
-            allow="autoplay; clipboard-write; encrypted-media; picture-in-picture; web-share; fullscreen"
-            allowFullScreen
-          />
-
-          <button
-            type="button"
-            onClick={toggleFullscreen}
-            className="absolute bottom-3 right-3 z-20 p-2 bg-black/60 hover:bg-black/80 text-white rounded-full transition-all duration-200 border border-white/15 shadow-md flex items-center justify-center cursor-pointer active:scale-95"
-            title="Stretch / Full Screen"
-          >
-            <Maximize2 className="w-4 h-4 text-white" />
-          </button>
-        </div>
-      );
-    }
-  }
-
-  // 2c. Vimeo Embed
-  const isVimeo = rawMediaUrl && rawMediaUrl.includes('vimeo.com');
-  if (isVimeo) {
-    const vimeoMatch = rawMediaUrl.match(/vimeo\.com\/(?:video\/)?([0-9]+)/i);
-    const vimeoId = vimeoMatch && vimeoMatch[1];
-    if (vimeoId) {
-      return (
-        <div 
-          ref={containerRef} 
-          className={`relative w-full bg-slate-950 overflow-hidden flex flex-col items-center justify-center group ${getContainerClasses()}`}
-          style={getContainerStyle()}
-        >
-          <iframe
-            ref={iframeRef}
-            src={`https://player.vimeo.com/video/${vimeoId}?autoplay=1&muted=1`}
-            className="w-full h-full border-0 pointer-events-auto"
-            allow="autoplay; fullscreen; picture-in-picture"
-            allowFullScreen
-          />
-          <button
-            type="button"
-            onClick={toggleFullscreen}
-            className="absolute bottom-3 right-3 z-20 p-2 bg-black/60 hover:bg-black/80 text-white rounded-full transition-all duration-200 border border-white/15 shadow-md flex items-center justify-center cursor-pointer active:scale-95"
-            title="Stretch / Full Screen"
-          >
-            <Maximize2 className="w-4 h-4 text-white" />
-          </button>
-        </div>
-      );
-    }
-  }
 
   // 3. Fallback when no media
   if (!finalSrc) {
@@ -2414,9 +2269,7 @@ function ReelCard({
       reel.mediaUrl.startsWith('/uploads/') ||
       reel.mediaUrl.match(/\.(mp4|webm|mov|m4v|mkv|3gp)(\?.*)?$/i) || 
       reel.mediaUrl.includes('youtube.com') || 
-      reel.mediaUrl.includes('youtu.be') || 
-      reel.mediaUrl.includes('facebook.com') || 
-      reel.mediaUrl.includes('fb.watch')
+      reel.mediaUrl.includes('youtu.be')
     ) ? reel.mediaUrl : '') || 
     reel?.video || 
     (reel?.type === 'video' || reel?.type === 'reel' || reel?.isReel ? (reel?.mediaUrl || ('indexeddb:' + reel?.id)) : '') ||
@@ -2425,9 +2278,7 @@ function ReelCard({
   
   const isEmbedVideo = Boolean(
     rawVideoSrc.includes('youtube.com') || 
-    rawVideoSrc.includes('youtu.be') || 
-    rawVideoSrc.includes('facebook.com') || 
-    rawVideoSrc.includes('fb.watch')
+    rawVideoSrc.includes('youtu.be')
   );
 
   const isPlayableVideo = !isExplicitImage && !isExplicitPdf && Boolean(
@@ -3085,7 +2936,7 @@ function ReelCard({
         )}
 
         {/* Interaction Overlay - only active when not embedded player to allow direct control */}
-        {!(mediaSrc && (mediaSrc.includes('youtube.com') || mediaSrc.includes('youtu.be') || mediaSrc.includes('facebook.com') || mediaSrc.includes('fb.watch') || mediaSrc.includes('instagram.com') || mediaSrc.includes('vimeo.com') || mediaSrc.includes('tiktok.com'))) && (
+        {!(mediaSrc && (mediaSrc.includes('youtube.com') || mediaSrc.includes('youtu.be'))) && (
           <div 
             className="absolute inset-0 z-20 cursor-pointer" 
             onClick={handleInteractionClick}
@@ -3122,7 +2973,7 @@ function ReelCard({
           <div className="relative z-10 w-full h-full flex items-center justify-center bg-slate-950 p-2 sm:p-4 overflow-y-auto">
             <PdfCardViewer post={{ ...reel, mediaUrl: mediaSrc || reel?.mediaUrl }} variant="feed" />
           </div>
-        ) : (mediaSrc.includes('youtube.com') || mediaSrc.includes('youtu.be') || mediaSrc.includes('facebook.com') || mediaSrc.includes('fb.watch') || mediaSrc.includes('instagram.com') || mediaSrc.includes('vimeo.com') || mediaSrc.includes('tiktok.com')) ? (
+        ) : (mediaSrc.includes('youtube.com') || mediaSrc.includes('youtu.be')) ? (
           <AdMediaDisplay ad={{ ...reel, type: 'video', mediaUrl: mediaSrc, aspectRatio: reel?.aspectRatio || '9:16', isReel: true }} className="relative z-10 w-full h-full object-contain pointer-events-auto" />
         ) : isVideo && mediaSrc ? (
           <FeedVideoPlayer
@@ -5104,34 +4955,16 @@ function PostItem({
     (post.externalLink && (
       post.externalLink.includes('youtube.com') ||
       post.externalLink.includes('youtu.be') ||
-      post.externalLink.includes('facebook.com') ||
-      post.externalLink.includes('fb.watch') ||
-      post.externalLink.includes('vimeo.com') ||
-      post.externalLink.includes('instagram.com') ||
-      post.externalLink.includes('dailymotion.com') ||
-      post.externalLink.includes('tiktok.com') ||
       /\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(post.externalLink)
     )) ||
     (post.mediaUrl && (
       post.mediaUrl.includes('youtube.com') ||
       post.mediaUrl.includes('youtu.be') ||
-      post.mediaUrl.includes('facebook.com') ||
-      post.mediaUrl.includes('fb.watch') ||
-      post.mediaUrl.includes('vimeo.com') ||
-      post.mediaUrl.includes('instagram.com') ||
-      post.mediaUrl.includes('dailymotion.com') ||
-      post.mediaUrl.includes('tiktok.com') ||
       /\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(post.mediaUrl)
     )) ||
     (post.videoUrl && (
       post.videoUrl.includes('youtube.com') ||
       post.videoUrl.includes('youtu.be') ||
-      post.videoUrl.includes('facebook.com') ||
-      post.videoUrl.includes('fb.watch') ||
-      post.videoUrl.includes('vimeo.com') ||
-      post.videoUrl.includes('instagram.com') ||
-      post.videoUrl.includes('dailymotion.com') ||
-      post.videoUrl.includes('tiktok.com') ||
       /\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(post.videoUrl)
     ))
   );
@@ -5171,7 +5004,7 @@ function PostItem({
   
   // Determine if content is vertical video to align actions properly on desktop
   const isVerticalContent = useMemo(() => {
-    if (!isVideoPost && (!mediaSrc || (!mediaSrc.includes('facebook.com') && !mediaSrc.includes('fb.watch')))) return false;
+    if (!isVideoPost && !mediaSrc) return false;
     
     if (post?.aspectRatio) {
       const r = String(post.aspectRatio).toLowerCase();
@@ -5191,8 +5024,7 @@ function PostItem({
     
     for (const u of allUrls) {
       if (
-        u.includes('facebook.com') ||
-        u.includes('fb.watch') ||
+
         u.includes('/reel/') ||
         u.includes('/reels/') ||
         u.includes('/r/') ||
@@ -5219,7 +5051,7 @@ function PostItem({
     if (Array.isArray(post.mediaUrls) && post.mediaUrls.length > 0) {
       return post.mediaUrls.filter(Boolean);
     }
-    if (mediaSrc && !isVideoPost && !isPdfPost && post.type !== 'audio' && !mediaSrc.includes('youtube.com') && !mediaSrc.includes('youtu.be') && !mediaSrc.includes('facebook.com') && !mediaSrc.includes('fb.watch') && !mediaSrc.match(/\.pdf(\?.*)?$/i) && !mediaSrc.startsWith('data:application/pdf')) {
+    if (mediaSrc && !isVideoPost && !isPdfPost && post.type !== 'audio' && !mediaSrc.includes('youtube.com') && !mediaSrc.includes('youtu.be') && !mediaSrc.match(/\.pdf(\?.*)?$/i) && !mediaSrc.startsWith('data:application/pdf')) {
       return [mediaSrc];
     }
     return [];
@@ -6264,13 +6096,7 @@ function PostItem({
             <PdfCardViewer post={{ ...post, mediaUrl: mediaSrc || post.mediaUrl || post.pdfUrl || ('indexeddb:' + post.id) }} variant="feed" />
           ) : isVideoPost || (mediaSrc && (
               mediaSrc.includes('youtube.com') || 
-              mediaSrc.includes('youtu.be') || 
-              mediaSrc.includes('facebook.com') || 
-              mediaSrc.includes('fb.watch') ||
-              mediaSrc.includes('instagram.com') ||
-              mediaSrc.includes('vimeo.com') ||
-              mediaSrc.includes('tiktok.com') ||
-              mediaSrc.includes('dailymotion.com') ||
+              mediaSrc.includes('youtu.be') ||
               /\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(mediaSrc)
             )) ? (
             <AdMediaDisplay ad={{ ...post, type: 'video', mediaUrl: mediaSrc || rawVideoUrl || post.externalLink, aspectRatio: post?.aspectRatio || (post?.isReel || isVerticalContent ? '9:16' : undefined), externalLink: post?.externalLink }} className="w-full h-full pointer-events-auto" />
@@ -8887,17 +8713,17 @@ function CreatePost({ user }: { user: any }) {
     }
 
     setIsSubmitting(true);
+    let resolvedPostLink = postExternalLink.trim();
+    if (resolvedPostLink && (resolvedPostLink.includes('facebook.com') || resolvedPostLink.includes('fb.watch'))) {
+      toast.error('ℹ️ Facebook video links are blocked by Facebook security. Please use YouTube or direct video URLs instead.');
+      setIsSubmitting(false);
+      return;
+    }
     const isLinkVideo = Boolean(
-      postExternalLink && (
-        postExternalLink.includes('youtube.com') ||
-        postExternalLink.includes('youtu.be') ||
-        postExternalLink.includes('facebook.com') ||
-        postExternalLink.includes('fb.watch') ||
-        postExternalLink.includes('vimeo.com') ||
-        postExternalLink.includes('instagram.com') ||
-        postExternalLink.includes('dailymotion.com') ||
-        postExternalLink.includes('tiktok.com') ||
-        /\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(postExternalLink)
+      resolvedPostLink && (
+        resolvedPostLink.includes('youtube.com') ||
+        resolvedPostLink.includes('youtu.be') ||
+        /\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(resolvedPostLink)
       )
     );
     const isActualVideo = isVideo || isLinkVideo;
@@ -9007,7 +8833,7 @@ function CreatePost({ user }: { user: any }) {
     const aiFlagReason = isPendingApproval ? (moderation.reason || 'Flagged for Admin Review by AI Guardrail') : null;
 
     const resolvedMediaUrl = isActualVideo 
-      ? (videoStreamUrl || (isLinkVideo ? postExternalLink : '') || ('indexeddb:' + generatedId)) 
+      ? (videoStreamUrl || (isLinkVideo ? resolvedPostLink : '') || ('indexeddb:' + generatedId)) 
       : isPdf 
         ? ((persistentMediaUrl && !persistentMediaUrl.startsWith('blob:')) ? persistentMediaUrl : ('indexeddb:' + generatedId))
         : (persistentMediaUrl || imagePreviews[0] || filePreview || '');
@@ -9045,7 +8871,7 @@ function CreatePost({ user }: { user: any }) {
       aiFlagReason: aiFlagReason,
       postedFrom: 'profile',
       isPermanent: true,
-      externalLink: postExternalLink || '',
+      externalLink: resolvedPostLink || '',
       likesCount: 0,
       viewsCount: 1,
       createdAt: Date.now(),
@@ -9821,7 +9647,6 @@ function AdminPanel({ user }: { user: any }) {
       const pId = String(id);
       try { await deletePostFromFirestore(pId); } catch (e) {}
       try { await fetch(`/api/posts/${pId}`, { method: 'DELETE' }); } catch (e) {}
-      try { await setDoc(doc(firestoreDb, 'posts', pId), { status: 'rejected', pending_admin_approval: false }, { merge: true }); } catch (e) {}
     }
 
     toast.success(`💥 ${idsToProcess.length} items permanently deleted everywhere!`);
@@ -11461,7 +11286,7 @@ function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOp
       }
       
       const newAdId = 'ad-' + Date.now();
-      const isYoutubeOrWeb = finalMediaUrl.includes('youtube.com') || finalMediaUrl.includes('youtu.be') || finalMediaUrl.includes('facebook.com');
+      const isYoutubeOrWeb = finalMediaUrl.includes('youtube.com') || finalMediaUrl.includes('youtu.be');
       const newAd = {
         id: newAdId,
         type: isYoutubeOrWeb ? 'video' : 'image',
@@ -19228,19 +19053,17 @@ function ProfilePage({
     }
 
     setIsPublishingPost(true);
+    let resolvedProfileLink = postExternalLink.trim();
+    if (resolvedProfileLink && (resolvedProfileLink.includes('facebook.com') || resolvedProfileLink.includes('fb.watch'))) {
+      toast.error('ℹ️ Facebook video links are blocked by Facebook security. Please use YouTube or direct video URLs instead.');
+      setIsPublishingPost(false);
+      return;
+    }
     const isLinkVideo = Boolean(
-      postExternalLink && (
-        postExternalLink.includes('youtube.com') ||
-        postExternalLink.includes('youtu.be') ||
-        postExternalLink.includes('facebook.com') ||
-        postExternalLink.includes('fb.watch') ||
-        postExternalLink.includes('instagram.com') ||
-        postExternalLink.includes('vimeo.com') ||
-        postExternalLink.includes('tiktok.com') ||
-        postExternalLink.includes('dailymotion.com') ||
-        /\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(postExternalLink) ||
-        postExternalLink.startsWith('http://') ||
-        postExternalLink.startsWith('https://')
+      resolvedProfileLink && (
+        resolvedProfileLink.includes('youtube.com') ||
+        resolvedProfileLink.includes('youtu.be') ||
+        /\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(resolvedProfileLink)
       )
     );
     const isVideo = postFile?.type.startsWith('video') || (postFile?.name && /\.(mp4|webm|mov|m4v)$/i.test(postFile.name)) || isLinkVideo;
@@ -19252,7 +19075,7 @@ function ProfilePage({
     const profileAuthorAvatar = currentUser?.avatarUrl || currentUser?.avatar || localStorage.getItem('vyapar_user_avatar') || BRAND_LOGO_SRC;
     const profileAuthorRole = currentUser?.role || 'factory';
 
-    const initialMedia = isLinkVideo ? postExternalLink : (postFilePreview || '');
+    const initialMedia = isLinkVideo ? resolvedProfileLink : (postFilePreview || '');
 
     // Run AI Guardrail Content Moderation
     const moderation = await moderateContentUniversally({
@@ -19294,7 +19117,7 @@ function ProfilePage({
       aiFlagReason: aiFlagReason,
       postedFrom: 'profile',
       isPermanent: true,
-      externalLink: postExternalLink || '',
+      externalLink: resolvedPostLink || '',
       likesCount: 0,
       viewsCount: 1,
       createdAt: Date.now(),
@@ -19373,8 +19196,8 @@ function ProfilePage({
         formData.append('userRole', profileAuthorRole);
         formData.append('postedFrom', 'profile');
         formData.append('isPermanent', 'true');
-        if (postExternalLink) formData.append('externalLink', postExternalLink);
-        if (isLinkVideo) formData.append('mediaUrl', postExternalLink);
+        if (resolvedProfileLink) formData.append('externalLink', resolvedProfileLink);
+        if (isLinkVideo) formData.append('mediaUrl', resolvedProfileLink);
         formData.append('userAvatar', profileAuthorAvatar);
         formData.append('type', postMediaType);
         if (postMinPrice || postMaxPrice) {
@@ -19435,7 +19258,7 @@ function ProfilePage({
           savedPost.mediaUrl.startsWith('http://') || savedPost.mediaUrl.startsWith('/uploads')
         ) && !savedPost.mediaUrl.includes('localhost');
 
-        const profileMedia = isLinkVideo ? postExternalLink : (isPersistentUrl ? savedPost.mediaUrl : (resolvedProfileMedia || initialMedia || ('indexeddb:' + generatedId)));
+        const profileMedia = isLinkVideo ? resolvedProfileLink : (isPersistentUrl ? savedPost.mediaUrl : (resolvedProfileMedia || initialMedia || ('indexeddb:' + generatedId)));
         const profileThumb = videoThumbUrl || savedPost?.thumbnailUrl || profileMedia;
 
         const finalProfilePost = savedPost ? {
@@ -19452,7 +19275,7 @@ function ProfilePage({
           status: isPendingApproval ? 'pending' : (savedPost.status || 'approved'),
           postedFrom: 'profile',
           isPermanent: true,
-          externalLink: postExternalLink || '',
+          externalLink: resolvedPostLink || '',
           pending_admin_approval: isPendingApproval,
           aiFlagReason: aiFlagReason || null
         } : {

@@ -765,13 +765,13 @@ async function startServer() {
     try {
       let cleanUrl = rawUrl.replace(/^https?:\/\/(?:m|web|touch|mbasic)\.facebook\.com/i, 'https://www.facebook.com');
       
-      // 1. Direct regex match
-      const directReelMatch = cleanUrl.match(/facebook\.com\/(?:reel|reels)\/([0-9a-zA-Z_-]+)/i);
-      const directVideosMatch = cleanUrl.match(/facebook\.com\/[^/]+\/videos\/([0-9]+)/i) || cleanUrl.match(/facebook\.com\/videos\/([0-9]+)/i);
-      const directWatchMatch = cleanUrl.match(/facebook\.com\/watch\/?\?(?:.*&)?v=([0-9a-zA-Z_-]+)/i);
+      // 1. Direct regex match (requires at least 9 digits to avoid matching short alphanumeric share tokens)
+      const directReelMatch = cleanUrl.match(/facebook\.com\/(?:reel|reels)\/(\d{9,20})(?:[/?&#]|$)/i);
+      const directVideosMatch = cleanUrl.match(/facebook\.com\/[^/]+\/videos\/(\d{9,20})(?:[/?&#]|$)/i) || cleanUrl.match(/facebook\.com\/videos\/(\d{9,20})(?:[/?&#]|$)/i);
+      const directWatchMatch = cleanUrl.match(/facebook\.com\/watch\/?\?(?:.*&)?v=(\d{9,20})(?:[/?&#]|$)/i);
       const directFbId = directReelMatch?.[1] || directVideosMatch?.[1] || directWatchMatch?.[1];
 
-      let isReelUrl = cleanUrl.includes('/reel/') || cleanUrl.includes('/share/r/') || rawUrl.includes('/reel/') || rawUrl.includes('/share/r/');
+      let isReelUrl = cleanUrl.includes('/reel/') || cleanUrl.includes('/reels/') || cleanUrl.includes('/share/r/') || rawUrl.includes('/reel/') || rawUrl.includes('/share/r/');
       let resolvedUrl = cleanUrl;
 
       if (directReelMatch && directReelMatch[1]) {
@@ -801,8 +801,8 @@ async function startServer() {
 
         if (response.ok) {
           const finalUrl = response.url || '';
-          const finalReelMatch = finalUrl.match(/facebook\.com\/(?:reel|reels)\/([0-9a-zA-Z_-]+)/i);
-          const finalWatchMatch = finalUrl.match(/facebook\.com\/watch\/?\?(?:.*&)?v=([0-9a-zA-Z_-]+)/i) || finalUrl.match(/facebook\.com\/[^/]+\/videos\/([0-9]+)/i);
+          const finalReelMatch = finalUrl.match(/facebook\.com\/(?:reel|reels)\/(\d{9,20})(?:[/?&#]|$)/i);
+          const finalWatchMatch = finalUrl.match(/facebook\.com\/watch\/?\?(?:.*&)?v=(\d{9,20})(?:[/?&#]|$)/i) || finalUrl.match(/facebook\.com\/[^/]+\/videos\/(\d{9,20})(?:[/?&#]|$)/i);
 
           if (finalReelMatch && finalReelMatch[1]) {
             resolvedUrl = `https://www.facebook.com/reel/${finalReelMatch[1]}/`;
@@ -812,18 +812,23 @@ async function startServer() {
           }
 
           const html = await response.text();
-          const vidMatch = html.match(/"video_id":"(\d+)"/) || 
-                          html.match(/"v":"(\d+)"/) || 
-                          html.match(/"fbid":"(\d+)"/) || 
-                          html.match(/"story_token":"(\d+)"/) || 
-                          html.match(/\/reel\/(\d+)\//) ||
-                          html.match(/\/videos\/(\d+)\//);
+          const vidMatch = html.match(/"video_id":"(\d{9,20})"/) || 
+                          html.match(/"v":"(\d{9,20})"/) || 
+                          html.match(/"fbid":"(\d{9,20})"/) || 
+                          html.match(/"story_token":"(\d{9,20})"/) || 
+                          html.match(/\/reel\/(\d{9,20})\//) ||
+                          html.match(/\/videos\/(\d{9,20})\//);
           const titleMatch = html.match(/"title":"([^"\n]+)"/) || html.match(/<meta\s+property=["']og:title["']\s+content=["']([^"']+)["']/i);
           const imgMatch = html.match(/<meta\s+property=["']og:image["']\s+content=["']([^"']+)["']/i) || html.match(/"thumbnailUrl":"([^"\n]+)"/);
           
-          const extractedId = vidMatch?.[1] || directFbId;
+          const extractedId = vidMatch?.[1] || finalReelMatch?.[1] || finalWatchMatch?.[1] || directFbId;
           if (extractedId) {
-            resolvedUrl = isReelUrl ? `https://www.facebook.com/reel/${extractedId}/` : `https://www.facebook.com/watch/?v=${extractedId}`;
+            if (isReelUrl || finalUrl.includes('/reel/') || html.includes('/reel/')) {
+              resolvedUrl = `https://www.facebook.com/reel/${extractedId}/`;
+              isReelUrl = true;
+            } else {
+              resolvedUrl = `https://www.facebook.com/watch/?v=${extractedId}`;
+            }
           }
 
           const canonicalMatch = html.match(/<link\s+rel=["']canonical["']\s+href=["']([^"']+)["']/i) || html.match(/<meta\s+property=["']og:url["']\s+content=["']([^"']+)["']/i);
@@ -1241,14 +1246,14 @@ Return ONLY a valid raw JSON object (NO markdown, NO \`\`\`json backticks, NO ex
       } else if (req.body.mediaUrl) {
         mediaUrl = req.body.mediaUrl;
         if (mediaUrls.length === 0) mediaUrls = [req.body.mediaUrl];
-        const isVid = String(mediaUrl).includes('youtube.com') || String(mediaUrl).includes('youtu.be') || String(mediaUrl).includes('facebook.com') || String(mediaUrl).includes('fb.watch') || /\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(String(mediaUrl));
+        const isVid = String(mediaUrl).includes('youtube.com') || String(mediaUrl).includes('youtu.be') || /\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(String(mediaUrl));
         postType = isVid ? 'video' : (requestedType || 'image');
       } else if (mediaUrls.length > 0) {
         mediaUrl = mediaUrls[0];
         postType = requestedType || 'image';
       } else if (req.body.externalLink) {
         const ext = String(req.body.externalLink);
-        const isVid = ext.includes('youtube.com') || ext.includes('youtu.be') || ext.includes('facebook.com') || ext.includes('fb.watch') || ext.includes('vimeo.com') || /\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(ext);
+        const isVid = ext.includes('youtube.com') || ext.includes('youtu.be') || ext.includes('vimeo.com') || /\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(ext);
         if (isVid || requestedType === 'video') {
           mediaUrl = ext;
           postType = 'video';
@@ -3917,34 +3922,7 @@ Sitemap: ${baseUrl}/sitemap.xml`;
     });
   }
 
-    // Background Facebook Post Canonical URL & Poster sync on boot
-  setTimeout(async () => {
-    try {
-      let modified = false;
-      for (const p of db.posts) {
-        const link = p.externalLink || p.mediaUrl;
-        if (link && (link.includes('facebook.com') || link.includes('fb.watch'))) {
-          const directMatch = link.match(/facebook\.com\/(?:reel|videos)\/([0-9]+)/i);
-          if (directMatch && directMatch[1]) {
-            const canonicalReel = `https://www.facebook.com/reel/${directMatch[1]}/`;
-            if (p.externalLink !== canonicalReel) {
-              p.externalLink = canonicalReel;
-              modified = true;
-            }
-            if (!p.mediaUrl || p.mediaUrl.includes('/share/')) {
-              p.mediaUrl = canonicalReel;
-              modified = true;
-            }
-          }
-        }
-      }
-      if (modified) {
-        saveDatabase();
-      }
-    } catch (e) {
-      console.warn('Background FB post sync notice:', e);
-    }
-  }, 3000);
+
 
 const server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);

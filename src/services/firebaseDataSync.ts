@@ -292,8 +292,6 @@ export async function syncPostToFirestore(postData: any): Promise<boolean> {
     const isLinkVideoCandidate = cleanData.externalLink && (
       cleanData.externalLink.includes('youtube.com') ||
       cleanData.externalLink.includes('youtu.be') ||
-      cleanData.externalLink.includes('facebook.com') ||
-      cleanData.externalLink.includes('fb.watch') ||
       cleanData.externalLink.includes('vimeo.com') ||
       cleanData.externalLink.includes('dailymotion.com') ||
       cleanData.externalLink.includes('tiktok.com') ||
@@ -605,12 +603,12 @@ export function subscribeToPostsFromFirestore(callback: (posts: any[]) => void):
   try {
     const postsQuery = query(collection(db, 'posts'));
 
-    const now = Date.now();
-    if (cachedPosts.length > 0 && now - lastPostsFetch < 300000) {
+    // Fast-deliver memory cache if populated to keep UI snappy
+    if (cachedPosts.length > 0) {
       setTimeout(() => callback(cachedPosts), 0);
-      return () => {};
     }
-    getDocs(postsQuery).then((snapshot) => {
+
+    const unsubscribe = onSnapshot(postsQuery, (snapshot) => {
 
       const postsMap = new Map<string, any>();
       const activeUserId = localStorage.getItem('vyapar_user_id') || '';
@@ -736,8 +734,8 @@ export function subscribeToPostsFromFirestore(callback: (posts: any[]) => void):
       } else {
         console.warn('Firestore real-time posts subscription note:', error);
       }
-    }).catch(err => console.warn(err));
-    return () => {};
+    });
+    return unsubscribe;
   } catch (err) {
     console.warn('Real-time posts listener setup note:', err);
     return () => {};
@@ -2029,6 +2027,11 @@ export async function fetchAllUsersFromFirestore(): Promise<any[]> {
 export async function deletePostFromFirestore(postId: string | number): Promise<boolean> {
   try {
     const pId = String(postId);
+
+    // Update in-memory cache immediately
+    if (Array.isArray(cachedPosts)) {
+      cachedPosts = cachedPosts.filter(p => String(p?.id || p?.postId || '') !== pId);
+    }
 
     // 1. Remove from all local caches
     const cacheKeys = [LOCAL_POSTS_CACHE_KEY, 'VyaparBridge_posts_cache', 'local_posts_cache'];
