@@ -7,13 +7,27 @@ interface StealthLockoutScreenProps {
 }
 
 export function StealthLockoutScreen({ onUnlockCheck }: StealthLockoutScreenProps) {
+  const [locked, setLocked] = useState<boolean>(() => isAppLockedOut());
   const [retrying, setRetrying] = useState(false);
+
+  React.useEffect(() => {
+    const check = () => setLocked(isAppLockedOut());
+    window.addEventListener('storage', check);
+    const timer = setInterval(check, 3000);
+    return () => {
+      window.removeEventListener('storage', check);
+      clearInterval(timer);
+    };
+  }, []);
+
+  if (!locked) return null;
 
   const handleRetry = () => {
     setRetrying(true);
     setTimeout(() => {
       setRetrying(false);
       clearLockout();
+      setLocked(false);
       if (onUnlockCheck) {
         onUnlockCheck();
       } else {
