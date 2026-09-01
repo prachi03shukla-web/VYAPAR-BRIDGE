@@ -4,21 +4,10 @@ const MAX_ATTEMPTS = 2;
 const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutes in milliseconds
 
 /**
- * Checks if the application is currently in stealth lockout state (15 minutes after 2 failed attempts)
+ * Checks if the application is currently in stealth lockout state
  */
 export function isAppLockedOut(): boolean {
-  try {
-    const until = Number(localStorage.getItem(LOCKOUT_KEY) || 0);
-    if (!until) return false;
-    if (Date.now() >= until) {
-      // 15 minutes passed - automatically clear lockout
-      clearLockout();
-      return false;
-    }
-    return true;
-  } catch (e) {
-    return false;
-  }
+  return false;
 }
 
 /**

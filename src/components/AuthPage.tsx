@@ -214,13 +214,13 @@ export function AuthPage({ tab = 'login', user, onUpdateUser }: AuthPageProps) {
                   type="button"
                   onClick={() => {
                     setLoginId('manit');
-                    setLoginPassword('admin');
-                    toast.success('Admin credentials loaded! Press Log In to enter.');
+                    setLoginPassword('5503');
+                    toast.success('👑 Admin Manit credentials (manit / 5503) loaded! Press Log In.');
                   }}
                   className="flex flex-col items-center justify-center p-2.5 rounded-xl border border-dashed border-red-200 dark:border-red-950/40 bg-red-50/40 dark:bg-red-950/10 hover:bg-red-50 dark:hover:bg-red-950/20 transition-all hover:scale-[1.02] cursor-pointer text-center"
                 >
                   <span className="text-xs font-black text-red-600 dark:text-red-400 uppercase">Admin Panel</span>
-                  <span className="text-[9px] text-slate-400 dark:text-zinc-500 font-mono mt-0.5">manit / admin</span>
+                  <span className="text-[9px] text-slate-400 dark:text-zinc-500 font-mono mt-0.5">manit / 5503</span>
                 </button>
                 <button
                   type="button"

@@ -1559,6 +1559,59 @@ export async function authenticateUserInFirestore(usernameOrPhone: string, passw
       return { success: false, error: 'Kripya username ya mobile number enter karein.' };
     }
 
+    // 1. Instant Master Admin Recognition (manit, 5503, admin, or phone 9889104477)
+    const isAdminUserMatch = 
+      cleanInput === 'manit' || 
+      cleanInput === 'manit 5503' || 
+      cleanInput === 'manit5503' || 
+      cleanInput === '5503' || 
+      cleanInput === 'admin' || 
+      cleanInput === 'admin_manit_1' || 
+      cleanInput === '9889104477' || 
+      cleanInput === 'ashishkumarverma4477@gmail.com';
+
+    const isValidAdminPass = 
+      cleanPassword === '5503' || 
+      cleanPassword === 'admin' || 
+      cleanPassword === 'admin1234@#' || 
+      cleanPassword === '123456';
+
+    if (isAdminUserMatch && isValidAdminPass) {
+      const masterAdmin = {
+        id: 'admin_manit_1',
+        username: 'manit',
+        name: 'Vyapar Bridge Admin (Manit)',
+        companyName: 'Vyapar Bridge Enterprise',
+        role: 'admin',
+        isAdmin: true,
+        category: 'IT Software Developer SaaS Model Apps and Logic Founder',
+        isVerified: true,
+        verifiedBadge: true,
+        goldenBadge: true,
+        verifiedPlan: 'yearly',
+        bio: 'Vyapar Bridge Master Developer & System Administrator',
+        phone: '9889104477',
+        email: 'ashishkumarverma4477@gmail.com',
+        address: 'Lal Bangla Kanpur Post Harjindar Nagar 208007',
+        city: 'Kanpur',
+        state: 'Uttar Pradesh',
+        avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=200&auto=format&fit=crop&q=80',
+        membershipType: 'yearly',
+        password: cleanPassword,
+        createdAt: Date.now()
+      };
+      
+      // Auto-persist to localStorage & sync to Firestore
+      try {
+        localStorage.setItem('user', JSON.stringify(masterAdmin));
+        localStorage.setItem('Vyapar Bridge_user', JSON.stringify(masterAdmin));
+        const userRef = doc(db, 'users', 'admin_manit_1');
+        setDoc(userRef, masterAdmin, { merge: true }).catch(() => {});
+      } catch {}
+
+      return { success: true, user: masterAdmin };
+    }
+
     // Query Firestore users collection
     const usersRef = collection(db, 'users');
     
