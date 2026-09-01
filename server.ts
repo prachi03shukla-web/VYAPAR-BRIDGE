@@ -1291,10 +1291,13 @@ Return ONLY a valid raw JSON object (NO markdown, NO \`\`\`json backticks, NO ex
 
         // FIX: Media Type Classification
         const isVideoMime = firstFile.mimetype.startsWith('video/') || /\.(mp4|webm|mov|m4v|avi|mkv)$/i.test(firstFile.originalname);
+        const isPdfMime = firstFile.mimetype === 'application/pdf' || /\.pdf$/i.test(firstFile.originalname);
         const hasAudioAttached = !!files?.audio?.[0] || !!req.body.audioUrl;
         
         if (isVideoMime && !hasAudioAttached) {
           postType = 'video';
+        } else if (isPdfMime) {
+          postType = 'pdf';
         } else {
           postType = 'image';
         }
@@ -1307,7 +1310,8 @@ Return ONLY a valid raw JSON object (NO markdown, NO \`\`\`json backticks, NO ex
         mediaUrl = req.body.mediaUrl;
         if (mediaUrls.length === 0) mediaUrls = [req.body.mediaUrl];
         const isVid = String(mediaUrl).includes('youtube.com') || String(mediaUrl).includes('youtu.be') || /\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(String(mediaUrl));
-        postType = isVid ? 'video' : (requestedType || 'image');
+        const isPdfUrl = String(mediaUrl).match(/\.pdf(\?.*)?$/i) || String(mediaUrl).startsWith('data:application/pdf');
+        postType = isVid ? 'video' : (isPdfUrl ? 'pdf' : (requestedType || 'image'));
       } else if (mediaUrls.length > 0) {
         mediaUrl = mediaUrls[0];
         postType = requestedType || 'image';
@@ -1344,8 +1348,8 @@ Return ONLY a valid raw JSON object (NO markdown, NO \`\`\`json backticks, NO ex
         mediaUrl: mediaUrl || thumbnailUrl || '',
         images: mediaUrls.length > 0 ? mediaUrls : (mediaUrl ? [mediaUrl] : []),
         mediaUrls: mediaUrls.length > 0 ? mediaUrls : (mediaUrl ? [mediaUrl] : []),
-        thumbnailUrl: thumbnailUrl || mediaUrl || '',
-        persistentMediaUrl: req.body.persistentMediaUrl || thumbnailUrl || mediaUrl || '',
+        thumbnailUrl: thumbnailUrl || (postType === 'pdf' ? '' : (mediaUrl || '')),
+        persistentMediaUrl: req.body.persistentMediaUrl || thumbnailUrl || (postType === 'pdf' ? '' : (mediaUrl || '')),
         visibility: visibility || 'public',
         scheduledAt: scheduledAt ? Number(scheduledAt) : null,
         status: postStatus,

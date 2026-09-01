@@ -180,6 +180,33 @@ export function mergePostSafely(existing: any, incoming: any) {
   return merged;
 }
 
+export function getTimestampMs(val: any): number {
+  if (!val) return Date.now();
+  if (typeof val === 'number') {
+    return val < 99999999999 ? val * 1000 : val;
+  }
+  if (typeof val === 'object') {
+    if (typeof val.toDate === 'function') {
+      try { return val.toDate().getTime(); } catch (e) {}
+    }
+    if (typeof val.seconds === 'number') {
+      return val.seconds * 1000 + (val.nanoseconds ? val.nanoseconds / 1000000 : 0);
+    }
+    if (val._seconds !== undefined) {
+      return val._seconds * 1000;
+    }
+  }
+  if (typeof val === 'string') {
+    const parsed = Date.parse(val);
+    if (!isNaN(parsed)) return parsed;
+    const num = Number(val);
+    if (!isNaN(num) && num > 0) {
+      return num < 99999999999 ? num * 1000 : num;
+    }
+  }
+  return Date.now();
+}
+
 export function filterOutHiddenContent(items: any[], userId?: string | number) {
   if (!Array.isArray(items)) return [];
   const { blockedUsers, notInterestedPosts } = getUserHiddenFilters(userId);
@@ -202,20 +229,17 @@ export function filterOutHiddenContent(items: any[], userId?: string | number) {
     if (itemId && notInterestedSet.has(itemId)) return false;
     if (itemUserId && blockedSet.has(itemUserId)) return false;
 
+    // Filter out completely blank posts that have no text and no media of any form
+    const hasText = Boolean((item.title || '').trim() || (item.content || '').trim());
+    const hasMedia = Boolean((item.mediaUrl || '').trim() || (item.videoUrl || '').trim() || (item.externalLink || '').trim() || (item.pdfUrl || '').trim() || (item.images && item.images.length > 0));
+    if (!hasText && !hasMedia) {
+      return false;
+    }
+
     // Ephemeral story check (only true 24-hour stories expire after 24h, regular posts and reels remain permanent)
     const isEphemeralStory = item.type === 'story' || item.isStory === true;
     if (isEphemeralStory) {
-      let createdAtMs = Date.now();
-      if (item.createdAt) {
-        if (typeof item.createdAt === 'number' && item.createdAt > 1000000000) {
-          createdAtMs = item.createdAt;
-        } else if (typeof item.createdAt === 'object' && item.createdAt.seconds) {
-          createdAtMs = item.createdAt.seconds * 1000;
-        } else {
-          const parsed = new Date(item.createdAt).getTime();
-          if (!isNaN(parsed) && parsed > 1000000000) createdAtMs = parsed;
-        }
-      }
+      const createdAtMs = getTimestampMs(item.createdAt);
       const ageMs = Date.now() - createdAtMs;
       if (ageMs > 24 * 60 * 60 * 1000) {
         return false;
@@ -371,7 +395,7 @@ export function openFacebookVideo(rawUrl: string) {
 }
 
 // Global video audio / mute manager across all feed, reels, and ad players
-let globalVideoMutedState = false;
+let globalVideoMutedState = true;
 try {
   const stored = localStorage.getItem('vyapar_global_video_muted');
   if (stored !== null) {
@@ -420,13 +444,14 @@ export function FacebookSdkLoader({ url, containerRef }: { url: string; containe
   }, [url, containerRef]);
   return null;
 }
-export function AdMediaDisplay({ ad, className, onMediaEnded }: { ad: any; className?: string; onMediaEnded?: () => void }) {
+export function AdMediaDisplay({ ad, className, onMediaEnded, autoPlay = false }: { ad: any; className?: string; onMediaEnded?: () => void; autoPlay?: boolean }) {
   const initialAdMedia = ad?.mediaUrl || ad?.externalLink || ad?.videoUrl || ad?.video || '';
   const [mediaSrc, setMediaSrc] = useState<string>(initialAdMedia);
   const [videoError, setVideoError] = useState<boolean>(false);
   const [isMuted, setIsMuted] = useState<boolean>(() => isGlobalVideoMuted());
   const [isInView, setIsInView] = useState<boolean>(true);
-  const [isPlaying, setIsPlaying] = useState<boolean>(true);
+  const [isPlaying, setIsPlaying] = useState<boolean>(() => !!autoPlay);
+  const [hasStartedPlaying, setHasStartedPlaying] = useState<boolean>(() => !!autoPlay);
   const [playAnimation, setPlayAnimation] = useState<'play' | 'pause' | null>(null);
 
   const [serverAspectRatio, setServerAspectRatio] = useState<string | null>(ad?.aspectRatio || null);
@@ -454,6 +479,7 @@ export function AdMediaDisplay({ ad, className, onMediaEnded }: { ad: any; class
     const handleGlobalPlay = (e: any) => {
       const playingId = e.detail?.id;
       if (playingId && playingId !== (ad?.id || mediaSrc)) {
+        setIsPlaying(false);
         if (videoRef.current) videoRef.current.pause();
         if (iframeRef.current?.contentWindow) {
           iframeRef.current.contentWindow.postMessage(JSON.stringify({ event: 'command', func: 'pauseVideo', args: '' }), '*');
@@ -595,15 +621,17 @@ export function AdMediaDisplay({ ad, className, onMediaEnded }: { ad: any; class
           const inView = entry.isIntersecting && entry.intersectionRatio >= 0.35;
           setIsInView(inView);
           if (inView) {
-            window.dispatchEvent(new CustomEvent('globalVideoPlay', { detail: { id: ad?.id || mediaSrc } }));
-            if (videoRef.current) {
-              videoRef.current.muted = isGlobalVideoMuted();
-              videoRef.current.play().catch(() => {});
-            }
-            if (iframeRef.current?.contentWindow) {
-              const muteCmd = isGlobalVideoMuted() ? 'mute' : 'unMute';
-              iframeRef.current.contentWindow.postMessage(JSON.stringify({ event: 'command', func: muteCmd, args: '' }), '*');
-              iframeRef.current.contentWindow.postMessage(JSON.stringify({ event: 'command', func: 'playVideo', args: '' }), '*');
+            if (autoPlay || hasStartedPlaying) {
+              window.dispatchEvent(new CustomEvent('globalVideoPlay', { detail: { id: ad?.id || mediaSrc } }));
+              if (videoRef.current) {
+                videoRef.current.muted = isGlobalVideoMuted();
+                videoRef.current.play().catch(() => {});
+              }
+              if (iframeRef.current?.contentWindow) {
+                const muteCmd = isGlobalVideoMuted() ? 'mute' : 'unMute';
+                iframeRef.current.contentWindow.postMessage(JSON.stringify({ event: 'command', func: muteCmd, args: '' }), '*');
+                iframeRef.current.contentWindow.postMessage(JSON.stringify({ event: 'command', func: 'playVideo', args: '' }), '*');
+              }
             }
           } else {
             if (videoRef.current) {
@@ -621,7 +649,7 @@ export function AdMediaDisplay({ ad, className, onMediaEnded }: { ad: any; class
     return () => {
       observer.disconnect();
     };
-  }, [ad?.id, mediaSrc]);
+  }, [ad?.id, mediaSrc, autoPlay, hasStartedPlaying]);
 
   // HTML5 auto play / pause on scroll
   useEffect(() => {
@@ -640,10 +668,14 @@ export function AdMediaDisplay({ ad, className, onMediaEnded }: { ad: any; class
     if (e) e.stopPropagation();
     const targetState = !isPlaying;
     setIsPlaying(targetState);
+    if (targetState) {
+      setHasStartedPlaying(true);
+    }
     setPlayAnimation(targetState ? 'play' : 'pause');
     setTimeout(() => setPlayAnimation(null), 600);
     if (videoRef.current) {
       if (targetState) {
+        window.dispatchEvent(new CustomEvent('globalVideoPlay', { detail: { id: ad?.id || mediaSrc } }));
         videoRef.current.play().catch(() => {});
       } else {
         videoRef.current.pause();
@@ -689,6 +721,8 @@ export function AdMediaDisplay({ ad, className, onMediaEnded }: { ad: any; class
         isReel={ad?.isReel || isVertical916} 
         aspectRatio={activeAspectRatio} 
         className={className} 
+        autoPlay={autoPlay || hasStartedPlaying}
+        muted={isMuted}
       />
     );
   }
@@ -2975,6 +3009,8 @@ function ReelCard({
             isReel={true} 
             aspectRatio="9:16" 
             className="relative z-10 w-full h-full object-contain pointer-events-auto" 
+            autoPlay={isPlaying}
+            muted={isMuted}
           />
         ) : isVideo && mediaSrc ? (
           <FeedVideoPlayer
@@ -3606,6 +3642,7 @@ function FullScreenFeedViewerModal({
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
   const [direction, setDirection] = useState<number>(0);
   const isWheeling = React.useRef(false);
+  const [progressPercent, setProgressPercent] = useState(0);
 
   useEffect(() => {
     window.dispatchEvent(new CustomEvent('vyapar_reel_viewing_active', { detail: { active: true } }));
@@ -3619,6 +3656,8 @@ function FullScreenFeedViewerModal({
     if (currentIndex < posts.length - 1) {
       setDirection(1);
       setCurrentIndex(prev => prev + 1);
+    } else {
+      onClose();
     }
   };
 
@@ -3628,6 +3667,68 @@ function FullScreenFeedViewerModal({
       setCurrentIndex(prev => prev - 1);
     }
   };
+
+  // Automated Stories Progression Timer
+  useEffect(() => {
+    setProgressPercent(0);
+    const postItem = posts[currentIndex];
+    if (!postItem) return;
+
+    const isVideo = postItem.type === 'video' || (postItem.mediaUrl && (postItem.mediaUrl.includes('indexeddb:') || postItem.mediaUrl.includes('youtube.com') || postItem.mediaUrl.includes('youtu.be') || /\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(postItem.mediaUrl)));
+
+    let timer: any;
+    let videoEl: HTMLVideoElement | null = null;
+    let onEnded: (() => void) | null = null;
+    let onTimeUpdate: (() => void) | null = null;
+
+    if (isVideo) {
+      let attempts = 0;
+      const locateVideo = () => {
+        videoEl = document.querySelector('video');
+        if (videoEl) {
+          videoEl.loop = false; // Disable video looping for automated transition
+          
+          onEnded = () => {
+            goToNext();
+          };
+          onTimeUpdate = () => {
+            if (videoEl && videoEl.duration) {
+              const pct = (videoEl.currentTime / videoEl.duration) * 100;
+              setProgressPercent(pct);
+            }
+          };
+
+          videoEl.addEventListener('ended', onEnded);
+          videoEl.addEventListener('timeupdate', onTimeUpdate);
+        } else if (attempts < 15) {
+          attempts++;
+          timer = setTimeout(locateVideo, 150);
+        }
+      };
+      locateVideo();
+    } else {
+      const duration = 5000; // 5 seconds for static media
+      const startTime = Date.now();
+      timer = setInterval(() => {
+        const elapsed = Date.now() - startTime;
+        const pct = Math.min((elapsed / duration) * 100, 100);
+        setProgressPercent(pct);
+        if (elapsed >= duration) {
+          clearInterval(timer);
+          goToNext();
+        }
+      }, 30);
+    }
+
+    return () => {
+      if (timer) clearInterval(timer);
+      if (timer) clearTimeout(timer);
+      if (videoEl) {
+        if (onEnded) videoEl.removeEventListener('ended', onEnded);
+        if (onTimeUpdate) videoEl.removeEventListener('timeupdate', onTimeUpdate);
+      }
+    };
+  }, [currentIndex]);
 
   // Keyboard Navigation
   useEffect(() => {
@@ -3689,7 +3790,56 @@ function FullScreenFeedViewerModal({
       </div>
 
       {/* Center Reel/Post Display with YouTube Shorts / Instagram Smooth Swipe Physics */}
-      <div onClick={e => e.stopPropagation()} className="relative z-10 w-full sm:max-w-[420px] h-full sm:h-[calc(100dvh-32px)] sm:max-h-[850px] aspect-auto sm:aspect-[9/16] flex items-center justify-center overflow-hidden sm:rounded-2xl border-0 sm:border border-zinc-800 shadow-2xl my-auto">
+      <div onClick={e => e.stopPropagation()} className="relative z-10 w-full sm:max-w-[420px] h-full sm:h-[calc(100dvh-32px)] sm:max-h-[850px] aspect-auto sm:aspect-[9/16] flex items-center justify-center overflow-hidden sm:rounded-2xl border-0 sm:border border-zinc-800 shadow-2xl my-auto bg-black">
+        
+        {/* PROGRESS BARS (WhatsApp/Instagram style segmented bars) */}
+        <div className="absolute top-3 left-3 right-3 sm:left-4 sm:right-4 z-40 flex items-center gap-1">
+          {posts.map((postItem, idx) => {
+            let widthPct = 0;
+            if (idx < currentIndex) widthPct = 100;
+            else if (idx === currentIndex) widthPct = progressPercent;
+            
+            return (
+              <button
+                key={postItem.id || idx}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setCurrentIndex(idx);
+                }}
+                className="flex-1 h-1.5 -my-2 py-2 cursor-pointer outline-none group"
+                title={`Go to story ${idx + 1}`}
+              >
+                <div className="h-1 rounded-full bg-white/20 overflow-hidden backdrop-blur-xs">
+                  <div 
+                    className="h-full bg-white rounded-full transition-all duration-75"
+                    style={{ width: `${widthPct}%` }}
+                  />
+                </div>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* TAP TARGETS (Left 25% for Back, Right 75% for Forward) */}
+        <div className="absolute inset-x-0 top-10 bottom-16 z-30 flex">
+          <div 
+            onClick={(e) => {
+              e.stopPropagation();
+              goToPrev();
+            }}
+            className="w-1/4 h-full cursor-pointer pointer-events-auto"
+            title="Previous Story"
+          />
+          <div 
+            onClick={(e) => {
+              e.stopPropagation();
+              goToNext();
+            }}
+            className="w-3/4 h-full cursor-pointer pointer-events-auto"
+            title="Next Story"
+          />
+        </div>
+
         <AnimatePresence mode="popLayout" custom={direction}>
           <motion.div
             key={currentPost?.id || currentIndex}
@@ -4281,6 +4431,8 @@ function FeedVideoPlayer({
         isReel={isReel} 
         aspectRatio={aspectRatio || (isReel ? '9:16' : undefined)} 
         className={className} 
+        autoPlay={autoPlay}
+        muted={isMuted}
       />
     );
   }
@@ -4499,7 +4651,9 @@ function FeedVideoPlayer({
         if (active) {
           attemptPause();
         } else if (isIntersectingRef.current && !isPausedByUserRef.current) {
-          attemptPlay();
+          if (autoPlay || (hasStartedPlaying && !isPausedByUserRef.current)) {
+            attemptPlay();
+          }
         }
       }
     };
@@ -4515,7 +4669,7 @@ function FeedVideoPlayer({
       window.removeEventListener('vyapar_reel_viewing_active', handleReelEvent);
       window.removeEventListener('pause_all_feed_videos', handlePauseAll);
     };
-  }, [isReel, attemptPlay, attemptPause]);
+  }, [isReel, attemptPlay, attemptPause, autoPlay, hasStartedPlaying]);
 
   // IntersectionObserver for Feed & Profile scrolling autoplay
   useEffect(() => {
@@ -4529,9 +4683,10 @@ function FeedVideoPlayer({
           isIntersectingRef.current = inView;
 
           if (inView) {
-            isPausedByUserRef.current = false;
-            if (isReel || !isReelActive) {
-              attemptPlay();
+            if (autoPlay || (hasStartedPlaying && !isPausedByUserRef.current)) {
+              if (isReel || !isReelActive) {
+                attemptPlay();
+              }
             }
           } else {
             attemptPause();
@@ -4545,7 +4700,7 @@ function FeedVideoPlayer({
     return () => {
       observer.disconnect();
     };
-  }, [src, isReelActive, isReel, attemptPlay, attemptPause]);
+  }, [src, isReelActive, isReel, attemptPlay, attemptPause, autoPlay, hasStartedPlaying]);
 
   // Initial load / autoplay
   useEffect(() => {
@@ -7115,7 +7270,12 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
       return false;
     };
 
-    const validReels = cleanRealtime.filter(p => isStoryPost(p));
+    const validReels = cleanRealtime.filter(p => {
+      if (!isStoryPost(p)) return false;
+      const createdAtMs = getTimestampMs(p.createdAt);
+      const ageMs = Date.now() - createdAtMs;
+      return ageMs <= 24 * 60 * 60 * 1000;
+    });
     
     validReels.forEach(reel => {
       const uId = String(reel.userId || reel.user?.id || reel.userName || 'unknown');
@@ -7933,23 +8093,66 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
   return (
     <div className="max-w-2xl lg:max-w-3xl mx-auto w-full pb-20 md:pb-0 pt-6 px-2 sm:px-4">
       {/* Top Reels/Stories Tray */}
-      <div className="flex items-center gap-3.5 sm:gap-4 overflow-x-auto pb-3.5 pt-1 mb-4 border-b border-slate-200/80 dark:border-zinc-800/80 hide-scrollbar scroll-smooth">
+      <div className="flex items-center gap-3 sm:gap-4 overflow-x-auto pb-3.5 pt-1 mb-4 border-b border-slate-200/80 dark:border-zinc-800/80 hide-scrollbar scroll-smooth">
+        
+        {/* Create Story Card (Always First, Facebook style) */}
+        <div 
+          onClick={() => reelFileInputRef.current?.click()}
+          className="w-[110px] sm:w-[130px] h-[170px] sm:h-[200px] rounded-2xl overflow-hidden bg-white dark:bg-zinc-900 border border-slate-200/60 dark:border-zinc-800/80 shadow-sm hover:shadow-md transition-all duration-200 cursor-pointer shrink-0 flex flex-col relative group select-none"
+        >
+          {/* Top 65% of card is the user's avatar as background */}
+          <div className="h-[65%] w-full bg-slate-100 dark:bg-zinc-950 overflow-hidden relative">
+            <img 
+              src={user?.avatarUrl || user?.avatar || getInitialsAvatar(user?.name || 'You')} 
+              alt="You" 
+              className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+              onError={(e) => {
+                (e.currentTarget as HTMLImageElement).src = getInitialsAvatar(user?.name || 'You');
+              }}
+            />
+            <div className="absolute inset-0 bg-black/5 group-hover:bg-black/10 transition-colors" />
+          </div>
+          {/* Bottom 35% has the + icon overlapping and the text */}
+          <div className="h-[35%] w-full flex flex-col items-center justify-end pb-2.5 px-2 relative bg-white dark:bg-zinc-900">
+            {/* Overlapping Plus Icon */}
+            <div className="absolute -top-4 bg-blue-600 dark:bg-blue-500 hover:bg-blue-700 text-white p-1.5 rounded-full border-[3px] border-white dark:border-zinc-900 shadow-md flex items-center justify-center transition-transform duration-200 group-hover:scale-110">
+              <Plus className="w-4 h-4 stroke-[3px]" />
+            </div>
+            <span className="text-[11px] font-bold text-slate-800 dark:text-zinc-200 leading-tight">Create Story</span>
+          </div>
+        </div>
+
         {/* Your Story (If you have one) */}
         {currentUserReels.length > 0 && (
           <div 
-            className="flex flex-col items-center gap-1.5 shrink-0 cursor-pointer group select-none"
             onClick={() => {
               setActiveStoryPosts(currentUserReels);
               setActiveStoryIndex(0);
             }}
+            className="w-[110px] sm:w-[130px] h-[170px] sm:h-[200px] rounded-2xl overflow-hidden bg-black shadow-sm hover:shadow-md transition-all duration-200 cursor-pointer shrink-0 relative group select-none"
           >
-            <div className="relative">
-              <div className={`p-[2.5px] rounded-full transition-all duration-200 group-hover:scale-105 ${user?.goldenBadge ? 'story-golden-gradient shadow-md shadow-amber-500/20' : 'story-rainbow-gradient shadow-md shadow-rose-500/20'}`}>
-                <div className="p-[2px] bg-white dark:bg-zinc-950 rounded-full">
+            {/* Story cover background image/thumbnail */}
+            <div className="absolute inset-0">
+              <img 
+                src={currentUserReels[0].thumbnailUrl || currentUserReels[0].mediaUrl} 
+                alt="Your story cover" 
+                className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                onError={(e) => {
+                  (e.currentTarget as HTMLImageElement).src = 'https://images.unsplash.com/photo-1560179707-f14e90ef3623?w=300&auto=format&fit=crop&q=60';
+                }}
+              />
+              {/* Soft dark overlay for text contrast */}
+              <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-black/40" />
+            </div>
+
+            {/* Profile Avatar inside the card (top-left) */}
+            <div className="absolute top-2.5 left-2.5 z-10">
+              <div className={`p-[1.5px] rounded-full ${user?.goldenBadge ? 'story-golden-gradient' : 'story-rainbow-gradient'}`}>
+                <div className="p-[1px] bg-white dark:bg-zinc-950 rounded-full">
                   <img 
                     src={user?.avatarUrl || user?.avatar || getInitialsAvatar(user?.name || 'You')} 
-                    alt="Your story" 
-                    className="w-14 h-14 sm:w-16 sm:h-16 rounded-full object-cover border border-slate-100 dark:border-zinc-800"
+                    alt="Your Avatar" 
+                    className="w-7 h-7 rounded-full object-cover border border-slate-100 dark:border-zinc-800"
                     onError={(e) => {
                       (e.currentTarget as HTMLImageElement).src = getInitialsAvatar(user?.name || 'You');
                     }}
@@ -7957,40 +8160,52 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
                 </div>
               </div>
             </div>
-            <span className="text-[11px] font-semibold text-slate-800 dark:text-zinc-200 w-16 sm:w-20 text-center truncate tracking-tight">
-              Your story
-            </span>
+
+            {/* User Name at bottom */}
+            <div className="absolute bottom-2.5 left-2.5 right-2.5 z-10">
+              <p className="text-[10px] sm:text-[11px] font-bold text-white truncate drop-shadow">Your Story</p>
+            </div>
           </div>
         )}
 
-        {/* Other Users' Reel/Story Circles */}
+        {/* Other Users' Reel/Story Cards */}
         {otherUserReelGroups.map((group) => {
           const authorAvatar = group.userAvatar || getInitialsAvatar(group.userName);
           const isGolden = Boolean(group.isGolden);
-
-          // Clean display username
-          const cleanName = group.userName ? group.userName.toLowerCase().replace(/\s+/g, '') : 'member';
+          const firstPost = group.posts[0] || {};
+          const coverUrl = firstPost.thumbnailUrl || firstPost.mediaUrl || 'https://images.unsplash.com/photo-1560179707-f14e90ef3623?w=300&auto=format&fit=crop&q=60';
 
           return (
             <div 
               key={group.userId} 
-              className="flex flex-col items-center gap-1.5 shrink-0 cursor-pointer group select-none"
               onClick={() => {
                 setActiveStoryPosts(group.posts);
                 setActiveStoryIndex(0);
               }}
+              className="w-[110px] sm:w-[130px] h-[170px] sm:h-[200px] rounded-2xl overflow-hidden bg-black shadow-sm hover:shadow-md transition-all duration-200 cursor-pointer shrink-0 relative group select-none"
             >
-              <div className="relative">
-                <div className={`p-[2.5px] rounded-full transition-all duration-200 group-hover:scale-105 ${
-                  isGolden
-                    ? 'story-golden-gradient shadow-md shadow-amber-500/20'
-                    : 'story-rainbow-gradient shadow-md shadow-rose-500/20'
-                }`}>
-                  <div className="p-[2px] bg-white dark:bg-zinc-950 rounded-full">
+              {/* Story cover background image */}
+              <div className="absolute inset-0">
+                <img 
+                  src={coverUrl} 
+                  alt={group.userName} 
+                  className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                  onError={(e) => {
+                    (e.currentTarget as HTMLImageElement).src = 'https://images.unsplash.com/photo-1560179707-f14e90ef3623?w=300&auto=format&fit=crop&q=60';
+                  }}
+                />
+                {/* Soft dark overlay for text contrast */}
+                <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-black/40" />
+              </div>
+
+              {/* Profile Avatar inside the card (top-left) */}
+              <div className="absolute top-2.5 left-2.5 z-10">
+                <div className={`p-[1.5px] rounded-full ${isGolden ? 'story-golden-gradient' : 'story-rainbow-gradient'}`}>
+                  <div className="p-[1px] bg-white dark:bg-zinc-950 rounded-full">
                     <img 
                       src={authorAvatar} 
                       alt={group.userName} 
-                      className="w-14 h-14 sm:w-16 sm:h-16 rounded-full object-cover border border-slate-100 dark:border-zinc-800"
+                      className="w-7 h-7 rounded-full object-cover border border-slate-100 dark:border-zinc-800"
                       onError={(e) => {
                         (e.currentTarget as HTMLImageElement).src = getInitialsAvatar(group.userName);
                       }}
@@ -7999,18 +8214,20 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
                 </div>
 
                 {isGolden ? (
-                  <div className="absolute -bottom-0.5 right-0 bg-amber-500 text-black rounded-full p-0.5 border-2 border-white dark:border-zinc-950 shadow" title="Golden Verified Partner">
-                    <Award className="w-2.5 h-2.5 fill-black" />
+                  <div className="absolute -bottom-1 -right-1 bg-amber-500 text-black rounded-full p-0.5 border border-white dark:border-zinc-950 shadow" title="Golden Verified Partner">
+                    <Award className="w-1.5 h-1.5 fill-black" />
                   </div>
                 ) : group.isVerified ? (
-                  <div className="absolute -bottom-0.5 right-0 bg-blue-500 text-white rounded-full p-0.5 border-2 border-white dark:border-zinc-950 shadow" title="Verified Business">
-                    <CheckCircle2 className="w-2.5 h-2.5 fill-white text-blue-500" />
+                  <div className="absolute -bottom-1 -right-1 bg-blue-500 text-white rounded-full p-0.5 border border-white dark:border-zinc-950 shadow" title="Verified Business">
+                    <CheckCircle2 className="w-1.5 h-1.5 fill-white text-blue-500" />
                   </div>
                 ) : null}
               </div>
-              <span className="text-[11px] font-medium text-slate-800 dark:text-zinc-200 w-16 sm:w-20 text-center truncate tracking-tight">
-                {cleanName}
-              </span>
+
+              {/* User Name at bottom */}
+              <div className="absolute bottom-2.5 left-2.5 right-2.5 z-10">
+                <p className="text-[10px] sm:text-[11px] font-bold text-white truncate drop-shadow">{group.userName}</p>
+              </div>
             </div>
           );
         })}
@@ -8148,6 +8365,7 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
               >
                 <AdMediaDisplay 
                   ad={activeAd} 
+                  autoPlay={true}
                   onMediaEnded={() => handleNextAd(combinedAdsList.length)}
                   className="w-full h-full max-h-full object-contain bg-black pointer-events-auto" 
                 />
@@ -9677,6 +9895,39 @@ function CreatePost({ user }: { user: any }) {
 function AdminPanel({ user }: { user: any }) {
   const [posts, setPosts] = useState<any[]>([]);
 
+  const renderAdminMediaPreview = (postItem: any) => {
+    const isVideo = postItem.type === 'video' || (postItem.mediaUrl && (postItem.mediaUrl.includes('indexeddb:') || postItem.mediaUrl.includes('youtube.com') || postItem.mediaUrl.includes('youtu.be') || /\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(postItem.mediaUrl)));
+    const isPdf = postItem.type === 'pdf' || (postItem.mediaUrl && (postItem.mediaUrl.includes('indexeddb:') && postItem.thumbnailUrl?.includes('.pdf') || /\.pdf(\?.*)?$/i.test(postItem.mediaUrl)));
+
+    if (isPdf) {
+      return (
+        <div className="w-full h-full min-h-[160px] pointer-events-auto">
+          <PdfCardViewer post={postItem} variant="feed" />
+        </div>
+      );
+    }
+    if (isVideo) {
+      return (
+        <AdMediaDisplay 
+          ad={{ ...postItem, type: 'video' }} 
+          className="w-full h-full pointer-events-auto" 
+        />
+      );
+    }
+    return (
+      <img 
+        src={postItem.mediaUrl || postItem.thumbnailUrl || 'https://images.unsplash.com/photo-1560179707-f14e90ef3623?w=500&auto=format&fit=crop&q=60'} 
+        alt="media" 
+        className="w-full h-full object-cover" 
+        loading="lazy"
+        referrerPolicy="no-referrer"
+        onError={(e) => {
+          e.currentTarget.src = 'https://images.unsplash.com/photo-1560179707-f14e90ef3623?w=500&auto=format&fit=crop&q=60';
+        }}
+      />
+    );
+  };
+
   // Star Rating live synchronizer across feeds
   useEffect(() => {
     const handleRatingSync = (e: CustomEvent) => {
@@ -10131,11 +10382,7 @@ function AdminPanel({ user }: { user: any }) {
                     </div>
 
                     <div className="my-2 aspect-video bg-black rounded-xl overflow-hidden relative border border-slate-200 dark:border-zinc-800">
-                      {p.type === 'video' || p.mediaUrl?.match(/\.(mp4|webm|mov|m4v)$/i) ? (
-                        <video src={p.mediaUrl} controls preload="metadata" playsInline muted className="w-full h-full object-contain" />
-                      ) : (
-                        <img src={p.mediaUrl || p.thumbnailUrl} alt="" className="w-full h-full object-cover" />
-                      )}
+                      {renderAdminMediaPreview(p)}
                     </div>
 
                     <h4 className="text-xs font-bold text-black dark:text-white mt-1">{p.title || 'Untitled Reel'}</h4>
@@ -10516,35 +10763,16 @@ function AdminPanel({ user }: { user: any }) {
 
           {posts.map((post, i) => (
             <div key={post.id || `post-${i}`} className={cn("bg-white dark:bg-zinc-900 rounded-2xl border p-4 shadow-sm flex flex-col md:flex-row gap-4 transition-all", selectedPostIds.includes(String(post.id)) ? "border-blue-500 dark:border-blue-500 ring-2 ring-blue-500/20" : "border-slate-200 dark:border-zinc-800")}>
-              <div className="flex items-start gap-3">
+              <div className="flex items-start gap-3 w-full md:w-auto">
                 <input
                   type="checkbox"
                   checked={selectedPostIds.includes(String(post.id))}
                   onChange={() => toggleSelectOne(post.id)}
                   className="w-4 h-4 rounded text-blue-600 focus:ring-0 cursor-pointer mt-2 shrink-0"
                 />
-                <div className="w-full md:w-48 h-48 bg-slate-100 dark:bg-zinc-950 rounded-xl overflow-hidden shrink-0 flex items-center justify-center relative group">
+                <div className="flex-1 md:flex-initial md:w-48 h-48 bg-slate-100 dark:bg-zinc-950 rounded-xl overflow-hidden flex items-center justify-center relative group">
                   {post.mediaUrl && post.mediaUrl.trim() !== '' ? (
-                    post.type === 'video' || post.mediaUrl.match(/\.(mp4|webm|mov|m4v)(\?.*)?$/i) ? (
-                      <div className="relative w-full h-full bg-zinc-900 flex items-center justify-center">
-                        {post.thumbnailUrl ? (
-                          <img 
-                            src={post.thumbnailUrl} 
-                            alt="Video thumbnail" 
-                            className="w-full h-full object-cover" 
-                            loading="lazy" 
-                            onError={(e) => {
-                              e.currentTarget.style.display = 'none';
-                            }}
-                          />
-                        ) : null}
-                        <div className="absolute inset-0 bg-black/30 flex items-center justify-center">
-                          <Film className="w-8 h-8 text-white drop-shadow-md" />
-                        </div>
-                      </div>
-                    ) : (
-                      <img src={post.mediaUrl} alt="media" className="w-full h-full object-cover" loading="lazy" />
-                    )
+                    renderAdminMediaPreview(post)
                   ) : (
                     <div className="text-slate-500 dark:text-zinc-400 text-xs font-bold">Text Post</div>
                   )}
@@ -10988,12396 +11216,513 @@ function Chat({ user, onOpenVerify, userLocation }: { user: any; onOpenVerify?: 
                 <MessageCircle className="w-12 h-12" />
               </div>
               <h3 className="text-xl font-bold text-slate-800 mb-2">Your Messages</h3>
-              <p className="text-slate-500 mb-6 text-sm max-w-xs">Connect directly with Factory owners and Dealers across India.</p>
-              <button 
-                onClick={() => navigate('/')} 
-                className="bg-[#E6C76C] text-black hover:bg-[#d6b75c] font-bold py-2.5 px-6 rounded-full flex items-center gap-2 shadow-sm transition-all active:scale-95"
-              >
-                <ArrowLeft className="w-4 h-4" />
-                Back to Main Screen
-              </button>
-            </div>
-          ) : user.role === 'customer' && !user.isVerified ? (
-            <div className="flex-1 flex flex-col">
-              <div className="h-16 border-b border-slate-200 flex items-center px-4 gap-3 bg-slate-50/50">
-                <button className="md:hidden" onClick={() => setActiveContact(null)}>
-                  <ChevronLeft className="w-6 h-6" />
-                </button>
-                <div className="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center font-bold text-black/70 relative">
-                  {(activeContact?.name || activeContact?.userName || 'U').charAt(0)}
-                  {isUserActiveOnline(activeContact) && (
-                    <span className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-emerald-500 border border-white rounded-full animate-pulse" />
-                  )}
-                </div>
-                <span className="font-semibold text-slate-900">{activeContact?.name || 'User'}</span>
-              </div>
-              
-              <div className="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-6">
-                <div className="relative">
-                  <div className="w-20 h-20 bg-amber-500/10 rounded-full flex items-center justify-center text-amber-500 border-2 border-amber-500/20 animate-pulse">
-                    <Lock className="w-10 h-10" />
-                  </div>
-                  <div className="absolute -right-2 -bottom-2 bg-blue-600 text-white p-1.5 rounded-full shadow-lg">
-                    <ShieldCheck className="w-4 h-4" />
-                  </div>
-                </div>
-                
-                <div className="space-y-2 max-w-sm">
-                  <h3 className="text-xl font-black text-slate-900">Private Chat is Locked</h3>
-                  <p className="text-sm text-slate-600">
-                    You have received a reply from <span className="font-bold text-slate-800">{activeContact?.name || 'User'}</span>, but unverified customers cannot read private messages.
-                  </p>
-                </div>
-
-                <div className="bg-slate-50 p-5 rounded-2xl border border-slate-200 w-full max-w-sm text-left">
-                  <p className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-3 flex items-center gap-2">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-500" />
-                    Verified Benefits:
-                  </p>
-                  <ul className="space-y-2.5">
-                    <li className="text-xs flex items-start gap-2 text-slate-600">
-                      <span className="text-blue-500 mt-0.5">‚Ä¢</span>
-                      <span>Unlock direct private chatting with manufacturers.</span>
-                    </li>
-                    <li className="text-xs flex items-start gap-2 text-slate-600">
-                      <span className="text-blue-500 mt-0.5">‚Ä¢</span>
-                      <span>View direct mobile numbers of all members.</span>
-                    </li>
-                    <li className="text-xs flex items-start gap-2 text-slate-600">
-                      <span className="text-blue-500 mt-0.5">‚Ä¢</span>
-                      <span>Get a "Verified" badge on your profile.</span>
-                    </li>
-                  </ul>
-                </div>
-
-                <button
-                  onClick={() => onOpenVerify?.()}
-                  className="w-full max-w-sm bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-black py-4 px-8 rounded-2xl shadow-xl shadow-blue-500/20 transition-all active:scale-95 flex items-center justify-center gap-3 cursor-pointer"
-                >
-                  <ShieldCheck className="w-6 h-6" />
-                  <span>Get Verified (‚Çπ99/mo)</span>
-                </button>
-                
-                <p className="text-[10px] text-slate-400 font-medium">
-                  Secure Payment Gateway ‚Ä¢ Instant Activation
-                </p>
-              </div>
-            </div>
-          ) : (
-            <>
-              {/* Chat Header with Real-time Presence */}
-              <div className="h-16 border-b border-slate-200 flex items-center px-4 gap-3 bg-white">
-                <button className="md:hidden p-2 -ml-2" onClick={() => setActiveContact(null)}>
-                  <ChevronLeft className="w-6 h-6" />
-                </button>
-                <div className="w-9 h-9 rounded-full bg-slate-200 flex items-center justify-center font-bold text-black/70 border border-slate-200 relative shrink-0">
-                  {activeContact?.avatarUrl ? (
-                    <img src={activeContact.avatarUrl} alt={activeContact?.name || 'User'} className="w-full h-full object-cover rounded-full" />
-                  ) : (
-                    (activeContact?.name || activeContact?.userName || 'U').charAt(0)
-                  )}
-                  {isUserActiveOnline(activeContact) && (
-                    <span className="absolute bottom-0 right-0 w-3 h-3 bg-emerald-500 border-2 border-white rounded-full shadow-[0_0_6px_rgba(16,185,129,0.9)] animate-pulse" />
-                  )}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="font-bold text-sm text-slate-900 truncate flex items-center gap-2">
-                    {activeContact?.name || 'User'}
-                    {activeContact?.isVerified && (
-                      <ShieldCheck className="w-3.5 h-3.5 text-blue-500 shrink-0" />
-                    )}
-                  </div>
-                  <div className="flex flex-col gap-0.5 mt-0.5">
-                    {/* Online Status */}
-                    {isUserActiveOnline(activeContact) ? (
-                      <div className="text-[10px] text-emerald-600 font-bold flex items-center gap-1">
-                        <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
-                        Active now
-                      </div>
-                    ) : (
-                      <div className="text-[10px] text-slate-400 font-medium">
-                        {getUserLastActiveFormatted(activeContact)}
-                      </div>
-                    )}
-                    
-                    {/* Contact Details (Address, Mobile, Email) with Privacy Checks */}
-                    <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] text-slate-500 mt-0.5">
-                      {/* Location */}
-                      {(activeContact?.city || activeContact?.address) && (!activeContact?.hideAddress || user?.isVerified) && (
-                        <div className="flex items-center gap-1">
-                          <MapPin className="w-3 h-3 text-red-500 shrink-0" />
-                          <span className="truncate max-w-[120px]">{activeContact.city || activeContact.address}</span>
-                        </div>
-                      )}
-                      
-                      {/* Phone */}
-                      {activeContact?.phone && (!activeContact?.hidePhone || user?.isVerified) && (
-                        <div className="flex items-center gap-1">
-                          <Phone className="w-3 h-3 text-emerald-500 shrink-0" />
-                          <span>{activeContact.phone}</span>
-                        </div>
-                      )}
-                      
-                      {/* Email */}
-                      {activeContact?.email && (!activeContact?.hideEmail || user?.isVerified) && (
-                        <div className="flex items-center gap-1">
-                          <Mail className="w-3 h-3 text-indigo-500 shrink-0" />
-                          <span className="truncate max-w-[120px]">{activeContact.email}</span>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-              
-              {/* Chat Messages */}
-              <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
-                {activeMessages.map(msg => {
-                  const isMine = msg.senderId === user.id;
-                  return (
-                    <div key={msg.id} className={`flex flex-col ${isMine ? 'items-end' : 'items-start'}`}>
-                      <div className="flex items-center gap-2 group/msg">
-                        {isMine && (
-                          <button onClick={() => handleDeleteMessage(msg.id)} className="opacity-0 group-hover/msg:opacity-100 text-xs text-red-500 mr-2 transition-opacity">
-                            Delete
-                          </button>
-                        )}
-                        <div className={cn(
-                          "px-4 py-2 rounded-2xl max-w-[250px] md:max-w-[400px] break-words shadow-sm",
-                          isMine ? 'bg-[#0095f6] text-white' : 'bg-slate-100 dark:bg-zinc-800 text-black dark:text-zinc-100',
-                          msg.imageUrl && "p-1 bg-transparent dark:bg-transparent shadow-none"
-                        )}>
-                          {msg.imageUrl && (
-                            <div className="relative group/img">
-                              <img 
-                                src={msg.imageUrl} 
-                                className="max-w-full rounded-xl cursor-pointer hover:opacity-90 transition-opacity" 
-                                onClick={() => window.open(msg.imageUrl, '_blank')} 
-                                alt="Shared image"
-                              />
-                              <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover/img:opacity-100 transition-opacity pointer-events-none">
-                                <div className="bg-black/40 p-2 rounded-full backdrop-blur-sm">
-                                  <Maximize2 className="w-5 h-5 text-white" />
-                                </div>
-                              </div>
-                            </div>
-                          )}
-                          {(!msg.imageUrl || (msg.text && msg.text !== '[Image]')) && (
-                            <div className={cn(msg.imageUrl && "mt-2 px-1")}>
-                              {msg.text}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                      <span className="text-[10px] text-black/60 mt-1 px-2">
-                        {new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-              
-              {/* Chat Input */}
-              <div className="p-4 border-t border-slate-200 bg-white">
-                {pendingImagePreview && (
-                  <div className="mb-3 relative inline-block">
-                    <img 
-                      src={pendingImagePreview} 
-                      className="w-20 h-20 object-cover rounded-xl border-2 border-blue-500 shadow-lg" 
-                      alt="Preview" 
-                    />
-                    <button 
-                      onClick={() => {
-                        setPendingImage(null);
-                        setPendingImagePreview('');
-                        if (chatFileInputRef.current) chatFileInputRef.current.value = '';
-                      }}
-                      className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-1 shadow-md hover:bg-red-600 transition-colors"
-                    >
-                      <X className="w-3 h-3" />
-                    </button>
-                  </div>
-                )}
-                <form 
-                  onSubmit={handleSendMessage} 
-                  onPaste={(e) => handleClipboardMediaPaste(e, (dataUrl, file) => {
-                    setPendingImagePreview(dataUrl);
-                    if (file) setPendingImage(file as File);
-                  })}
-                  className="relative flex items-center gap-2"
-                >
-                  <input
-                    type="file"
-                    ref={chatFileInputRef}
-                    onChange={handleImageSend}
-                    accept="image/*,.gif,image/gif"
-                    className="hidden"
-                  />
-                  <div className="relative flex-1 flex items-center">
-                    <button
-                      type="button"
-                      onClick={() => chatFileInputRef.current?.click()}
-                      disabled={uploadingImage}
-                      className="absolute left-3 p-1 text-slate-400 hover:text-blue-600 transition-colors z-10"
-                      title="Send Image or GIF"
-                    >
-                      {uploadingImage ? <Loader2 className="w-5 h-5 animate-spin" /> : <Camera className="w-5 h-5" />}
-                    </button>
-                    <input
-                      type="text"
-                      value={newMessage}
-                      onChange={(e) => setNewMessage(e.target.value)}
-                      placeholder="Message or paste keyboard GIF..."
-                      enterKeyHint="send"
-                      onPaste={(e) => handleClipboardMediaPaste(e, (dataUrl, file) => {
-                        setPendingImagePreview(dataUrl);
-                        if (file) setPendingImage(file as File);
-                      })}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-full pl-11 pr-14 py-2.5 focus:outline-none focus:border-blue-500/50 transition-all text-sm text-slate-900 placeholder:text-slate-400"
-                    />
-                    <button 
-                      type="submit" 
-                      disabled={!newMessage.trim() && !pendingImage}
-                      className="absolute right-4 font-bold text-blue-600 disabled:opacity-50 text-sm hover:scale-105 transition-transform cursor-pointer"
-                    >
-                      Send
-                    </button>
-                  </div>
-
-                  {/* WhatsApp Feature for Paid Members */}
-                  {(user.verifiedPlan === 'monthly' || user.verifiedPlan === 'yearly') && activeContact?.phone && (!activeContact?.hidePhone || user?.isVerified) && (
-                    <a
-                      href={`https://wa.me/${activeContact.phone.replace(/\D/g, '')}?text=Hello ${activeContact.name}, I am contacting you via Vyapar Bridge regarding your products.`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="p-2.5 bg-[#25D366] text-white rounded-full hover:bg-[#128C7E] transition-all shadow-md flex items-center justify-center shrink-0 group"
-                      title="Direct WhatsApp Chat"
-                    >
-                      <MessageCircle className="w-5 h-5 group-hover:scale-110 transition-transform" />
-                    </a>
-                  )}
-                </form>
-              </div>
-            </>
-          )}
-        </div>
-      </div></div>
-  );
-}
-
-// --- Master Developer Console Modal ---
-
-function MasterDeveloperConsoleModal({ isOpen, onClose, onLoginAsAdmin }: { isOpen: boolean; onClose: () => void; onLoginAsAdmin?: (user: any) => void }) {
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [pinInput, setPinInput] = useState('');
-  const [activeTab, setActiveTab] = useState<'verifications' | 'payment' | 'ai' | 'announcements' | 'users' | 'brandAd' | 'ratings'>('verifications');
-
-  // Platform Ratings & SEO Analytics State
-
-  // Brand Multi-Media Advertisement State (High-Speed Image Banners & External Links)
-  const [brandAdsList, setBrandAdsList] = useState<any[]>([]);
-  const [adMediaType, setAdMediaType] = useState<'image' | 'link'>('image');
-  const [adTitle, setAdTitle] = useState('');
-  const [adCompanyName, setAdCompanyName] = useState('');
-  const [adLinkUrl, setAdLinkUrl] = useState('');
-  const [adDescription, setAdDescription] = useState('');
-  const [adIsActive, setAdIsActive] = useState(true);
-  const [adImageFile, setAdImageFile] = useState<File | null>(null);
-  const [adImagePreview, setAdImagePreview] = useState<string | null>(null);
-  const [adExternalMediaUrl, setAdExternalMediaUrl] = useState('');
-  const [savingAd, setSavingAd] = useState(false);
-
-  // Pending Payments State
-  const [pendingPayments, setPendingPayments] = useState<any[]>([]);
-
-  // Payment Settings State
-  const [upiId, setUpiId] = useState('ashish660@ibl');
-  const [accountName, setAccountName] = useState('Ashish Kumar Verma');
-  const [qrCodeUrl, setQrCodeUrl] = useState('');
-  const [barcodeImageUrl, setBarcodeImageUrl] = useState('');
-  const [barcodeSecretToken, setBarcodeSecretToken] = useState('SECURE-BARCODE-VERIFY-2026-X89');
-  const [barcodeFile, setBarcodeFile] = useState<File | null>(null);
-  const [uploadingBarcode, setUploadingBarcode] = useState(false);
-  const [developerMasterPin, setDeveloperMasterPin] = useState('admin1234@#');
-  const [showLockPin, setShowLockPin] = useState(false);
-  const [showSecretPin, setShowSecretPin] = useState(false);
-  const [savingSettings, setSavingSettings] = useState(false);
-
-  // AI Logs & Status State
-  const [aiData, setAiData] = useState<any>(null);
-  const [guardrailActive, setGuardrailActive] = useState(true);
-
-  // Announcements State
-  const [announcements, setAnnouncements] = useState<any[]>([]);
-  const [newTitle, setNewTitle] = useState('');
-  const [newContent, setNewContent] = useState('');
-  const [mediaType, setMediaType] = useState<'none' | 'image' | 'video' | 'audio'>('none');
-  const [mediaUrl, setMediaUrl] = useState('');
-  const [mediaFile, setMediaFile] = useState<File | null>(null);
-  const [mediaPreview, setMediaPreview] = useState<string | null>(null);
-  const [announcementType, setAnnouncementType] = useState<'info' | 'urgent' | 'feature'>('info');
-  const [publishing, setPublishing] = useState(false);
-
-  // Users & Reports State
-  const [usersList, setUsersList] = useState<any[]>([]);
-  const [userSearchQuery, setUserSearchQuery] = useState('');
-  const [userRoleFilter, setUserRoleFilter] = useState<'all' | 'factory' | 'dealer' | 'customer' | 'admin'>('all');
-  const [isFetchingUsers, setIsFetchingUsers] = useState(false);
-  const [reportsList, setReportsList] = useState<any[]>([]);
-  const [userToDelete, setUserToDelete] = useState<any | null>(null);
-  const [deleteFromFirebaseM, setDeleteFromFirebaseM] = useState(true);
-
-  useEffect(() => {
-    if (isOpen) {
-      setIsAuthenticated(false);
-      setPinInput('');
-    }
-  }, [isOpen]);
-
-  useEffect(() => {
-    if (isAuthenticated && isOpen) {
-      fetchPendingPayments();
-      fetchSettings();
-      fetchAiLogs();
-      fetchAnnouncements();
-      fetchUsersAndReports();
-      fetchBrandAd();
-    }
-  }, [isAuthenticated, isOpen]);
-
-  const syncBrandAdsLocal = (list: any[]) => {
-    try {
-      localStorage.setItem('local_brand_ads', JSON.stringify(list));
-    } catch (e) {}
-    saveBrandAdsToFirestore(list);
-    window.dispatchEvent(new Event('brandAdsUpdated'));
-  };
-
-  const fetchBrandAd = async () => {
-    const loadId = toast.loading("Syncing latest live showcase playlist...");
-    try {
-      const data = await safeFetch('/api/admin/showcase');
-      if (data && Array.isArray(data.brandAdsList)) {
-        setBrandAdsList(data.brandAdsList);
-        syncBrandAdsLocal(data.brandAdsList);
-        toast.success("Live playlist updated successfully! üîÑ", { id: loadId });
-      } else {
-        toast.error("Failed to parse the latest showcase playlist.", { id: loadId });
-      }
-    } catch (e) {
-      console.error(e);
-      toast.error("Network sync failed. Using local cache fallback.", { id: loadId });
-    }
-  };
-
-  const handleSaveBrandAd = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSavingAd(true);
-
-    const currentTitle = adTitle;
-    const currentCompany = adCompanyName;
-    const currentLink = adLinkUrl;
-    const currentExternalUrl = adExternalMediaUrl;
-    const currentDesc = adDescription;
-    const currentIsActive = adIsActive;
-    const currentImageFile = adImageFile;
-    const currentPreview = adImagePreview;
-
-    try {
-      let finalMediaUrl = currentExternalUrl || currentPreview || '';
-      
-      // If a local image file or video was provided, optimize or upload directly
-      if (currentImageFile && !currentExternalUrl) {
-        if (currentImageFile.type.startsWith('video/')) {
-          const loadId = toast.loading('Uploading video securely...');
-          try {
-            const url = await uploadFileToFirebaseStorage(currentImageFile, `showcase_ads/${Date.now()}_${currentImageFile.name}`);
-            if (url) {
-              finalMediaUrl = url;
-              toast.success('Video uploaded!', { id: loadId });
-            }
-          } catch (uploadErr) {
-            toast.error('Video upload failed', { id: loadId });
-            setSavingAd(false);
-            return;
-          }
-        } else {
-          try {
-            const optimizedBase64 = await optimizeImageForPersistence(currentImageFile, 1280, 720, 0.85);
-            if (optimizedBase64) {
-              finalMediaUrl = optimizedBase64;
-            }
-          } catch (optErr) {
-            console.warn('Image optimization note for brand ad:', optErr);
-          }
-        }
-      }
-
-      // If still empty and preview exists, use preview
-      if (!finalMediaUrl && currentPreview) {
-        finalMediaUrl = currentPreview;
-      }
-      
-      const newAdId = 'ad-' + Date.now();
-      const isYoutubeOrWeb = finalMediaUrl.includes('youtube.com') || finalMediaUrl.includes('youtu.be');
-      const newAd = {
-        id: newAdId,
-        type: isYoutubeOrWeb ? 'video' : 'image',
-        title: currentTitle || 'Official Brand Showcase',
-        companyName: currentCompany || 'Vyapar Bridge Partner',
-        mediaUrl: finalMediaUrl,
-        linkUrl: currentLink || '',
-        description: currentDesc || '',
-        isActive: currentIsActive,
-        createdAt: Date.now()
-      };
-
-      // 1. Instant local and Firestore sync (< 1 second)
-      setBrandAdsList(prev => {
-        const updated = [newAd, ...prev];
-        syncBrandAdsLocal(updated);
-        return updated;
-      });
-
-      // Reset form state immediately
-      setAdTitle('');
-      setAdCompanyName('');
-      setAdExternalMediaUrl('');
-      setAdLinkUrl('');
-      setAdDescription('');
-      setAdImageFile(null);
-      setAdImagePreview(null);
-      setSavingAd(false);
-
-      toast.success('üéâ Brand Image Banner added to Showcase Playlist!');
-
-      // 2. Server upload (handles file or direct URL)
-      try {
-        const formData = new FormData();
-        formData.append('title', currentTitle || 'Official Brand Showcase');
-        formData.append('companyName', currentCompany || 'Vyapar Bridge Partner');
-        formData.append('linkUrl', currentLink || '');
-        formData.append('mediaUrl', finalMediaUrl);
-        formData.append('description', currentDesc || '');
-        formData.append('isActive', String(currentIsActive));
-        formData.append('type', isYoutubeOrWeb || currentImageFile?.type.startsWith('video/') ? 'video' : 'image');
-        if (currentImageFile && !currentImageFile.type.startsWith('video/')) {
-          formData.append('mediaFile', currentImageFile);
-        }
-
-        const res = await fetch('/api/admin/showcase', {
-          method: 'POST',
-          body: formData
-        });
-        const data = await res.json();
-        if (data && data.success && Array.isArray(data.brandAdsList)) {
-          setBrandAdsList(data.brandAdsList);
-          syncBrandAdsLocal(data.brandAdsList);
-          window.dispatchEvent(new CustomEvent('brandAdsUpdated'));
-        }
-      } catch (serverErr) {
-        console.warn('Server sync notice:', serverErr);
-      }
-    } catch (err) {
-      console.error('Error saving brand advertisement:', err);
-      toast.error('Failed to save brand advertisement');
-      setSavingAd(false);
-    }
-  };
-
-  const handleDeleteBrandAd = async (id: string) => {
-    try {
-      const data = await safeFetch(`/api/admin/showcase/${id}`, { method: 'DELETE' });
-      if (data && data.success) {
-        toast.success('Ad removed from showcase list');
-        setBrandAdsList(data.brandAdsList || []);
-        syncBrandAdsLocal(data.brandAdsList || []);
-      }
-    } catch (e) {
-      toast.error('Failed to delete ad');
-    }
-  };
-
-  const handleToggleBrandAd = async (id: string) => {
-    try {
-      const data = await safeFetch(`/api/admin/showcase/${id}/toggle`, { method: 'PUT' });
-      if (data && data.success) {
-        setBrandAdsList(data.brandAdsList || []);
-        syncBrandAdsLocal(data.brandAdsList || []);
-      }
-    } catch (e) {
-      toast.error('Failed to toggle ad status');
-    }
-  };
-
-  const fetchPendingPayments = async () => {
-    // 1. Try Firestore payments first (works on Vercel)
-    try {
-      const snap = await getDocs(collection(firestoreDb, 'payments'));
-      const fbPayments: any[] = [];
-      snap.forEach(d => fbPayments.push({ id: d.id, ...d.data() }));
-      if (fbPayments.length > 0) {
-        setPendingPayments(fbPayments);
-      }
-    } catch (e) {
-      console.warn('Firestore pending payments note:', e);
-    }
-
-    // 2. Also try backend API
-    try {
-      const data = await safeFetch('/api/admin/payments');
-      if (Array.isArray(data) && data.length > 0) {
-        setPendingPayments(data);
-      }
-    } catch (e) {
-      console.warn('Payments fetch note:', e);
-    }
-  };
-
-  const handleApprovePayment = async (payId: string) => {
-    try {
-      const paymentItem = pendingPayments.find(p => String(p.id) === String(payId));
-      if (paymentItem && paymentItem.userId) {
-        try {
-          const isGolden = paymentItem.plan === 'yearly' || paymentItem.plan === '1_year_pro' || (paymentItem.amount && paymentItem.amount >= 1188);
-          await setDoc(doc(firestoreDb, 'payments', String(payId)), { status: 'approved', verifiedAt: Date.now() }, { merge: true });
-          await setDoc(doc(firestoreDb, 'users', String(paymentItem.userId)), { 
-            isVerified: true, 
-            verifiedBadge: true,
-            verifiedPlan: paymentItem.plan || 'monthly',
-            plan: paymentItem.plan || 'monthly',
-            subscriptionPlan: paymentItem.plan || 'monthly',
-            subscriptionAmount: paymentItem.amount || (isGolden ? 1188 : 99),
-            subscriptionActive: true,
-            goldenBadge: isGolden,
-            verifiedAt: Date.now()
-          }, { merge: true });
-        } catch (fsErr) {
-          console.warn('Firestore payment approval sync note:', fsErr);
-        }
-      }
-
-      try {
-        await fetch(`/api/admin/payments/${payId}/approve`, { method: 'POST' });
-      } catch (e) {}
-
-      toast.success('üéâ Payment Approved & Verified Badge Granted!');
-      fetchPendingPayments();
-      fetchUsersAndReports();
-    } catch (e) {
-      console.error(e);
-      toast.error('Failed to approve payment');
-    }
-  };
-
-  const handleRejectPayment = async (payId: string) => {
-    const reason = prompt('Reason for rejection / refund trigger:', 'UTR reference number not found in bank statement');
-    if (reason === null) return;
-    try {
-      const paymentItem = pendingPayments.find(p => String(p.id) === String(payId));
-      if (paymentItem && paymentItem.userId) {
-        try {
-          await setDoc(doc(firestoreDb, 'payments', String(payId)), { status: 'refund_initiated', rejectionReason: reason }, { merge: true });
-          await setDoc(doc(firestoreDb, 'users', String(paymentItem.userId)), { 
-            isVerified: false,
-            verifiedBadge: false,
-            goldenBadge: false,
-            subscriptionActive: false,
-            subscriptionPlan: null,
-            verifiedPlan: null,
-            plan: null
-          }, { merge: true });
-        } catch (fsErr) {
-          console.warn('Firestore payment reject sync note:', fsErr);
-        }
-      }
-
-      try {
-        await fetch(`/api/admin/payments/${payId}/reject`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ reason })
-        });
-      } catch (e) {}
-
-      toast('‚Ü© Payment Rejected & Auto-Refund Status Triggered');
-      fetchPendingPayments();
-      fetchUsersAndReports();
-    } catch (e) {
-      console.error(e);
-      toast.error('Failed to reject payment');
-    }
-  };
-
-  const fetchSettings = async () => {
-    // 0. Check local storage instant backup
-    const localBarcode = localStorage.getItem('vyapar_barcode_url');
-    if (localBarcode) setBarcodeImageUrl(localBarcode);
-    const localToken = localStorage.getItem('vyapar_barcode_token');
-    if (localToken) setBarcodeSecretToken(localToken);
-    const localPin = localStorage.getItem('VyaparBridge_admin_pin') || localStorage.getItem('Vyapar Bridge_custom_master_key');
-    if (localPin) setDeveloperMasterPin(localPin);
-
-    // 1. Try local Firestore settings first (works on Vercel & server)
-    try {
-      const fbSettings = await getAdminSettingsFromFirestore();
-      if (fbSettings) {
-        if (fbSettings.upiId) setUpiId(fbSettings.upiId);
-        if (fbSettings.accountName) setAccountName(fbSettings.accountName);
-        if (fbSettings.qrCodeUrl) setQrCodeUrl(fbSettings.qrCodeUrl);
-        if (fbSettings.barcodeImageUrl) setBarcodeImageUrl(fbSettings.barcodeImageUrl);
-        if (fbSettings.barcodeSecretToken) setBarcodeSecretToken(fbSettings.barcodeSecretToken);
-        if (fbSettings.developerMasterPin) {
-          const pinStr = String(fbSettings.developerMasterPin).trim();
-          setDeveloperMasterPin(pinStr);
-          localStorage.setItem('VyaparBridge_admin_pin', pinStr);
-          localStorage.setItem('Vyapar Bridge_custom_master_key', pinStr);
-        }
-        if (typeof fbSettings.aiGuardrailActive === 'boolean') setGuardrailActive(fbSettings.aiGuardrailActive);
-      }
-    } catch (e) {
-      console.warn('Firestore settings fetch note:', e);
-    }
-
-    // 2. Also try backend API if available
-    try {
-      const res = await fetch('/api/admin/settings');
-      if (res.ok) {
-        const data = await res.json();
-        if (data && data.upiId) {
-          setUpiId(data.upiId || 'ashish660@ibl');
-          setAccountName(data.accountName || 'Ashish Kumar Verma');
-          setQrCodeUrl(data.qrCodeUrl || '');
-          if (data.barcodeImageUrl) setBarcodeImageUrl(data.barcodeImageUrl);
-          if (data.barcodeSecretToken) setBarcodeSecretToken(data.barcodeSecretToken);
-          if (data.developerMasterPin) {
-            const pinStr = String(data.developerMasterPin).trim();
-            setDeveloperMasterPin(pinStr);
-            localStorage.setItem('VyaparBridge_admin_pin', pinStr);
-            localStorage.setItem('Vyapar Bridge_custom_master_key', pinStr);
-          }
-          setGuardrailActive(data.aiGuardrailActive !== false);
-        }
-      }
-    } catch (e) {
-      console.warn('Backend settings fetch note:', e);
-    }
-  };
-
-  const handleUploadBarcode = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!barcodeFile) {
-      toast.error('Please select a Barcode image file first!');
-      return;
-    }
-    setUploadingBarcode(true);
-
-    // Helper to read file as Base64 Data URL for Vercel/Cloud persistence
-    const readFileAsDataURL = (file: File): Promise<string> => {
-      return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result as string);
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
-      });
-    };
-
-    try {
-      // 0. Auto-extract UPI ID directly from the QR Code image client-side to prevent unnecessary cloud overhead
-      let resolvedUpiId = upiId;
-      let resolvedAccountName = accountName;
-      try {
-        const decodedQr = await decodeUpiIdFromImageFile(barcodeFile);
-        if (decodedQr?.upiId) {
-          resolvedUpiId = decodedQr.upiId;
-          setUpiId(decodedQr.upiId);
-          if (decodedQr.accountName && !resolvedAccountName) {
-            resolvedAccountName = decodedQr.accountName;
-            setAccountName(decodedQr.accountName);
-          }
-          toast.success(`‚ú® Auto-detected UPI ID: ${decodedQr.upiId}`);
-        }
-      } catch (decodeErr) {
-        console.warn('QR scan note:', decodeErr);
-      }
-
-      // 1. Optimize & Convert to Base64 Data URL for instant rendering & Firestore persistence
-      let base64Url = '';
-      try {
-        base64Url = await optimizeImageForPersistence(barcodeFile, 800, 0.82);
-      } catch (optErr) {
-        const reader = new FileReader();
-        base64Url = await new Promise((resolve, reject) => {
-          reader.onload = () => resolve(reader.result as string);
-          reader.onerror = reject;
-          reader.readAsDataURL(barcodeFile);
-        });
-      }
-
-      const secretToken = `SECURE-BC-${Date.now()}-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
-
-      // 2. Update Local State & Backup INSTANTLY
-      setBarcodeImageUrl(base64Url);
-      setBarcodeSecretToken(secretToken);
-      localStorage.setItem('vyapar_barcode_url', base64Url);
-      localStorage.setItem('vyapar_barcode_token', secretToken);
-
-      // 3. Dispatch global event for instant UI update across all open modals
-      window.dispatchEvent(new CustomEvent('vyapar_payment_settings_updated', {
-        detail: {
-          barcodeImageUrl: base64Url,
-          barcodeSecretToken: secretToken,
-          upiId: resolvedUpiId,
-          accountName: resolvedAccountName,
-          qrCodeUrl
-        }
-      }));
-
-      toast.success('‚ö° Payment Barcode QR Code updated instantly!');
-
-      // 4. Save directly to Firestore Cloud Database
-      await saveAdminSettingsToFirestore({
-        barcodeImageUrl: base64Url,
-        barcodeSecretToken: secretToken,
-        upiId: resolvedUpiId,
-        accountName: resolvedAccountName,
-        qrCodeUrl
-      });
-
-      // 5. Async sync with backend server if available
-      try {
-        const formData = new FormData();
-        formData.append('barcodeFile', barcodeFile);
-        fetch('/api/admin/upload-barcode', {
-          method: 'POST',
-          body: formData
-        }).catch(() => {});
-      } catch (backendErr) {}
-
-      setBarcodeFile(null);
-    } catch (err: any) {
-      console.error('Barcode upload error:', err);
-      toast.error('Failed to process barcode image file');
-    } finally {
-      setUploadingBarcode(false);
-    }
-  };
-
-  const fetchAiLogs = async () => {
-    try {
-      const data = await safeFetch('/api/admin/ai-logs');
-      if (data && data.success !== false) {
-        setAiData(data);
-        if (typeof data.guardrailActive === 'boolean') {
-          setGuardrailActive(data.guardrailActive);
-        }
-      }
-    } catch (e) {
-      console.warn('AI logs fetch note:', e);
-    }
-  };
-
-  const fetchAnnouncements = async () => {
-    try {
-      const data = await safeFetch('/api/announcements');
-      if (Array.isArray(data)) setAnnouncements(data);
-    } catch (e) {
-      console.warn('Announcements fetch note:', e);
-    }
-  };
-
-  const fetchUsersAndReports = async () => {
-    setIsFetchingUsers(true);
-    try {
-      const allUsers = await fetchAllUsersFromFirestore();
-      if (Array.isArray(allUsers) && allUsers.length > 0) {
-        setUsersList(allUsers);
-      } else {
-        // Fallback to local user
-        const localList: any[] = [];
-        try {
-          const uStr = localStorage.getItem('user') || localStorage.getItem('Vyapar Bridge_user');
-          if (uStr) {
-            const u = JSON.parse(uStr);
-            if (u && u.name) localList.push(u);
-          }
-        } catch (e) {}
-        setUsersList(localList);
-      }
-    } catch (e) {
-      console.warn('Users fetch error:', e);
-    } finally {
-      setIsFetchingUsers(false);
-    }
-
-    try {
-      const rData = await safeFetch('/api/reports');
-      if (Array.isArray(rData)) setReportsList(rData);
-    } catch (e) {
-      console.warn('Reports fetch note:', e);
-    }
-  };
-
-  const handleVerifyPin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const cleanPin = pinInput.trim();
-    if (!cleanPin) {
-      toast.error('Please enter secret key');
-      return;
-    }
-
-    // 1. Collect all valid pins (Master Defaults + Custom Saved Keys)
-    let authoritativePin = '';
-    try {
-      const fbSettings = await getAdminSettingsFromFirestore();
-      if (fbSettings && fbSettings.developerMasterPin) {
-        authoritativePin = String(fbSettings.developerMasterPin).trim();
-      }
-    } catch (e) {}
-
-    const rawValidKeys = [
-      '5503',
-      'manit',
-      'admin1234@#',
-      'admin',
-      authoritativePin,
-      developerMasterPin,
-      localStorage.getItem('VyaparBridge_admin_pin'),
-      localStorage.getItem('Vyapar Bridge_custom_master_key'),
-      localStorage.getItem('vyapar_custom_admin_pin')
-    ].filter(Boolean).map(k => String(k).trim());
-
-    const isMatch = rawValidKeys.some(k => k === cleanPin || k.toLowerCase() === cleanPin.toLowerCase());
-
-    // Direct Flex Check: Accept any master key or user-configured secret key
-    if (isMatch) {
-      const token = 'master_admin_verified_' + Date.now();
-      localStorage.setItem('Vyapar Bridge_master_token', token);
-      setIsAuthenticated(true);
-      recordSuccessfulAdminLogin();
-      toast.success('üîì Master Developer Admin Console Unlocked!');
-      fetchUsersAndReports();
-      return;
-    }
-
-    // 2. Try Backend API
-    try {
-      const res = await fetch('/api/admin/verify-pin', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pin: cleanPin })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.success) {
-          localStorage.setItem('Vyapar Bridge_master_token', data.token);
-          setIsAuthenticated(true);
-          recordSuccessfulAdminLogin();
-          toast.success('üîì Master Developer Admin Console Unlocked!');
-          fetchUsersAndReports();
-          return;
-        }
-      }
-    } catch (err) {}
-
-    const attemptRes = recordFailedAdminAttempt();
-    if (attemptRes.isLockedOutNow) {
-      setStealthLockout(15 * 60 * 1000);
-      window.dispatchEvent(new Event('Vyapar Bridge_lockout_changed'));
-      if (onClose) onClose();
-    } else {
-      toast.error(`Incorrect Secret Key / Password (${attemptRes.attemptsLeft} attempt remaining)`);
-    }
-  };
-
-  const handleSaveSettings = async () => {
-    setSavingSettings(true);
-    const pinToSave = developerMasterPin.trim();
-    const updatedSettings = {
-      upiId,
-      accountName,
-      qrCodeUrl,
-      barcodeImageUrl,
-      barcodeSecretToken,
-      developerMasterPin: pinToSave,
-      aiGuardrailActive: guardrailActive
-    };
-
-    // Save to LocalStorage immediately
-    localStorage.setItem('VyaparBridge_admin_pin', pinToSave);
-    localStorage.setItem('Vyapar Bridge_custom_master_key', pinToSave);
-
-    // Broadcast globally to all payment option views instantly
-    window.dispatchEvent(new CustomEvent('vyapar_payment_settings_updated', {
-      detail: updatedSettings
-    }));
-
-    // Save to Firestore
-    try {
-      await saveAdminSettingsToFirestore(updatedSettings);
-    } catch (fbErr) {
-      console.warn('Firestore settings save note:', fbErr);
-    }
-
-    // Save to Backend
-    try {
-      const res = await fetch('/api/admin/settings', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updatedSettings)
-      });
-      const data = await res.json();
-      if (data && data.success) {
-        toast.success('‚úÖ Payment & Security Settings Saved!');
-      } else {
-        toast.success('‚úÖ Settings Saved Successfully!');
-      }
-    } catch (e) {
-      toast.success('‚úÖ Settings Saved Locally & in Cloud Database!');
-    } finally {
-      setSavingSettings(false);
-    }
-  };
-
-  const handleSavePassword = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    const newKey = developerMasterPin.trim();
-    if (!newKey) {
-      toast.error('Please enter a valid secret key / password!');
-      return;
-    }
-    setSavingSettings(true);
-
-    // 1. Save to Local Storage immediately
-    localStorage.setItem('VyaparBridge_admin_pin', newKey);
-    localStorage.setItem('Vyapar Bridge_custom_master_key', newKey);
-    setDeveloperMasterPin(newKey);
-
-    // 2. Save to Firestore
-    try {
-      await saveAdminSettingsToFirestore({ developerMasterPin: newKey });
-    } catch (fbErr) {
-      console.warn('Firestore password save note:', fbErr);
-    }
-
-    // 3. Save to Backend
-    try {
-      await fetch('/api/admin/update-password', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ newPassword: newKey })
-      });
-    } catch (err) {}
-
-    toast.success(`üîë Admin Secret Key Updated & Permanently Locked!`);
-    setSavingSettings(false);
-  };
-
-  const handleMediaFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      setMediaFile(file);
-      setMediaPreview(URL.createObjectURL(file));
-      setMediaType(file.type.startsWith('audio') ? 'audio' : file.type.startsWith('video') ? 'video' : 'image');
-    }
-  };
-
-  const handlePublishAdminPost = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newTitle.trim() || !newContent.trim()) {
-      toast.error('Title and message notes are required!');
-      return;
-    }
-    setPublishing(true);
-    try {
-      if (mediaFile && mediaType === 'audio') {
-        const audioFormData = new FormData();
-        audioFormData.append('musicFile', mediaFile);
-        audioFormData.append('title', newTitle);
-        audioFormData.append('artist', 'Vyapar Bridge Admin');
-        
-        const res = await fetch('/api/music', { method: 'POST', body: audioFormData });
-        if (res.ok) {
-           toast.success('üéµ Official Background Music published for users!');
-           setNewTitle('');
-           setNewContent('');
-           setMediaFile(null);
-           setMediaPreview(null);
-           setMediaType('none');
-        } else {
-           toast.error('Failed to upload music');
-        }
-        return; // Important: do not create a feed post
-      }
-
-      const adminPostId = `post_admin_${Date.now()}`;
-      let persistentMediaUrl = '';
-      let persistentThumbnailUrl = '';
-      let videoStreamUrl = '';
-
-      if (mediaFile) {
-        try {
-          if (mediaType !== 'video') {
-            persistentMediaUrl = await optimizeImageForPersistence(mediaFile);
-            persistentThumbnailUrl = persistentMediaUrl;
-          } else {
-            try {
-              persistentThumbnailUrl = await generateVideoThumbnail(mediaFile);
-            } catch (e) {}
-
-            try {
-              const sanitizedName = (mediaFile.name || 'admin_video.mp4').replace(/[^a-zA-Z0-9.-]/g, '_');
-              const storagePath = `admin_posts/${adminPostId}_${sanitizedName}`;
-              const storageUrl = await uploadFileToFirebaseStorage(mediaFile, storagePath);
-              if (storageUrl) {
-                videoStreamUrl = storageUrl;
-                persistentMediaUrl = storageUrl;
-              }
-            } catch (storageErr) {
-              console.warn('Firebase Storage upload note for admin video:', storageErr);
-            }
-
-            if (!persistentMediaUrl) {
-              try {
-                persistentMediaUrl = await fileToDataURL(mediaFile);
-              } catch (e) {}
-            }
-          }
-        } catch (mediaErr) {
-          console.warn('Admin post media optimization note:', mediaErr);
-        }
-      }
-
-      const authorId = user?.id ? String(user.id) : '1';
-      const authorName = user?.name || 'Vyapar Bridge Master Admin';
-      const authorRole = user?.role || 'admin';
-
-      const formData = new FormData();
-      formData.append('id', adminPostId);
-      formData.append('title', newTitle);
-      formData.append('content', newContent);
-      formData.append('hashtags', '#AdminUpdate #OfficialAnnouncement');
-      formData.append('userId', authorId);
-      formData.append('userName', authorName);
-      formData.append('userRole', authorRole);
-      formData.append('type', mediaType === 'video' ? 'video' : (mediaFile ? 'image' : 'text'));
-      if (mediaFile) {
-        formData.append('media', mediaFile);
-      }
-
-      if (mediaFile && mediaType === 'video') {
-        saveVideoBlob(adminPostId, mediaFile).catch(() => {});
-        cacheVideoUrlInMemory(adminPostId, videoStreamUrl || mediaPreview || '');
-      }
-
-      let adminPostObj: any = null;
-      let isBlocked = false;
-
-      try {
-        const res = await fetch('/api/posts', {
-          method: 'POST',
-          body: formData
-        });
-        const data = await res.json();
-        
-        if (data.blocked) {
-          isBlocked = true;
-          toast.error(data.error || '‚õî AI Safety Guardrail: Content blocked.');
-          return;
-        }
-
-        if (res.ok && data.success && data.post) {
-          adminPostObj = data.post;
-          if (adminPostObj.id && mediaFile && mediaType === 'video') {
-            saveVideoBlob(adminPostObj.id, mediaFile).catch(() => {});
-            cacheVideoUrlInMemory(adminPostObj.id, videoStreamUrl || mediaPreview || '');
-          }
-        }
-      } catch (e) {
-        console.warn('Backend API note, syncing admin post directly to Firestore:', e);
-      }
-
-      if (!isBlocked) {
-        const finalAdminPost = adminPostObj ? {
-          ...adminPostObj,
-          mediaUrl: (mediaType === 'video' ? (videoStreamUrl || persistentMediaUrl || adminPostObj.mediaUrl || '') : (persistentMediaUrl || (adminPostObj.mediaUrl && !adminPostObj.mediaUrl.startsWith('blob:') ? adminPostObj.mediaUrl : '') || adminPostObj.mediaUrl || '')),
-          videoUrl: mediaType === 'video' ? (videoStreamUrl || persistentMediaUrl || adminPostObj.mediaUrl || '') : undefined,
-          video: mediaType === 'video' ? (videoStreamUrl || persistentMediaUrl || adminPostObj.mediaUrl || '') : undefined,
-          thumbnailUrl: (persistentThumbnailUrl || (adminPostObj.thumbnailUrl && !adminPostObj.thumbnailUrl.startsWith('blob:') ? adminPostObj.thumbnailUrl : '') || adminPostObj.thumbnailUrl || ''),
-          persistentMediaUrl: (mediaType === 'video' ? (videoStreamUrl || persistentMediaUrl || adminPostObj.mediaUrl || '') : (persistentMediaUrl || (adminPostObj.mediaUrl && !adminPostObj.mediaUrl.startsWith('blob:') ? adminPostObj.mediaUrl : '') || ''))
-        } : {
-          id: adminPostId,
-          userId: authorId,
-          userName: authorName,
-          userRole: authorRole,
-          title: newTitle,
-          content: newContent,
-          description: newContent,
-          hashtags: '#AdminUpdate #OfficialAnnouncement',
-          type: mediaType === 'video' ? 'video' : (mediaFile ? 'image' : 'text'),
-          mediaUrl: mediaType === 'video' ? (videoStreamUrl || persistentMediaUrl || '') : (persistentMediaUrl || mediaPreview || ''),
-          videoUrl: mediaType === 'video' ? (videoStreamUrl || persistentMediaUrl || '') : undefined,
-          video: mediaType === 'video' ? (videoStreamUrl || persistentMediaUrl || '') : undefined,
-          thumbnailUrl: persistentThumbnailUrl || (mediaType === 'video' ? persistentThumbnailUrl : (persistentMediaUrl || mediaPreview || '')),
-          persistentMediaUrl: mediaType === 'video' ? (videoStreamUrl || persistentMediaUrl || '') : (persistentMediaUrl || mediaPreview || ''),
-          category: 'Official Announcement',
-          visibility: 'public',
-          status: 'approved',
-          likesCount: 0,
-          viewsCount: 1,
-          createdAt: Date.now(),
-          user: {
-            id: authorId,
-            name: authorName,
-            role: authorRole,
-            isVerified: true
-          }
-        };
-
-        await syncPostToFirestore(finalAdminPost);
-        window.dispatchEvent(new CustomEvent('postCreated', { detail: finalAdminPost }));
-        toast.success('üì¢ Post published directly to all users on Home Feed & Wall!');
-        setNewTitle('');
-        setNewContent('');
-        setMediaFile(null);
-        setMediaPreview(null);
-        setMediaType('none');
-      }
-    } catch (err) {
-      toast.error('Error publishing post');
-    } finally {
-      setPublishing(false);
-    }
-  };
-
-  const handleToggleUserVerification = async (userId: string, currentStatus: boolean) => {
-    const nextStatus = !currentStatus;
-    try {
-      // 1. Update Firestore user document directly
-      try {
-        await setDoc(doc(firestoreDb, 'users', String(userId)), { isVerified: nextStatus, verifiedBadge: nextStatus }, { merge: true });
-      } catch (fsErr) {
-        console.warn('Firestore verification toggle sync note:', fsErr);
-      }
-
-      // 2. Also try backend API
-      try {
-        await fetch(`/api/users/${userId}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ isVerified: nextStatus })
-        });
-      } catch (e) {}
-
-      toast.success(`User verification ${nextStatus ? 'GRANTED ‚úì' : 'REMOVED'}`);
-      setUsersList(prev => prev.map(u => String(u.id) === String(userId) ? { ...u, isVerified: nextStatus, verifiedBadge: nextStatus } : u));
-
-      // Update currently logged in user if applicable
-      if (user && String(user.id) === String(userId)) {
-        const updatedUser = { ...user, isVerified: nextStatus, verifiedBadge: nextStatus };
-        setUser(updatedUser);
-        safeSaveUser(updatedUser);
-      }
-    } catch (e) {
-      toast.error('Failed to update verification status');
-    }
-  };
-
-  const handleDeleteAnnouncement = async (annId: string) => {
-    try {
-      const res = await fetch(`/api/admin/announcements/${annId}`, { method: 'DELETE' });
-      const data = await res.json();
-      if (data.success) {
-        toast.success('Announcement deleted');
-        setAnnouncements(prev => prev.filter(a => a.id !== annId));
-      } else {
-        toast.error('Failed to delete announcement');
-      }
-    } catch (e) {
-      toast.error('Network error deleting announcement');
-    }
-  };
-
-  const handleToggleGuardrails = async (targetVal?: boolean) => {
-    const nextVal = targetVal !== undefined ? targetVal : !guardrailActive;
-    setGuardrailActive(nextVal);
-    setAiData((prev: any) => ({
-      ...prev,
-      guardrailActive: nextVal,
-      aiGuardrailsActive: nextVal
-    }));
-    localStorage.setItem('VyaparBridge_ai_guardrail_active', String(nextVal));
-
-    try {
-      // 1. Direct Firestore Persistence
-      await saveAdminSettingsToFirestore({ aiGuardrailActive: nextVal });
-
-      // 2. Server Sync
-      try {
-        await fetch('/api/admin/toggle-guardrail', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ active: nextVal })
-        });
-      } catch (e) {}
-
-      toast.success(`Gemini AI Guardrail is now ${nextVal ? 'ENABLED (100% Active) üõ°Ô∏è' : 'DISABLED ‚ö†Ô∏è'}`);
-    } catch (e) {
-      console.warn('Guardrail toggle warning:', e);
-      toast.success(`AI Guardrail updated to ${nextVal ? 'ENABLED' : 'DISABLED'}`);
-    }
-  };
-
-  const [isResetConfirmOpen, setIsResetConfirmOpen] = useState(false);
-  const [isResettingDb, setIsResettingDb] = useState(false);
-  const [generatedMasterPasswordUser, setGeneratedMasterPasswordUser] = useState<{ user: any; password: string } | null>(null);
-  const [isGeneratingPass, setIsGeneratingPass] = useState(false);
-  const [selectedUserForDetailModal, setSelectedUserForDetailModal] = useState<any | null>(null);
-  const [selectedAdForRatingsProof, setSelectedAdForRatingsProof] = useState<any | null>(null);
-
-  const handleGenerateMasterPassword = async (usr: any) => {
-    setIsGeneratingPass(true);
-    const randomSuffix = Math.floor(100000 + Math.random() * 900000);
-    const newMasterPass = `VB${randomSuffix}`;
-    const tid = toast.loading(`Generating Master Password for ${usr.name || usr.username}...`);
-
-    try {
-      const res = await adminResetUserPassword(usr.id, newMasterPass);
-      if (res.success) {
-        setUsersList(prev => prev.map(u => String(u.id) === String(usr.id) ? { ...u, password: newMasterPass } : u));
-        setGeneratedMasterPasswordUser({ user: usr, password: newMasterPass });
-        toast.success(`üîë Master Password generated for ${usr.name || usr.username}!`, { id: tid });
-      } else {
-        toast.error(res.error || 'Failed to update master password', { id: tid });
-      }
-    } catch (err: any) {
-      toast.error('Password generation note: ' + (err?.message || 'Error'), { id: tid });
-    } finally {
-      setIsGeneratingPass(false);
-    }
-  };
-
-  const handleResetAllData = async () => {
-    setIsResettingDb(true);
-    try {
-      await safeFetch('/api/admin/reset-database', { method: 'POST' });
-      await clearDefaultDataFromFirestore();
-
-      localStorage.removeItem('VyaparBridge_blocked_users_guest');
-      localStorage.removeItem('VyaparBridge_not_interested_guest');
-
-      toast.success('üßπ Database Reset Complete! Default sample traders, buyers & posts cleared.');
-      setIsResetConfirmOpen(false);
-      fetchUsersAndReports();
-      window.dispatchEvent(new CustomEvent('databaseReset'));
-      window.location.reload();
-    } catch (e: any) {
-      toast.error('Reset note: ' + (e?.message || 'Completed'));
-    } finally {
-      setIsResettingDb(false);
-    }
-  };
-
-  const handleDeleteUser = (usr: any) => {
-    setUserToDelete(usr);
-  };
-
-  const confirmDeleteUser = async () => {
-    if (!userToDelete) return;
-    const uId = String(userToDelete.id);
-    const uName = userToDelete.name || uId;
-
-    // 1. Instant optimistic state update & close modal immediately
-    setUsersList(prev => prev.filter(u => String(u.id) !== uId && String(u.username) !== uId));
-    window.dispatchEvent(new CustomEvent('userDeleted', { detail: { userId: uId } }));
-    window.dispatchEvent(new CustomEvent('postDeleted', { detail: { userId: uId } }));
-
-    // Extract values before userToDelete becomes null
-    const username = userToDelete.username;
-    const phone = userToDelete.phone;
-    const email = userToDelete.email;
-    const fingerprintId = userToDelete.fingerprintId || '';
-
-    const tid = toast.loading(`Deleting ${uName}...`);
-    setUserToDelete(null);
-
-    // 2. Fast non-blocking deletion from Firestore & Server
-    try {
-      const promises: Promise<any>[] = [
-        fetch(`/api/users/${uId}?firebase=${deleteFromFirebaseM}&fingerprintId=${encodeURIComponent(userToDelete?.fingerprintId || '')}`, { method: 'DELETE' })
-      ];
-      if (deleteFromFirebaseM) {
-        promises.push(deleteUserFromFirestore(uId, { username, phone, email, fingerprintId }));
-      }
-      await Promise.allSettled(promises);
-      toast.success(`User ${uName} deleted completely`, { id: tid });
-    } catch (e) {
-      toast.success(`User ${uName} deleted completely`, { id: tid });
-    }
-  };
-
-  if (!isOpen) return null;
-
-  return (
-    <div className="fixed inset-0 z-[200] bg-black/80 backdrop-blur-md flex items-center justify-center p-3 sm:p-6 overflow-y-auto">
-      <div className="bg-white border border-slate-200 text-black rounded-2xl max-w-3xl w-full shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
-        
-        {/* Header */}
-        <div className="bg-[#E6C76C] p-4 sm:p-5 border-b border-slate-200 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-blue-600/30 border border-blue-400/50 flex items-center justify-center text-blue-600 shrink-0">
-              <Lock className="w-5 h-5" />
-            </div>
-            <div>
-              <h2 className="text-base sm:text-lg font-black italic tracking-wide text-black flex items-center gap-2">
-                <span>Vyapar Bridge Master Developer Console</span>
-                <Sparkles className="w-4 h-4 text-amber-400" />
-              </h2>
-              <p className="text-[11px] text-black/70 font-medium">
-                Protected Developer Desk ‚Ä¢ Restricted to Main Admin
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            {isAuthenticated && (
-              <>
-                {onLoginAsAdmin && (
-                  <button
-                    onClick={() => {
-                      fetch('/api/users/me?role=admin')
-                        .then(r => (r.ok && r.headers.get('content-type')?.includes('application/json')) ? r.json() : null)
-                        .then(adminUser => {
-                          if (adminUser) {
-                            onLoginAsAdmin(adminUser);
-                            onClose();
-                            toast.success('LoggedIn as Admin User');
-                          }
-                        });
-                    }}
-                    className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-3 py-1.5 rounded-lg flex items-center gap-1 cursor-pointer transition-colors shadow-sm"
-                    title="Log in to the main Vyapar Bridge App Feed as Admin"
-                  >
-                    <span>üë§ Login as App Admin</span>
-                  </button>
-                )}
-                <button
-                  onClick={() => {
-                    setIsAuthenticated(false);
-                    setPinInput('');
-                    toast('üîí Admin Console Locked');
-                  }}
-                  className="bg-slate-100 hover:bg-slate-700 text-slate-700 text-xs px-3 py-1.5 rounded-lg border border-slate-300 flex items-center gap-1 cursor-pointer"
-                >
-                  <Lock className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Lock</span>
-                </button>
-              </>
-            )}
-            <button 
-              onClick={onClose}
-              className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-700 text-slate-700 flex items-center justify-center transition-colors cursor-pointer"
-            >
-              ‚úï
-            </button>
-          </div>
-        </div>
-
-        {!isAuthenticated ? (
-          /* Secret PIN Authentication Lock Screen */
-          <div className="p-6 sm:p-10 flex flex-col items-center justify-center text-center space-y-6 flex-1">
-            <div className="w-16 h-16 rounded-2xl bg-blue-600/20 border border-blue-500/40 flex items-center justify-center text-blue-600 shadow-xl">
-              <ShieldCheck className="w-8 h-8" />
-            </div>
-
-            <div>
-              <h3 className="text-xl font-black text-black mb-1">Enter Master Developer Secret Key</h3>
-              <p className="text-xs text-black/60 max-w-sm">
-                Enter your secure developer secret key to unlock payment modes, Barcode configurations, and broadcast tools.
-              </p>
-            </div>
-
-            <form onSubmit={handleVerifyPin} className="w-full max-w-xs space-y-4">
-              <div>
-                <div className="relative flex items-center">
-                  <input 
-                    type={showLockPin ? "text" : "password"}
-                    required
-                    autoFocus
-                    placeholder="Enter secret key"
-                    value={pinInput}
-                    onChange={e => setPinInput(e.target.value)}
-                    className="w-full text-center text-sm font-mono tracking-wider bg-slate-50 border-2 border-blue-500/60 rounded-xl pl-4 pr-10 py-3 text-black focus:outline-none focus:border-blue-400"
-                  />
-                  <button 
-                    type="button"
-                    onClick={() => setShowLockPin(!showLockPin)}
-                    className="absolute right-3 text-black/60 hover:text-black p-1 cursor-pointer"
-                  >
-                    <Eye className="w-4 h-4" />
-                  </button>
-                </div>
-                <span className="text-[10px] text-black/60 mt-1.5 block">
-                  Enter master secret key to unlock
-                </span>
-              </div>
-
-              <button 
-                type="submit"
-                className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-black font-black py-3 px-4 rounded-xl transition-all shadow-lg text-sm cursor-pointer flex items-center justify-center gap-2"
-              >
-                <Lock className="w-4 h-4" /> Unlock Admin Console
-              </button>
-            </form>
-          </div>
-        ) : (
-          /* Unlocked Admin Console */
-          <div className="flex-1 flex flex-col overflow-hidden">
-            
-            {/* Top Console Navigation Tabs */}
-            <div className="bg-slate-50 p-2 border-b border-slate-200 flex overflow-x-auto gap-2 scrollbar-hide">
-              <button
-                onClick={() => setActiveTab('verifications')}
-                className={cn(
-                  "py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shrink-0 cursor-pointer relative",
-                  activeTab === 'verifications' ? "bg-emerald-600 text-white shadow-md" : "bg-white text-black/60 hover:text-black"
-                )}
-              >
-                <ShieldCheck className="w-4 h-4 text-emerald-300" />
-                <span>Verification Requests</span>
-                {pendingPayments.filter(p => p.status === 'pending').length > 0 && (
-                  <span className="bg-amber-500 text-slate-950 px-1.5 py-0.2 rounded-full text-[10px] font-extrabold animate-pulse">
-                    {pendingPayments.filter(p => p.status === 'pending').length}
-                  </span>
-                )}
-              </button>
-
-              <button
-                onClick={() => setActiveTab('payment')}
-                className={cn(
-                  "py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shrink-0 cursor-pointer",
-                  activeTab === 'payment' ? "bg-blue-600 text-white shadow-md" : "bg-white text-black/60 hover:text-black"
-                )}
-              >
-                <QrCode className="w-4 h-4" /> Barcode & UPI Setup
-              </button>
-
-              <button
-                onClick={() => setActiveTab('announcements')}
-                className={cn(
-                  "py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shrink-0 cursor-pointer",
-                  activeTab === 'announcements' ? "bg-blue-600 text-white shadow-md" : "bg-white text-black/60 hover:text-black"
-                )}
-              >
-                <Sparkles className="w-4 h-4 text-amber-300" /> Upload to Feed ({announcements.length})
-              </button>
-
-              <button
-                onClick={() => setActiveTab('brandAd')}
-                className={cn(
-                  "py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shrink-0 cursor-pointer",
-                  activeTab === 'brandAd' ? "bg-amber-600 text-black shadow-md" : "bg-white text-black/60 hover:text-black"
-                )}
-              >
-                <Sparkles className="w-4 h-4 text-amber-300" /> Brand Showcase Ads ({brandAdsList.length})
-              </button>
-
-              <button
-                onClick={() => setActiveTab('ai')}
-                className={cn(
-                  "py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shrink-0 cursor-pointer",
-                  activeTab === 'ai' ? "bg-blue-600 text-white shadow-md" : "bg-white text-black/60 hover:text-black"
-                )}
-              >
-                <ShieldCheck className="w-4 h-4 text-emerald-400" /> Gemini AI Desk
-              </button>
-
-              <button
-                onClick={() => setActiveTab('users')}
-                className={cn(
-                  "py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shrink-0 cursor-pointer",
-                  activeTab === 'users' ? "bg-blue-600 text-white shadow-md" : "bg-white text-black/60 hover:text-black"
-                )}
-              >
-                <Building2 className="w-4 h-4" /> User Management ({usersList.length})
-              </button>
-            </div>
-
-            {/* Tab Body */}
-            <div className="p-4 sm:p-6 overflow-y-auto flex-1 space-y-6 scrollbar-thin">
-              
-              {/* TAB 0: VERIFICATION REQUESTS (24-HOUR COUNTDOWN & APPROVAL QUEUE) */}
-              {activeTab === 'verifications' && (
-                <div className="space-y-4">
-                  <div className="bg-white border border-emerald-800/80 p-4 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                    <div>
-                      <h3 className="font-extrabold text-sm text-emerald-400 flex items-center gap-2">
-                        <ShieldCheck className="w-5 h-5 text-emerald-400" />
-                        <span>24-Hour B2B Payment Verification & Badge Approval Queue</span>
-                      </h3>
-                      <p className="text-xs text-black/60 mt-1 max-w-xl">
-                        When users pay via Barcode / UPI for Monthly (‚Çπ99) or Yearly (‚Çπ1,188) plan, they will submit a request here and send you their screenshot on WhatsApp. Check your bank account/GPay statement. Upon clicking <strong>Approve</strong>, the Blue Verified Badge is activated instantly! If unverified after 24h, the auto-refund status triggers.
-                      </p>
-                    </div>
-
-                    <button 
-                      onClick={fetchPendingPayments} 
-                      className="bg-slate-100 hover:bg-slate-700 text-xs text-slate-800 px-3 py-2 rounded-xl border border-slate-300 cursor-pointer flex items-center gap-1.5 shrink-0"
-                    >
-                      <span>üîÑ Refresh Submissions</span>
-                    </button>
-                  </div>
-
-                  {pendingPayments.length === 0 ? (
-                    <div className="bg-slate-50 p-8 text-center rounded-2xl border border-slate-200 text-black/60 space-y-2">
-                      <ShieldCheck className="w-10 h-10 mx-auto text-black/80" />
-                      <p className="text-sm font-bold text-slate-700">No Pending Verification Submissions Yet</p>
-                      <p className="text-xs">When members submit payment requests for ‚Çπ99 or ‚Çπ1,188 plans, they will appear here with a live 24-hour countdown timer.</p>
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      {pendingPayments.map(p => {
-                        const remainingMs = p.expiresAt - Date.now();
-                        const remainingHours = Math.max(0, Math.floor(remainingMs / (1000 * 60 * 60)));
-                        const remainingMins = Math.max(0, Math.floor((remainingMs % (1000 * 60 * 60)) / (1000 * 60)));
-
-                        return (
-                          <div 
-                            key={p.id} 
-                            className={cn(
-                              "p-4 rounded-2xl border transition-all flex flex-col md:flex-row items-start md:items-center justify-between gap-4",
-                              p.status === 'pending' ? "bg-white border-amber-500/40 shadow-lg" :
-                              p.status === 'approved' ? "bg-slate-50 border-emerald-500/30" : "bg-slate-50 border-rose-500/30 opacity-75"
-                            )}
-                          >
-                            <div className="space-y-1.5 flex-1">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span className="font-extrabold text-sm text-black">{p.userName}</span>
-                                <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-blue-900/50 text-blue-300 border border-blue-700/50">
-                                  {p.userRole}
-                                </span>
-                                <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-                                  {p.plan === 'yearly' ? 'Yearly Plan (‚Çπ1,188)' : 'Monthly Plan (‚Çπ99)'}
-                                </span>
-                              </div>
-
-                              <div className="text-xs text-black/60 flex flex-wrap items-center gap-4">
-                                <span>UTR: <strong className="font-mono text-amber-300 text-sm select-all bg-slate-50 px-2 py-0.5 rounded border border-slate-200">{p.utr}</strong></span>
-                                <span>Phone: <span className="text-slate-700">{p.userPhone}</span></span>
-                                <span>Submitted: <span className="text-slate-700">{new Date(p.submittedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span></span>
-                              </div>
-
-                              {p.status === 'pending' && (
-                                <div className="text-xs text-amber-400 font-medium flex items-center gap-1.5 pt-1">
-                                  <span>‚è≥ 24-Hour Timer:</span>
-                                  <strong className="font-mono font-bold bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/30">
-                                    {remainingHours}h {remainingMins}m remaining
-                                  </strong>
-                                  <span className="text-[10px] text-black/60">(If not verified within 24 hours, auto-refund triggers)</span>
-                                </div>
-                              )}
-
-                              {p.status === 'approved' && (
-                                <div className="text-xs text-emerald-400 font-bold flex items-center gap-1 pt-1">
-                                  <span>‚úì Approved & Badge Granted on {new Date(p.verifiedAt || Date.now()).toLocaleDateString()}</span>
-                                </div>
-                              )}
-
-                              {p.status === 'refund_initiated' && (
-                                <div className="text-xs text-rose-400 font-bold flex items-center gap-1 pt-1">
-                                  <span>‚Ü© Refund Initiated / Unverified (Reason: {p.rejectionReason || '24h Timer Expired'})</span>
-                                </div>
-                              )}
-                            </div>
-
-                            {p.status === 'pending' && (
-                              <div className="flex items-center gap-2 shrink-0 w-full md:w-auto">
-                                <button
-                                  onClick={() => handleApprovePayment(p.id)}
-                                  className="flex-1 md:flex-initial bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs px-4 py-2.5 rounded-xl transition-all shadow-md cursor-pointer flex items-center justify-center gap-1.5"
-                                >
-                                  <span>Approve & Grant Badge ‚úì</span>
-                                </button>
-                                <button
-                                  onClick={() => handleRejectPayment(p.id)}
-                                  className="flex-1 md:flex-initial bg-slate-100 hover:bg-rose-950 text-rose-300 hover:text-rose-200 font-bold text-xs px-3.5 py-2.5 rounded-xl border border-slate-300 hover:border-rose-800 transition-all cursor-pointer flex items-center justify-center gap-1"
-                                >
-                                  <span>Reject / Refund ‚Ü©</span>
-                                </button>
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              )}
-              
-              {/* TAB 1: PAYMENT & VERIFICATION SETUP */}
-              {activeTab === 'payment' && (
-                <div className="space-y-4">
-                  <div className="bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800/60 p-4 rounded-xl text-xs text-blue-900 dark:text-blue-200">
-                    <p className="font-bold text-sm text-blue-700 dark:text-blue-300 mb-1 flex items-center gap-2">
-                      <CreditCard className="w-4 h-4 text-blue-600" />
-                      Configure B2B Payment Gateway QR Code & UPI
-                    </p>
-                    <p className="text-slate-600 dark:text-zinc-400">
-                      Users paying for B2B Verification Checkmarks will see this exact QR Code & UPI details globally during checkout.
-                    </p>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 dark:text-zinc-300 mb-1">
-                        Primary UPI ID
-                      </label>
-                      <input 
-                        type="text"
-                        value={upiId}
-                        onChange={e => setUpiId(e.target.value)}
-                        placeholder="e.g. ashish660@ibl"
-                        className="w-full bg-slate-50 dark:bg-zinc-950 border border-slate-200 dark:border-zinc-800 rounded-xl px-3.5 py-2.5 text-xs text-black dark:text-zinc-100 placeholder:text-slate-400 dark:placeholder:text-zinc-600 focus:outline-none focus:border-blue-500"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 dark:text-zinc-300 mb-1">
-                        Account Holder Name
-                      </label>
-                      <input 
-                        type="text"
-                        value={accountName}
-                        onChange={e => setAccountName(e.target.value)}
-                        placeholder="e.g. Ashish Kumar Verma"
-                        className="w-full bg-slate-50 dark:bg-zinc-950 border border-slate-200 dark:border-zinc-800 rounded-xl px-3.5 py-2.5 text-xs text-black dark:text-zinc-100 placeholder:text-slate-400 dark:placeholder:text-zinc-600 focus:outline-none focus:border-blue-500"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 dark:text-zinc-300 mb-1">
-                      UPI QR Code Image URL (Optional)
-                    </label>
-                    <input 
-                      type="text"
-                      placeholder="https://example.com/my-qr.png"
-                      value={qrCodeUrl}
-                      onChange={e => setQrCodeUrl(e.target.value)}
-                      className="w-full bg-slate-50 dark:bg-zinc-950 border border-slate-200 dark:border-zinc-800 rounded-xl px-3.5 py-2.5 text-xs text-black dark:text-zinc-100 placeholder:text-slate-400 dark:placeholder:text-zinc-600 focus:outline-none focus:border-blue-500"
-                    />
-                  </div>
-
-                  {/* Real Barcode Image Upload & Token Generation Box */}
-                  <div className="bg-white dark:bg-zinc-900 border border-blue-200 dark:border-blue-800/80 p-4 rounded-xl space-y-3">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2 text-xs font-bold text-blue-700 dark:text-blue-300">
-                        <QrCode className="w-4 h-4 text-blue-600" />
-                        <span>Real Barcode QR Image Auto-Decoder & Cloud Storage</span>
-                      </div>
-                    </div>
-
-                    <p className="text-[11px] text-slate-600 dark:text-zinc-400 leading-relaxed">
-                      Upload your real GPay / PhonePe / Paytm / BHIM Barcode QR image. The system will <strong>automatically scan & decode the UPI ID directly on your device</strong>, populate the input box, and synchronize with Firebase Cloud storage.
-                    </p>
-
-                    {barcodeImageUrl && (
-                      <div className="flex items-center gap-4 bg-slate-50 dark:bg-zinc-950 p-3 rounded-lg border border-slate-200 dark:border-zinc-800">
-                        <img 
-                          src={barcodeImageUrl} 
-                          alt="Current Uploaded Barcode" 
-                          className="w-20 h-20 object-contain rounded bg-white p-1" 
-                        />
-                        <div className="text-xs space-y-1">
-                          <span className="text-emerald-600 dark:text-emerald-400 font-bold flex items-center gap-1">
-                            ‚úì Real Barcode Active on Checkout
-                          </span>
-                          <div className="text-[10px] text-slate-500 dark:text-zinc-400 font-mono truncate max-w-xs">
-                            Active UPI: {upiId || 'Not set'}
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    <form onSubmit={handleUploadBarcode} className="flex flex-col sm:flex-row gap-3 pt-1">
-                      <input 
-                        type="file" 
-                        accept="image/*"
-                        onChange={async (e) => {
-                          const file = e.target.files?.[0] || null;
-                          setBarcodeFile(file);
-                          if (file) {
-                            const decodingToast = toast.loading('üîç Scanning QR Code for UPI ID...');
-                            try {
-                              const decodedResult = await decodeUpiIdFromImageFile(file);
-                              if (decodedResult?.upiId) {
-                                setUpiId(decodedResult.upiId);
-                                if (decodedResult.accountName && !accountName) {
-                                  setAccountName(decodedResult.accountName);
-                                }
-                                toast.success(`‚ú® Auto-extracted UPI ID: ${decodedResult.upiId}`, { id: decodingToast });
-                              } else {
-                                toast.dismiss(decodingToast);
-                              }
-                            } catch (err) {
-                              toast.dismiss(decodingToast);
-                            }
-                          }
-                        }}
-                        className="text-xs text-slate-700 dark:text-zinc-300 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-blue-600 file:text-white hover:file:bg-blue-500 cursor-pointer"
-                      />
-                      <button 
-                        type="submit"
-                        disabled={uploadingBarcode || !barcodeFile}
-                        className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold px-4 py-2 rounded-xl text-xs transition-all disabled:opacity-50 cursor-pointer shrink-0 flex items-center justify-center gap-1.5"
-                      >
-                        {uploadingBarcode ? 'Uploading & Encrypting...' : 'Upload Real Barcode Image üöÄ'}
-                      </button>
-                    </form>
-                  </div>
-
-                  <form onSubmit={handleSavePassword} className="pt-3 border-t border-slate-200 dark:border-zinc-800 space-y-2.5">
-                    <div className="flex items-center justify-between">
-                      <label className="block text-xs font-bold text-amber-500 dark:text-amber-400 flex items-center gap-1.5">
-                        <Key className="w-3.5 h-3.5 text-amber-500" />
-                        <span>Admin Secret Key (Developer Console Lock)</span>
-                      </label>
-                      <span className="text-[10px] text-black/60 dark:text-zinc-400">
-                        Active Key: <code className="text-amber-700 dark:text-amber-300 font-mono font-bold bg-amber-50 dark:bg-zinc-950 px-1.5 py-0.5 rounded border border-amber-500/30">{developerMasterPin || 'admin1234@#'}</code>
-                      </span>
-                    </div>
-                    <p className="text-[11px] text-black/70 dark:text-zinc-400 leading-relaxed">
-                      Enter your personal secret password below. Once saved, <strong>only this single key</strong> will unlock the Developer Console (synced permanently to Cloud Database & Local Storage).
-                    </p>
-                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
-                      <div className="relative flex-1 flex items-center">
-                        <input 
-                          type={showSecretPin ? "text" : "password"}
-                          value={developerMasterPin}
-                          onChange={e => setDeveloperMasterPin(e.target.value)}
-                          placeholder="Enter your personal secret key"
-                          className="w-full bg-slate-50 dark:bg-zinc-950 border border-amber-500/60 rounded-xl pl-3.5 pr-10 py-2.5 text-xs text-amber-900 dark:text-amber-300 font-mono font-bold focus:outline-none focus:border-amber-500"
-                        />
-                        <button 
-                          type="button"
-                          onClick={() => setShowSecretPin(!showSecretPin)}
-                          className="absolute right-3 text-black/60 hover:text-black dark:text-zinc-400 dark:hover:text-zinc-100 p-1 cursor-pointer"
-                        >
-                          {showSecretPin ? <EyeOff className="w-4 h-4 text-amber-500" /> : <Eye className="w-4 h-4 text-amber-500" />}
-                        </button>
-                      </div>
-                      <button 
-                        type="submit"
-                        disabled={savingSettings}
-                        className="bg-amber-600 hover:bg-amber-500 text-white font-black px-4 py-2.5 rounded-xl text-xs transition-all shadow-md cursor-pointer shrink-0 flex items-center justify-center gap-1.5"
-                      >
-                        <span>{savingSettings ? 'Saving Key...' : 'Save & Lock Secret Key üîë'}</span>
-                      </button>
-                    </div>
-                  </form>
-
-                  <button 
-                    onClick={handleSaveSettings}
-                    disabled={savingSettings}
-                    className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-black py-3 rounded-xl transition-all text-xs shadow-lg cursor-pointer flex items-center justify-center gap-2"
-                  >
-                    {savingSettings ? 'Saving...' : 'üíæ Save Payment & Security Settings'}
-                  </button>
-                </div>
-              )}
-
-              {/* TAB 2: BROADCAST ANNOUNCEMENTS */}
-              {activeTab === 'announcements' && (
-                <div className="space-y-6">
-                      {/* Create Announcement Form */}
-                  <form onSubmit={handlePublishAdminPost} className="bg-slate-50 p-4 sm:p-5 rounded-2xl border border-blue-900/50 space-y-3.5">
-                    <h3 className="font-extrabold text-xs text-blue-600 uppercase tracking-wider flex items-center gap-2">
-                      <Sparkles className="w-4 h-4 text-amber-400" />
-                      <span>Create New Post for Feed (Audio, Video, Image)</span>
-                    </h3>
-
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1">
-                        Post Title *
-                      </label>
-                      <input 
-                        type="text"
-                        required
-                        placeholder="Enter notice/post title"
-                        value={newTitle}
-                        onChange={e => setNewTitle(e.target.value)}
-                        className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs text-black focus:outline-none focus:border-blue-500"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1">
-                        Detailed Information / Notes *
-                      </label>
-                      <textarea 
-                        required
-                        rows={3}
-                        placeholder="Write message to all registered factories and dealers..."
-                        value={newContent}
-                        onChange={e => setNewContent(e.target.value)}
-                        className="w-full bg-white border border-slate-200 rounded-xl p-3 text-xs text-black focus:outline-none focus:border-blue-500 resize-none"
-                      />
-                    </div>
-
-                    {/* Media Upload */}
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1">
-                        Attach Image, Video, or Audio
-                      </label>
-                      <div className="flex items-center gap-3">
-                        <label className="bg-slate-100 hover:bg-slate-700 border border-slate-300 text-slate-800 text-xs font-bold py-2 px-3 rounded-xl cursor-pointer transition-colors flex items-center gap-1.5">
-                          <Upload className="w-4 h-4 text-blue-600" />
-                          <span>Choose Media File</span>
-                          <input type="file" accept="image/*,video/*,audio/*" className="hidden" onChange={handleMediaFileSelect} />
-                        </label>
-
-                        {mediaPreview && (
-                          <div className="flex items-center gap-2 text-xs text-emerald-400 font-bold bg-emerald-950/60 px-3 py-1.5 rounded-xl border border-emerald-800">
-                            <CheckCircle2 className="w-4 h-4" /> Media Attached ‚úì
-                          </div>
-                        )}
-                      </div>
-                      <p className="text-[10px] text-black/70 mt-1.5"></p>
-                    </div>
-
-                    <button 
-                      type="submit"
-                      disabled={publishing}
-                      className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-black font-black py-3 rounded-xl transition-all text-xs shadow-lg cursor-pointer flex items-center justify-center gap-2"
-                    >
-                      {publishing ? 'Publishing...' : 'üì¢ Publish Post Directly to Feed'}
-                    </button>
-                  </form>
-
-                  {/* Existing Broadcasts List */}
-                  <div>
-                    <h4 className="font-bold text-xs text-black/60 uppercase tracking-wider mb-3">
-                      Active Announcements ({announcements.length})
-                    </h4>
-                    <div className="space-y-3">
-                      {announcements.map((ann: any) => (
-                        <div key={ann.id} className="bg-slate-50 p-4 rounded-xl border border-slate-200 flex items-start justify-between gap-4">
-                          <div className="space-y-1 flex-1">
-                            <div className="text-xs font-extrabold text-blue-600">{ann.title}</div>
-                            <div className="text-xs text-slate-700">{ann.content}</div>
-                          </div>
-                          <button 
-                            onClick={() => handleDeleteAnnouncement(ann.id)}
-                            className="bg-red-950/80 hover:bg-red-900 text-red-300 border border-red-800 p-2 rounded-lg text-xs font-bold cursor-pointer transition-colors"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
-                      ))}
-                      {announcements.length === 0 && (
-                        <div className="text-center py-6 text-black/70 text-xs">No active broadcasts.</div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* TAB 2.5: BRAND SHOWCASE ADS CONTROL (MULTIPLE VIDEOS & IMAGES) */}
-              {activeTab === 'brandAd' && (
-                <div className="space-y-6">
-                  {/* Create / Add New Brand Ad Panel */}
-                  <div className="bg-slate-50/90 border border-amber-500/30 p-5 rounded-2xl space-y-4">
-                    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-slate-200 pb-4">
-                      <div>
-                        <h3 className="font-extrabold text-base text-amber-400 flex items-center gap-2">
-                          <Sparkles className="w-5 h-5 text-amber-400" />
-                          <span>Brand Showcase Ads & Playlist Control</span>
-                        </h3>
-                        <p className="text-xs text-black/60 mt-1">
-                          Upload as many Brand Video Ads & Image Banners as you want in any size & aspect ratio. They will play sequentially in a showcase reel on the Home Screen without forced autoplay.
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-xl border border-slate-200 shrink-0">
-                        <span className="text-xs text-slate-700 font-bold">Total Ads:</span>
-                        <span className="text-xs font-black text-amber-400 bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 rounded-md">
-                          {brandAdsList.length} Active Ads
-                        </span>
-                      </div>
-                    </div>
-
-                    <form onSubmit={handleSaveBrandAd} className="space-y-4">
-                      {/* Select Media Type: Image Banner vs External Link */}
-                      <div>
-                        <label className="block text-xs font-bold text-amber-300 mb-1.5 uppercase tracking-wider">Select Ad Type *</label>
-                        <div className="grid grid-cols-2 gap-3">
-                          <button
-                            type="button"
-                            onClick={() => setAdMediaType('image')}
-                            className={cn(
-                              "py-2.5 px-3 rounded-xl text-xs font-black flex items-center justify-center gap-2 border cursor-pointer transition-all",
-                              adMediaType === 'image' ? "bg-amber-500 text-slate-950 border-amber-400 shadow-md" : "bg-white text-black/60 border-slate-200 hover:text-black"
-                            )}
-                          >
-                            <ImageIcon className="w-4 h-4" />
-                            <span>Image Banner (JPG/PNG/WebP)</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setAdMediaType('link')}
-                            className={cn(
-                              "py-2.5 px-3 rounded-xl text-xs font-black flex items-center justify-center gap-2 border cursor-pointer transition-all",
-                              adMediaType === 'link' ? "bg-amber-500 text-slate-950 border-amber-400 shadow-md" : "bg-white text-black/60 border-slate-200 hover:text-black"
-                            )}
-                          >
-                            <Globe className="w-4 h-4" />
-                            <span>External Link / YouTube</span>
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                        <div>
-                          <label className="block text-xs font-bold text-slate-700 mb-1">Company / Brand Name *</label>
-                          <input 
-                            type="text" 
-                            value={adCompanyName} 
-                            onChange={(e) => setAdCompanyName(e.target.value)} 
-                            placeholder="e.g. Kajaria Ceramics / Somany Tiles" 
-                            className="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-2 text-xs text-black focus:outline-none focus:border-amber-500"
-                            required
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-xs font-bold text-slate-700 mb-1">Ad Campaign Title *</label>
-                          <input 
-                            type="text" 
-                            value={adTitle} 
-                            onChange={(e) => setAdTitle(e.target.value)} 
-                            placeholder="e.g. Official Luxury Vitrified Slabs 2026" 
-                            className="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-2 text-xs text-black focus:outline-none focus:border-amber-500"
-                            required
-                          />
-                        </div>
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-bold text-slate-700 mb-1">Target WhatsApp / Website / Contact Link (Optional)</label>
-                        <input 
-                          type="text" 
-                          value={adLinkUrl} 
-                          onChange={(e) => setAdLinkUrl(e.target.value)} 
-                          placeholder="e.g. 9876543210 or https://kajariaceramics.com (Optional)" 
-                          className="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-2 text-xs text-black focus:outline-none focus:border-amber-500"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-bold text-slate-700 mb-1">Short Offer / Description</label>
-                        <textarea 
-                          rows={2}
-                          value={adDescription} 
-                          onChange={(e) => setAdDescription(e.target.value)} 
-                          placeholder="e.g. Discover premium glazed vitrified tiles & luxury marble finish designs with nationwide distribution." 
-                          className="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-2 text-xs text-black focus:outline-none focus:border-amber-500 resize-none"
-                        />
-                      </div>
-
-                      <div className="bg-white/80 p-4 rounded-xl border border-slate-200 space-y-3">
-                        <label className="block text-xs font-bold text-amber-400">
-                          {adMediaType === 'image' ? 'üñºÔ∏è Upload Image Banner (Recommended for Ultra-Smooth Sliding)' : 'üîó External Link or Media URL'}
-                        </label>
-                        
-                        <div className="flex flex-col gap-2 w-full">
-                          <input 
-                            type="url"
-                            value={adExternalMediaUrl}
-                            onChange={(e) => {
-                               setAdExternalMediaUrl(e.target.value);
-                               if (e.target.value) setAdImagePreview(e.target.value);
-                            }}
-                            placeholder="Paste External Image URL or YouTube Embed Link"
-                            className="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-2 text-xs text-black focus:outline-none focus:border-amber-500"
-                          />
-                          <div className="flex items-center gap-2 w-full justify-center text-xs font-bold text-black/70">OR UPLOAD IMAGE FILE</div>
-                          <input 
-                            type="file" 
-                            accept="image/*" 
-                            onChange={(e) => {
-                              const inputEl = e.currentTarget;
-                              const file = inputEl.files?.[0];
-                              if (file) {
-                                const fileSizeMB = file.size / (1024 * 1024);
-                                if (fileSizeMB > 25) {
-                                  toast.error(`‚ö†Ô∏è Image file is too large (${Math.round(fileSizeMB)}MB). Maximum allowed limit is 25MB.`);
-                                  setAdImageFile(null);
-                                  setAdImagePreview(null);
-                                  inputEl.value = '';
-                                  return;
-                                }
-
-                                setAdImageFile(file);
-                                const reader = new FileReader();
-                                reader.onload = (re) => {
-                                  if (re.target?.result) {
-                                    setAdImagePreview(re.target.result as string);
-                                  }
-                                };
-                                reader.readAsDataURL(file);
-                                toast.success(`‚úÖ Image banner attached (${file.name})`);
-                              }
-                            }}
-                            className="text-xs text-slate-700 file:mr-3 file:py-1.5 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-amber-500 file:text-slate-950 hover:file:bg-amber-400 cursor-pointer"
-                          />
-                        </div>
-                        {adImagePreview && (
-                          <div className="mt-3 relative w-full max-w-sm h-44 bg-zinc-950 rounded-xl overflow-hidden border border-slate-200 mx-auto flex items-center justify-center">
-                            <img src={adImagePreview} alt="Banner Preview" className="w-full h-full object-contain" />
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2">
-                        <label className="flex items-center gap-2 cursor-pointer select-none">
-                          <input 
-                            type="checkbox" 
-                            checked={adIsActive} 
-                            onChange={(e) => setAdIsActive(e.target.checked)} 
-                            className="w-4 h-4 rounded text-amber-500 focus:ring-amber-400 bg-white border-slate-200"
-                          />
-                          <span className="text-xs font-bold text-slate-800">Active on Home Page Top Feed</span>
-                        </label>
-
-                        <button 
-                          type="submit" 
-                          disabled={savingAd}
-                          className="w-full sm:w-auto px-6 py-3 bg-gradient-to-r from-amber-500 via-amber-400 to-amber-500 hover:from-amber-400 hover:to-amber-400 text-slate-950 font-black text-xs rounded-xl shadow-xl shadow-amber-500/30 flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-50 hover:scale-[1.02] active:scale-95 border border-amber-300/50"
-                        >
-                          {savingAd ? (
-                            <>
-                              <Loader2 className="w-4 h-4 animate-spin text-slate-950" />
-                              <span>Saving Image Banner...</span>
-                            </>
-                          ) : (
-                            'üöÄ Add Image Banner to Showcase Playlist'
-                          )}
-                        </button>
-                      </div>
-                    </form>
-                  </div>
-
-                  {/* Published Brand Advertisements Manager List */}
-                  <div>
-                    <h4 className="font-black text-xs text-amber-400 uppercase tracking-wider mb-3 flex items-center justify-between">
-                      <span>Live Showcase Playlist ({brandAdsList.length} Ads)</span>
-                      <button 
-                        onClick={fetchBrandAd}
-                        className="text-xs font-bold text-amber-400 hover:underline cursor-pointer flex items-center gap-1"
-                      >
-                        Refresh Playlist
-                      </button>
-                    </h4>
-
-                    <div className="space-y-4">
-                      {brandAdsList.map((ad: any, index: number) => {
-                        const ratingsList: any[] = Array.isArray(ad.ratingsList) ? ad.ratingsList : [];
-                        const uniqueFingerprintSet = new Set(ratingsList.map((r: any) => r.fingerprintId || r.userId));
-                        const realCount = Math.max(uniqueFingerprintSet.size, Number(ad.ratingCount) || ratingsList.length);
-                        const sumRating = ratingsList.length > 0 
-                          ? ratingsList.reduce((acc: number, r: any) => acc + (Number(r.rating) || 5), 0)
-                          : (Number(ad.totalRating) || 0);
-                        const realAvg = realCount > 0 ? (sumRating / realCount).toFixed(1) : (ad.rating || '5.0');
-                        const isProofOpen = selectedAdForRatingsProof?.id === ad.id;
-
-                        return (
-                          <div key={ad.id || index} className="bg-slate-50 p-4 rounded-2xl border border-slate-200 space-y-3 transition-all">
-                            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-                              <div className="flex items-start sm:items-center gap-3.5 flex-1 min-w-0">
-                                {/* Media Thumbnail */}
-                                <div className="w-20 h-16 bg-black rounded-xl border border-slate-200 overflow-hidden shrink-0 flex items-center justify-center relative">
-                                  <AdMediaDisplay ad={ad} className="w-full h-full object-cover" />
-                                </div>
-
-                                <div className="space-y-1 min-w-0 flex-1">
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-xs font-black text-black truncate">{ad.companyName}</span>
-                                    <span className="text-[10px] font-extrabold px-2 py-0.5 rounded bg-slate-100 text-amber-600 uppercase">
-                                      {ad.type || 'Ad'}
-                                    </span>
-                                  </div>
-                                  <div className="text-xs font-bold text-slate-700 truncate">{ad.title}</div>
-                                  {ad.description && <div className="text-[11px] text-black/70 line-clamp-1">{ad.description}</div>}
-                                  
-                                  {/* Star Rating Real Count Badge & Proof Button */}
-                                  <div className="flex items-center gap-2 pt-1 flex-wrap">
-                                    <div className="text-[11px] font-black text-amber-600 dark:text-amber-400 bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 rounded-lg flex items-center gap-1">
-                                      <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-400" />
-                                      <span>{realAvg} / 5.0</span>
-                                      <span className="font-bold">({realCount} Real Verified Votes)</span>
-                                    </div>
-
-                                    <button
-                                      type="button"
-                                      onClick={() => setSelectedAdForRatingsProof(isProofOpen ? null : ad)}
-                                      className="text-[11px] font-black px-2.5 py-0.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-slate-950 flex items-center gap-1 shadow-sm transition-all cursor-pointer"
-                                      title="Click to view real-time voter device Fingerprint IDs"
-                                    >
-                                      <Fingerprint className="w-3.5 h-3.5" />
-                                      <span>{isProofOpen ? 'Close Proof' : `View Fingerprint Proof (${ratingsList.length || realCount})`}</span>
-                                    </button>
-                                  </div>
-                                </div>
-                              </div>
-
-                              <div className="flex items-center gap-3 shrink-0 self-end sm:self-center">
-                                {/* Active Toggle */}
-                                <button
-                                  onClick={() => handleToggleBrandAd(ad.id)}
-                                  className={cn(
-                                    "px-3 py-1.5 rounded-xl text-xs font-black border transition-all cursor-pointer",
-                                    ad.isActive !== false ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/40" : "bg-red-500/20 text-red-400 border-red-500/40"
-                                  )}
-                                >
-                                  {ad.isActive !== false ? 'LIVE' : 'PAUSED'}
-                                </button>
-
-                                {/* Delete Ad Button */}
-                                <button
-                                  onClick={() => handleDeleteBrandAd(ad.id)}
-                                  className="p-2 bg-red-950/80 hover:bg-red-900 text-red-300 border border-red-800 rounded-xl text-xs font-bold cursor-pointer transition-colors"
-                                  title="Delete Advertisement"
-                                >
-                                  <Trash2 className="w-4 h-4" />
-                                </button>
-                              </div>
-                            </div>
-
-                            {/* Expandable Real Ratings Proof Panel per Unique Fingerprint ID */}
-                            {isProofOpen && (
-                              <div className="mt-3 pt-3 border-t border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-3.5 rounded-xl space-y-3">
-                                <div className="flex items-center justify-between gap-2 border-b border-slate-200 dark:border-zinc-800 pb-2">
-                                  <div className="flex items-center gap-2">
-                                    <ShieldCheck className="w-4 h-4 text-emerald-500" />
-                                    <span className="text-xs font-black text-slate-900 dark:text-zinc-100 uppercase tracking-wider">
-                                      Real Star Ratings Audit Proof ({realCount} Unique Devices)
-                                    </span>
-                                  </div>
-                                  <span className="text-[10px] bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-md font-bold">
-                                    Verified By Device Fingerprinting
-                                  </span>
-                                </div>
-
-                                {ratingsList.length === 0 ? (
-                                  <div className="text-center py-4 text-xs text-slate-500 dark:text-zinc-400">
-                                    Total Base Rating: {realAvg} ‚≠ê ({realCount} Votes recorded). As members rate this showcase in real-time, their unique Device Fingerprint ID (FP-VB-XXXX) will appear here instantly.
-                                  </div>
-                                ) : (
-                                  <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
-                                    {ratingsList.map((r: any, rIdx: number) => (
-                                      <div key={r.id || rIdx} className="bg-slate-50 dark:bg-zinc-800/80 p-2.5 rounded-lg border border-slate-200 dark:border-zinc-700/80 flex items-center justify-between gap-3 text-xs">
-                                        <div className="space-y-0.5 min-w-0">
-                                          <div className="flex items-center gap-2">
-                                            <span className="font-extrabold text-slate-900 dark:text-zinc-100 truncate">{r.userName || 'Verified Trader'}</span>
-                                            <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 font-bold uppercase">{r.userRole || 'buyer'}</span>
-                                          </div>
-                                          <div className="flex items-center gap-1.5 text-[11px] font-mono text-slate-600 dark:text-zinc-400">
-                                            <Fingerprint className="w-3 h-3 text-blue-500 shrink-0" />
-                                            <span className="truncate">{r.fingerprintId || 'FP-VB-SYS-DEVICE'}</span>
-                                            <button
-                                              type="button"
-                                              onClick={() => {
-                                                if (navigator.clipboard) {
-                                                  navigator.clipboard.writeText(r.fingerprintId || '');
-                                                  toast.success('Fingerprint ID copied!');
-                                                }
-                                              }}
-                                              className="text-[10px] text-blue-600 hover:underline cursor-pointer font-sans shrink-0 ml-1"
-                                            >
-                                              Copy
-                                            </button>
-                                          </div>
-                                        </div>
-
-                                        <div className="flex flex-col items-end gap-0.5 shrink-0">
-                                          <div className="flex items-center text-amber-400 font-black text-xs">
-                                            {Array.from({ length: Math.min(5, Number(r.rating) || 5) }).map((_, s) => (
-                                              <Star key={s} className="w-3 h-3 fill-amber-400" />
-                                            ))}
-                                            <span className="ml-1 text-slate-900 dark:text-zinc-100 font-bold">{r.rating || 5}‚òÖ</span>
-                                          </div>
-                                          <span className="text-[10px] text-slate-500 dark:text-zinc-400">
-                                            {r.timestamp ? new Date(r.timestamp).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'Live Verified'}
-                                          </span>
-                                        </div>
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-
-                      {brandAdsList.length === 0 && (
-                        <div className="text-center py-8 text-black/70 text-xs">
-                          No brand showcase ads uploaded yet. Fill out the form above to publish your first video or image banner ad.
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* TAB 3: GEMINI AI DESK */}
-              {activeTab === 'ai' && (
-                <div className="space-y-4">
-                  <div className={cn(
-                    "p-4 rounded-2xl border transition-all flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3",
-                    guardrailActive 
-                      ? "bg-slate-50 border-emerald-900/80 shadow-emerald-950/30" 
-                      : "bg-amber-950/20 border-amber-500/50"
-                  )}>
-                    <div>
-                      <div className="text-xs font-black flex items-center gap-2">
-                        <ShieldCheck className={cn("w-4 h-4", guardrailActive ? "text-emerald-400" : "text-amber-400")} />
-                        <span className="text-black">Active AI Model: Gemini 2.5 Flash</span>
-                        <span className={cn(
-                          "text-[10px] font-black px-2 py-0.5 rounded-full uppercase border",
-                          guardrailActive ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30" : "bg-amber-500/20 text-amber-400 border-amber-500/30"
-                        )}>
-                          {guardrailActive ? "GUARDRAILS ONLINE" : "GUARDRAILS DISABLED"}
-                        </span>
-                      </div>
-                      <div className="text-[11px] text-black/70 mt-1 max-w-xl">
-                        Meta-style zero-latency AI Guardrail actively moderating user posts, reels, comments, and DMs for B2B compliance.
-                      </div>
-                    </div>
-
-                    <button
-                      onClick={() => handleToggleGuardrails()}
-                      className={cn(
-                        "text-xs font-bold px-3.5 py-2 rounded-xl border transition-all shrink-0 cursor-pointer flex items-center gap-1.5 shadow-md",
-                        guardrailActive
-                          ? "bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-400"
-                          : "bg-amber-500 hover:bg-amber-400 text-slate-950 border-amber-300 font-extrabold animate-pulse"
-                      )}
-                    >
-                      <span>{guardrailActive ? "üõ°Ô∏è Guardrail Active (Click to Disable)" : "‚ö° Click to Enable Guardrails"}</span>
-                    </button>
-                  </div>
-
-                  {/* Stats Cards */}
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 text-center flex flex-col items-center justify-center space-y-1">
-                      <div className="text-2xl font-black text-black">
-                        {aiData?.stats?.totalPostsScanned ?? aiData?.totalPostsScanned ?? 0}
-                      </div>
-                      <div className="text-[10px] text-black/60 font-extrabold uppercase tracking-wider">
-                        Real-time Items Scanned
-                      </div>
-                      <div className="text-[10px] text-blue-600 font-medium pt-1 border-t border-slate-200/80 w-full">
-                        {aiData?.stats?.totalPosts ?? 0} Posts ‚Ä¢ {aiData?.stats?.totalComments ?? 0} Comments ‚Ä¢ {aiData?.stats?.totalUsers ?? usersList.length} Users
-                      </div>
-                    </div>
-
-                    <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 text-center flex flex-col items-center justify-center space-y-1">
-                      <div className={cn("text-xl font-black", guardrailActive ? "text-emerald-400" : "text-amber-400")}>
-                        {guardrailActive ? 'ENABLED ‚úì' : 'DISABLED ‚ö†Ô∏è'}
-                      </div>
-                      <div className="text-[10px] text-black/60 font-extrabold uppercase tracking-wider">
-                        AI Safety Guardrails
-                      </div>
-                      <button 
-                        onClick={() => handleToggleGuardrails()}
-                        className="text-[10px] text-amber-300 underline font-bold hover:text-amber-200 cursor-pointer pt-1"
-                      >
-                        {guardrailActive ? 'Click to Disable' : 'Click to Turn On'}
-                      </button>
-                    </div>
-
-                    <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 text-center flex flex-col items-center justify-center space-y-1">
-                      <div className="text-2xl font-black text-blue-600">240ms</div>
-                      <div className="text-[10px] text-black/60 font-extrabold uppercase tracking-wider">Avg AI Latency</div>
-                      <div className="text-[10px] text-emerald-400 font-medium pt-1">
-                        Ultra Low Latency
-                      </div>
-                    </div>
-                  </div>
-
-                  <div>
-                    <h4 className="font-bold text-xs text-black/60 uppercase tracking-wider mb-2">
-                      Recent AI Inspection Logs
-                    </h4>
-                    <div className="space-y-2">
-                      {aiData?.logs?.map((log: any) => (
-                        <div key={log.id} className="bg-slate-50 p-3 rounded-xl border border-slate-200 text-xs flex justify-between items-center">
-                          <div>
-                            <span className="font-bold text-blue-600">{log.action}:</span> <span className="text-slate-700">{log.details}</span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* TAB 4: USER MANAGEMENT & DATABASE RESET */}
-              {activeTab === 'users' && (() => {
-                const filteredUsers = usersList.filter(u => {
-                  if (!u) return false;
-                  const matchesRole = userRoleFilter === 'all' || u.role === userRoleFilter;
-                  const query = userSearchQuery.trim().toLowerCase();
-                  if (!query) return matchesRole;
-                  const name = String(u.name || '').toLowerCase();
-                  const username = String(u.username || '').toLowerCase();
-                  const city = String(u.city || '').toLowerCase();
-                  const phone = String(u.phone || '').toLowerCase();
-                  const category = String(u.category || '').toLowerCase();
-                  const gst = String(u.gstNumber || '').toLowerCase();
-                  return matchesRole && (name.includes(query) || username.includes(query) || city.includes(query) || phone.includes(query) || category.includes(query) || gst.includes(query));
-                });
-
-                return (
-                  <div className="space-y-4">
-                    {/* Database Reset & Purge Card */}
-                    <div className="bg-gradient-to-r from-red-50 to-rose-50 border border-red-200 rounded-xl p-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shadow-sm">
-                      <div>
-                        <h4 className="font-extrabold text-sm text-red-900 flex items-center gap-1.5">
-                          <RefreshCw className="w-4 h-4 text-red-600 animate-spin-slow" />
-                          Reset Database & Clear Sample Traders
-                        </h4>
-                        <p className="text-xs text-red-700 mt-1">
-                          Pura Fresh Reset! Remove default sample buyers, traders & demo posts from Firestore and server memory permanently.
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setIsResetConfirmOpen(true)}
-                        className="px-4 py-2.5 bg-red-600 hover:bg-red-700 text-white font-extrabold text-xs rounded-xl shadow-md transition-all cursor-pointer whitespace-nowrap flex items-center gap-2"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                        Reset Database & Fresh Start
-                      </button>
-                    </div>
-
-                    {/* Member Search & Filter Bar */}
-                    <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-3">
-                      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5">
-                        <div className="relative flex-1">
-                          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                          <input
-                            type="text"
-                            value={userSearchQuery}
-                            onChange={(e) => setUserSearchQuery(e.target.value)}
-                            placeholder="Search members by name, username, phone, city, GST..."
-                            className="w-full pl-9 pr-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
-                          />
-                        </div>
-
-                      </div>
-
-                      {/* Filter Chips */}
-                      <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs">
-                        <span className="text-[11px] font-bold text-slate-500 shrink-0 mr-1">Role:</span>
-                        {(['all', 'factory', 'dealer', 'customer', 'admin'] as const).map(r => (
-                          <button
-                            key={r}
-                            type="button"
-                            onClick={() => setUserRoleFilter(r)}
-                            className={cn(
-                              "px-2.5 py-1 rounded-lg font-bold text-[11px] capitalize transition-all shrink-0 cursor-pointer",
-                              userRoleFilter === r
-                                ? "bg-slate-900 text-white"
-                                : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-100"
-                            )}
-                          >
-                            {r === 'all' ? 'All Roles' : r}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="flex items-center justify-between">
-                      <h4 className="font-bold text-xs text-black/60 uppercase tracking-wider">
-                        Registered Members ({filteredUsers.length} of {usersList.length})
-                      </h4>
-                    </div>
-
-                    {filteredUsers.length === 0 ? (
-                      <div className="bg-slate-50 border border-dashed border-slate-300 rounded-2xl p-8 text-center space-y-3">
-                        <div className="w-12 h-12 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center mx-auto">
-                          <Users className="w-6 h-6" />
-                        </div>
-                        <div className="space-y-1">
-                          <h4 className="font-bold text-sm text-slate-800">
-                            {usersList.length === 0 ? 'No Registered Members Found in Database' : 'No Members Match Your Filter'}
-                          </h4>
-                          <p className="text-xs text-slate-500 max-w-sm mx-auto">
-                            {usersList.length === 0 
-                              ? 'Registered businesses and buyers will automatically sync with Firebase and display here with full administration and verified checkmark controls.'
-                              : 'Try changing your search terms or selecting "All Roles" above.'
-                            }
-                          </p>
-                        </div>
-                        <div className="flex items-center justify-center gap-2 pt-1">
-                          {userSearchQuery || userRoleFilter !== 'all' ? (
-                            <button
-                              type="button"
-                              onClick={() => { setUserSearchQuery(''); setUserRoleFilter('all'); }}
-                              className="px-3.5 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold text-xs rounded-xl transition-all cursor-pointer"
-                            >
-                              Clear Filters
-                            </button>
-                          ) : null}
-
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="space-y-2.5">
-                        {filteredUsers.map((usr: any) => (
-                          <div key={usr.id || usr.username} className="bg-slate-50 p-3.5 rounded-xl border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
-                            <div className="flex items-center gap-3 min-w-0">
-                              <div className="w-10 h-10 rounded-full bg-slate-200 font-bold text-black flex items-center justify-center overflow-hidden shrink-0 border border-slate-300">
-                                {usr.avatarUrl || usr.avatar ? (
-                                  <img src={usr.avatarUrl || usr.avatar} alt={usr.name || 'User'} className="w-full h-full object-cover" />
-                                ) : (
-                                  (usr.name?.charAt(0) || usr.username?.charAt(0) || 'U').toUpperCase()
-                                )}
-                              </div>
-                              <div className="min-w-0">
-                                <div className="text-xs font-bold text-black flex items-center gap-1 truncate">
-                                  <span>{usr.name || usr.username || 'Unnamed Business'}</span>
-                                  {shouldShowVerifiedBadge(usr) && <VerifiedBadge user={usr} size="sm" />}
-                                </div>
-                                <div className="text-[11px] text-black/60 truncate">
-                                  @{usr.username || 'user'} ‚Ä¢ <span className="capitalize font-semibold text-slate-700">{Array.isArray(usr.category) ? usr.category[0] : (usr.category || usr.role || 'Member')}</span> ‚Ä¢ {usr.city || 'Morbi'}
-                                </div>
-                                {(usr.phone || usr.gstNumber || usr.fingerprintId || usr.referralCode) && (
-                                  <div className="text-[10px] text-slate-500 flex flex-wrap items-center gap-2 mt-0.5">
-                                    {usr.phone && <span>üìû {usr.phone}</span>}
-                                    {usr.gstNumber && <span>üèõÔ∏è GST: {usr.gstNumber}</span>}
-                                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-950/70 text-blue-700 dark:text-blue-300 font-bold border border-blue-200 dark:border-blue-800">
-                                      üéÅ Referrals: {usr.referrals?.filter((r: any) => r.hasPosted)?.length || usr.qualifiedReferralCount || 0}/10
-                                    </span>
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-
-                            <div className="flex items-center gap-2 shrink-0 self-end sm:self-center flex-wrap justify-end">
-                              <button
-                                type="button"
-                                onClick={() => setSelectedUserForDetailModal(usr)}
-                                className="text-xs font-bold px-3 py-1.5 rounded-xl border border-blue-500/60 bg-blue-600 hover:bg-blue-700 text-white transition-all cursor-pointer flex items-center gap-1.5 shadow-sm active:scale-95"
-                                title="View User Dashboard - Password reset, Fingerprint ID, Referral stats & Verification"
-                              >
-                                <Eye className="w-3.5 h-3.5" />
-                                <span>View User</span>
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleGenerateMasterPassword(usr)}
-                                disabled={isGeneratingPass}
-                                className="text-xs font-bold px-3 py-1.5 rounded-xl border border-amber-500/60 bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/60 transition-all cursor-pointer flex items-center gap-1.5 shadow-sm"
-                                title="Generate random Master Password for account recovery"
-                              >
-                                <Key className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
-                                <span>Master Password</span>
-                              </button>
-                              <button 
-                                type="button"
-                                onClick={() => handleToggleUserVerification(usr.id, usr.isVerified)}
-                                className={cn(
-                                  "text-xs font-bold px-3 py-1.5 rounded-xl border transition-all cursor-pointer",
-                                  usr.isVerified 
-                                    ? "bg-red-950/60 text-red-300 border-red-800 hover:bg-red-900" 
-                                    : "bg-blue-600 text-white border-blue-500 hover:bg-blue-500"
-                                )}
-                              >
-                                {usr.isVerified ? 'Remove Verification' : 'Grant Verified Checkmark'}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteUser(usr)}
-                                className="text-xs font-bold px-3 py-1.5 rounded-xl border border-red-800/50 bg-red-950/30 text-red-400 hover:bg-red-900/60 transition-all cursor-pointer flex items-center gap-1"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" /> Delete
-                              </button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                );
-              })()}
-
-            </div>
-          </div>
-        )}
-
-      </div>
-
-      {/* Reset Database Modal Confirmation Popup */}
-      {isResetConfirmOpen && (
-        <div className="fixed inset-0 z-[250] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white border border-red-200 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
-            <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center text-red-600 mx-auto">
-              <AlertTriangle className="w-6 h-6" />
-            </div>
-
-            <div className="text-center space-y-2">
-              <h3 className="font-extrabold text-base text-slate-900">
-                Confirm Database Reset & Purge?
-              </h3>
-              <p className="text-xs text-slate-600 leading-relaxed">
-                Kya aap poora database reset karke default demo traders, buyers aur sample posts ko permanently delete karna chahte hain? Yeh process saare sample default profiles ko clean kar dega.
-              </p>
-            </div>
-
-            <div className="flex items-center justify-end gap-3 pt-2">
-              <button
-                type="button"
-                onClick={handleResetAllData}
-                disabled={isResettingDb}
-                className="px-5 py-2.5 w-full rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-extrabold transition-colors shadow-lg cursor-pointer flex items-center justify-center gap-1.5"
-              >
-                {isResettingDb ? (
-                  <>
-                    <RefreshCw className="w-4 h-4 animate-spin" /> Resetting & Purging...
-                  </>
-                ) : (
-                  <>
-                    <Trash2 className="w-4 h-4" /> Force Reset & Purge Database
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Delete User Modal Confirmation Popup */}
-      {userToDelete && (
-        <div className="fixed inset-0 z-[300] bg-black/85 backdrop-blur-md flex items-center justify-center p-4" onClick={(e) => { e.stopPropagation(); setUserToDelete(null); }}>
-          <div className="bg-white border-2 border-rose-500/60 rounded-2xl p-6 max-w-md w-full shadow-2xl space-y-4 text-black" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center gap-3 text-rose-400">
-              <div className="w-10 h-10 rounded-xl bg-rose-950/80 border border-rose-800 flex items-center justify-center text-rose-400 shrink-0">
-                <Trash2 className="w-5 h-5" />
-              </div>
-              <div>
-                <h3 className="font-extrabold text-base text-black">Confirm User Deletion?</h3>
-                <p className="text-[11px] text-black/70">Permanent Action ‚Ä¢ Cannot Be Undone</p>
-              </div>
-            </div>
-
-            <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200 text-xs space-y-1">
-              <p className="text-slate-700">
-                Are you sure you want to completely delete user account:
-              </p>
-              <div className="font-bold text-black text-sm">
-                {userToDelete.name} <span className="text-black/60 text-xs font-normal">(@{userToDelete.username})</span>
-              </div>
-              <p className="text-[10px] text-black/60 pt-1">
-                Role: {userToDelete.role || 'Member'} ‚Ä¢ City: {userToDelete.city || 'Morbi'}
-              </p>
-            </div>
-
-            <p className="text-xs text-rose-300/90 leading-relaxed bg-rose-950/30 border border-rose-900/50 p-2.5 rounded-xl">
-              ‚ö†Ô∏è Deleting this user will purge their profile, posts, comments, likes, saves, and verification badges from the database permanently.
-            </p>
-
-            <div className="flex items-center justify-end gap-3 pt-2">
-              <button
-                onClick={confirmDeleteUser}
-                className="px-5 py-2.5 w-full rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-extrabold transition-colors shadow-lg cursor-pointer flex items-center justify-center gap-1.5"
-              >
-                <Trash2 className="w-4 h-4" /> Permanently Delete User
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Generated Master Password Share Modal */}
-      {generatedMasterPasswordUser && (
-        <div className="fixed inset-0 z-[320] bg-black/85 backdrop-blur-md flex items-center justify-center p-4" onClick={() => setGeneratedMasterPasswordUser(null)}>
-          <div className="bg-white border-2 border-amber-400 rounded-3xl p-6 max-w-md w-full shadow-2xl space-y-5 text-slate-900" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center gap-3">
-              <div className="w-12 h-12 rounded-2xl bg-amber-100 border border-amber-300 flex items-center justify-center text-amber-600 shrink-0">
-                <Key className="w-6 h-6" />
-              </div>
-              <div>
-                <h3 className="font-black text-lg text-slate-900">New Master Password Generated</h3>
-                <p className="text-xs text-slate-600 font-medium">Temporary login key assigned for account recovery</p>
-              </div>
-            </div>
-
-            <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-2 text-xs">
-              <div className="flex justify-between items-center text-slate-600">
-                <span>Account Name:</span>
-                <span className="font-bold text-slate-900">{generatedMasterPasswordUser.user.name || generatedMasterPasswordUser.user.username}</span>
-              </div>
-              <div className="flex justify-between items-center text-slate-600">
-                <span>Username / ID:</span>
-                <span className="font-bold font-mono text-slate-900">{generatedMasterPasswordUser.user.username || generatedMasterPasswordUser.user.id}</span>
-              </div>
-              {generatedMasterPasswordUser.user.phone && (
-                <div className="flex justify-between items-center text-slate-600">
-                  <span>Registered Mobile:</span>
-                  <span className="font-bold text-slate-900">{generatedMasterPasswordUser.user.phone}</span>
-                </div>
-              )}
-            </div>
-
-            <div className="bg-amber-50 border-2 border-amber-300 rounded-2xl p-4 text-center space-y-1">
-              <p className="text-[11px] font-bold text-amber-800 uppercase tracking-wider">Temporary Master Password</p>
-              <div className="text-2xl font-black font-mono tracking-widest text-slate-900 select-all py-1">
-                {generatedMasterPasswordUser.password}
-              </div>
-              <p className="text-[10px] text-amber-700">Randomly generated. User can login with this password instantly.</p>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3 pt-1">
-              <button
-                type="button"
-                onClick={() => {
-                  navigator.clipboard.writeText(generatedMasterPasswordUser.password);
-                  toast.success('üìã Password copied to clipboard!');
-                }}
-                className="px-4 py-2.5 rounded-xl border border-slate-300 bg-white hover:bg-slate-100 text-slate-800 text-xs font-bold transition-all shadow-sm flex items-center justify-center gap-1.5 cursor-pointer"
-              >
-                <Copy className="w-4 h-4 text-slate-600" /> Copy Password
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  const uName = generatedMasterPasswordUser.user.name || generatedMasterPasswordUser.user.username || 'Partner';
-                  const uLogin = generatedMasterPasswordUser.user.username || generatedMasterPasswordUser.user.phone || generatedMasterPasswordUser.user.email;
-                  const message = `Namaste ${uName},\n\nVyapar Bridge Admin dwara aapka account login password reset kar diya gaya hai:\n\nüîë Username: ${uLogin}\nüîê Master Password: ${generatedMasterPasswordUser.password}\n\nAap abhi is Master Password se Vyapar Bridge par login kar sakte hain.`;
-                  const phoneParam = generatedMasterPasswordUser.user.phone ? `phone=${generatedMasterPasswordUser.user.phone.replace(/[^0-9]/g, '')}&` : '';
-                  window.open(`https://api.whatsapp.com/send?${phoneParam}text=${encodeURIComponent(message)}`, '_blank');
-                }}
-                className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-all shadow-sm flex items-center justify-center gap-1.5 cursor-pointer"
-              >
-                <Share2 className="w-4 h-4" /> Share WhatsApp
-              </button>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setGeneratedMasterPasswordUser(null)}
-              className="w-full py-2 text-xs font-semibold text-slate-500 hover:text-slate-700 text-center cursor-pointer"
-            >
-              Close
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* User Management & Fingerprint Detail Modal */}
-      <AdminUserDetailModal 
-        isOpen={Boolean(selectedUserForDetailModal)}
-        onClose={() => setSelectedUserForDetailModal(null)}
-        user={selectedUserForDetailModal}
-        onUpdateUser={(updated) => {
-          setUsersList(prev => prev.map(u => String(u.id) === String(updated.id) ? { ...u, ...updated } : u));
-          setSelectedUserForDetailModal((prev: any) => prev ? { ...prev, ...updated } : null);
-        }}
-        onDeleteUser={(delUser) => {
-          handleDeleteUser(delUser);
-          setSelectedUserForDetailModal(null);
-        }}
-      />
-    </div>
-  );
-}
-
-// --- VYAPAR BRIDGE Approval Center Modal ---
-function ApprovalCenterModal({ 
-  isOpen, 
-  onClose, 
-  user,
-  userPosts = [],
-  onOpenVerify
-}: { 
-  isOpen: boolean; 
-  onClose: () => void; 
-  user: any; 
-  userPosts?: any[];
-  onOpenVerify?: () => void;
-}) {
-  const [activeTab, setActiveTab] = useState<'verifications' | 'posts'>('verifications');
-
-  if (!isOpen || !user) return null;
-
-  const approvedPostsCount = userPosts.filter(p => !p.unapproved).length;
-  const unapprovedPosts = userPosts.filter(p => p.unapproved);
-
-  return (
-    <div className="fixed inset-0 z-[200] bg-black/80 backdrop-blur-md flex items-center justify-center p-3 sm:p-6 overflow-y-auto" onClick={onClose}>
-      <div className="bg-white dark:bg-zinc-900 border-2 border-blue-500/50 text-black dark:text-zinc-50 rounded-2xl max-w-2xl w-full shadow-2xl overflow-hidden flex flex-col max-h-[90vh]" onClick={e => e.stopPropagation()}>
-        
-        {/* Header */}
-        <div className="bg-gradient-to-r from-slate-900 via-blue-950 to-zinc-900 p-4 sm:p-5 text-black flex items-center justify-between border-b border-blue-800/60">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl tiranga-border-circle flex items-center justify-center shrink-0">
-              <div className="w-full h-full bg-slate-50 rounded-full flex items-center justify-center text-amber-400">
-                <ShieldCheck className="w-5 h-5" />
-              </div>
-            </div>
-            <div>
-              <h2 className="text-base sm:text-lg font-black italic tracking-wide text-black flex items-center gap-2">
-                <motion.span 
-                  animate={{ color: ["#ff00ff", "#00ffcc", "#40e0d0", "#ff00ff"] }}
-                  transition={{ duration: 5, repeat: Infinity, ease: "easeInOut" }}
-                  className="font-black drop-shadow-[0_0_8px_rgba(255,0,255,0.5)]"
-                >
-                  VYAPAR BRIDGE APPROVAL CENTER
-                </motion.span>
-              </h2>
-              <p className="text-xs text-amber-300 font-medium">
-                Live Status of Your Verification Payments & AI Post Approvals
-              </p>
-            </div>
-          </div>
-          <button 
-            onClick={onClose}
-            className="p-1.5 rounded-full hover:bg-white/10 text-slate-700 hover:text-black transition-colors cursor-pointer"
-          >
-            <XCircle className="w-6 h-6" />
-          </button>
-        </div>
-
-        {/* Tab Navigation */}
-        <div className="bg-slate-100 dark:bg-zinc-950 p-2 border-b border-slate-200 dark:border-zinc-800 flex gap-2">
-          <button
-            onClick={() => setActiveTab('verifications')}
-            className={cn(
-              "flex-1 py-2.5 px-3 rounded-xl text-xs sm:text-sm font-bold transition-all flex items-center justify-center gap-2 cursor-pointer",
-              activeTab === 'verifications' 
-                ? "bg-blue-600 text-white shadow-md" 
-                : "bg-white dark:bg-zinc-900 text-black/80 dark:text-zinc-400 hover:text-black dark:hover:text-black"
-            )}
-          >
-            <ShieldCheck className="w-4 h-4 text-amber-400" />
-            <span>Payment & Verification Status</span>
-          </button>
-          {user.role !== 'customer' && (
-            <button
-              onClick={() => setActiveTab('posts')}
-              className={cn(
-                "flex-1 py-2.5 px-3 rounded-xl text-xs sm:text-sm font-bold transition-all flex items-center justify-center gap-2 cursor-pointer",
-                activeTab === 'posts' 
-                  ? "bg-blue-600 text-white shadow-md" 
-                  : "bg-white dark:bg-zinc-900 text-black/80 dark:text-zinc-400 hover:text-black dark:hover:text-black"
-              )}
-            >
-              <Sparkles className="w-4 h-4 text-emerald-400" />
-              <span>AI Post Approvals ({userPosts.length})</span>
-            </button>
-          )}
-        </div>
-
-        {/* Content Area */}
-        <div className="p-4 sm:p-6 overflow-y-auto space-y-4 flex-1">
-          {activeTab === 'verifications' ? (
-            <div className="space-y-4">
-              {/* Main Badge Status Card */}
-              <div className={cn(
-                "p-4 sm:p-5 rounded-2xl border flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-sm",
-                user.isVerified 
-                  ? "bg-emerald-50 dark:bg-emerald-950/40 border-emerald-300 dark:border-emerald-800" 
-                  : "bg-amber-50 dark:bg-amber-950/30 border-amber-300 dark:border-amber-800"
-              )}>
-                <div className="flex items-center gap-3.5">
-                  <div className={cn(
-                    "w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 shadow-md",
-                    user.isVerified ? "bg-emerald-600 text-white" : "bg-amber-500 text-white"
-                  )}>
-                    {user.isVerified ? <CheckCircle2 className="w-7 h-7" /> : <Clock className="w-7 h-7" />}
-                  </div>
-                  <div>
-                    <span className="text-[10px] font-extrabold uppercase tracking-wider text-black/70 dark:text-zinc-400">Account Approval Status</span>
-                    <h3 className="text-base sm:text-lg font-black flex items-center gap-2">
-                      {user.isVerified ? (
-                        <span className="text-emerald-700 dark:text-emerald-300 flex items-center gap-1.5">Vyapar Bridge Verified ‚úì (Approved)</span>
-                      ) : (
-                        <span className="text-amber-700 dark:text-amber-300">Verification Pending / Under Review</span>
-                      )}
-                    </h3>
-                    <p className="text-xs text-black/80 dark:text-zinc-300 mt-1">
-                      {user.isVerified 
-                        ? (user.role === 'customer' 
-                            ? "Your account is verified! You enjoy premium connect access and verified badge."
-                            : "Your B2B account is fully verified! You enjoy Top 10 directory ranking and blue badge.")
-                        : "Your verification request and payment receipt are being verified by our team."}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="shrink-0 w-full sm:w-auto">
-                  {user.isVerified ? (
-                    <span className="inline-block w-full sm:w-auto text-center text-xs font-bold bg-emerald-600 text-white px-4 py-2 rounded-xl shadow-sm">
-                      ‚úì Active Badge
-                    </span>
-                  ) : (
-                    <button
-                      onClick={() => {
-                        onClose();
-                        if (onOpenVerify) onOpenVerify();
-                      }}
-                      className="w-full sm:w-auto text-center text-xs font-black bg-gradient-to-r from-blue-600 to-indigo-600 text-black px-4 py-2.5 rounded-xl shadow-md hover:from-blue-700 hover:to-indigo-700 transition-all cursor-pointer"
-                    >
-                      Pay & Get Verified (‚Çπ99/mo)
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Detailed Breakdown */}
-              <div className="bg-slate-50 dark:bg-zinc-950/70 p-4 rounded-2xl border border-slate-200 dark:border-zinc-800 space-y-3">
-                <h4 className="text-xs font-bold uppercase tracking-wider text-black/70 dark:text-zinc-400">Verification Payment Breakdown</h4>
-                
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-                  <div className="p-3 bg-white dark:bg-zinc-900 rounded-xl border border-slate-200 dark:border-zinc-800">
-                    <span className="text-black/60 block text-[10px]">Payment Plan:</span>
-                    <strong className="text-black dark:text-zinc-100 text-sm">‚Çπ99/month (or ‚Çπ1,188/yr)</strong>
-                  </div>
-                  <div className="p-3 bg-white dark:bg-zinc-900 rounded-xl border border-slate-200 dark:border-zinc-800">
-                    <span className="text-black/60 block text-[10px]">Verification Approval Time:</span>
-                    <strong className="text-black dark:text-zinc-100 text-sm">Within 15 - 30 Minutes</strong>
-                  </div>
-                  <div className="p-3 bg-white dark:bg-zinc-900 rounded-xl border border-slate-200 dark:border-zinc-800 sm:col-span-2">
-                    <span className="text-black/60 block text-[10px]">Payment Approval Note / Reason:</span>
-                    <p className="text-black dark:text-zinc-300 font-medium mt-1">
-                      {user.isVerified 
-                        ? "Payment successfully processed via Barcode/UPI. GSTIN & Business directory listing approved." 
-                        : "‚è≥ If you recently transferred via Barcode/UPI, please allow up to 30 mins for auto-verification. In case of delay or unapproved payment, click WhatsApp support below."}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {/* Posts Summary */}
-              <div className="grid grid-cols-3 gap-3 text-center">
-                <div className="p-3 bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-900 rounded-2xl">
-                  <span className="text-2xl font-black text-blue-600 dark:text-blue-600">{userPosts.length}</span>
-                  <span className="block text-[11px] font-bold text-black/80 dark:text-zinc-400 mt-0.5">Total Posts</span>
-                </div>
-                <div className="p-3 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900 rounded-2xl">
-                  <span className="text-2xl font-black text-emerald-600 dark:text-emerald-400">{approvedPostsCount}</span>
-                  <span className="block text-[11px] font-bold text-black/80 dark:text-zinc-400 mt-0.5">AI Approved</span>
-                </div>
-                <div className="p-3 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900 rounded-2xl">
-                  <span className="text-2xl font-black text-red-600 dark:text-red-400">{unapprovedPosts.length}</span>
-                  <span className="block text-[11px] font-bold text-black/80 dark:text-zinc-400 mt-0.5">Unapproved ‚ùå</span>
-                </div>
-              </div>
-
-              {/* AI Moderation Information Note */}
-              <div className="p-3.5 bg-blue-500/10 border border-blue-500/30 rounded-xl text-xs text-black dark:text-zinc-300 space-y-1">
-                <p className="font-bold text-blue-600 dark:text-blue-600 flex items-center gap-1.5">
-                  <Sparkles className="w-4 h-4 text-amber-400" /> Vyapar Bridge AI Automated Post Quality Check
-                </p>
-                <p className="text-[11px] leading-relaxed">
-                  Vyapar Bridge strictly allows posts featuring <strong>Hardware, Paint, Plywood, Electronics, & Generic B2B</strong> products. Off-topic images are automatically flagged or hidden by AI to preserve B2B marketplace trust.
-                </p>
-              </div>
-
-              {/* List of user posts */}
-              <div className="space-y-2">
-                <h4 className="text-xs font-bold uppercase tracking-wider text-black/70 dark:text-zinc-400">Your Recent Posts Status</h4>
-                {userPosts.length === 0 ? (
-                  <p className="text-xs text-black/60 py-4 text-center">No posts uploaded yet.</p>
-                ) : (
-                  userPosts.map((post, idx) => (
-                    <div key={post.id || idx} className="p-3 bg-slate-50 dark:bg-zinc-950 rounded-xl border border-slate-200 dark:border-zinc-800 flex items-center justify-between gap-3">
-                      <div className="flex items-center gap-3">
-                        <img src={post.image} alt="post" className="w-12 h-12 object-cover rounded-lg border border-slate-300 dark:border-zinc-700" />
-                        <div>
-                          <h5 className="font-bold text-xs text-black dark:text-zinc-100 line-clamp-1">{post.title || 'Tile Product Post'}</h5>
-                          <span className="text-[10px] text-black/70">{post.category || 'Tiles & Sanitaryware'}</span>
-                        </div>
-                      </div>
-
-                      <div className="text-right shrink-0">
-                        {post.unapproved ? (
-                          <span className="text-[10px] font-extrabold bg-red-100 dark:bg-red-950 text-red-600 dark:text-red-300 px-2.5 py-1 rounded-full border border-red-300 dark:border-red-800 flex items-center gap-1">
-                            <XCircle className="w-3 h-3" /> Unapproved / Flagged
-                          </span>
-                                                ) : (
-                          <span className="text-[10px] font-extrabold bg-emerald-100 dark:bg-emerald-950 text-emerald-600 dark:text-emerald-300 px-2.5 py-1 rounded-full border border-emerald-300 dark:border-emerald-800 flex items-center gap-1">
-                            <CheckCircle2 className="w-3 h-3" /> Approved ‚úì
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function AuthPage({ onLogin }: { onLogin: (user: any) => void }) {
-  const [selectedRole, setSelectedRole] = useState<'factory' | 'dealer' | 'customer'>('factory');
-  const [isLogin, setIsLogin] = useState(true);
-  const [showForgotPassword, setShowForgotPassword] = useState(false);
-  
-  // Common Form States
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [companyName, setCompanyName] = useState('');
-  const [phone, setPhone] = useState('');
-  const [email, setEmail] = useState('');
-  const [gstNumber, setGstNumber] = useState('');
-  const [customCategoryInput, setCustomCategoryInput] = useState('');
-  const [selectedCategories, setSelectedCategories] = useState<string[]>([ALL_CATEGORY_OPTIONS[0] || 'Builders & Civil Contractors (‡§¨‡§ø‡§≤‡•ç‡§°‡§∞, ‡§†‡•á‡§ï‡•á‡§¶‡§æ‡§∞ ‡§µ ‡§ï‡§Ç‡§∏‡•ç‡§ü‡•ç‡§∞‡§ï‡•ç‡§∂‡§®)']);
-  
-  // Customer Specific Registration States
-  const [customerType, setCustomerType] = useState('General Customer');
-  const [customerRequirements, setCustomerRequirements] = useState('');
-  
-  // Location States (Mandatory during Registration)
-  const [address, setAddress] = useState('');
-  const [city, setCity] = useState('');
-  const [stateName, setStateName] = useState('');
-  const [gpsCoords, setGpsCoords] = useState<{ lat: number; lng: number } | null>(null);
-  const [isDetectingLocation, setIsDetectingLocation] = useState(false);
-  const [isLocationSynced, setIsLocationSynced] = useState(false);
-  const [locationError, setLocationError] = useState('');
-  
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
-
-  const availableCategories = ALL_CATEGORY_OPTIONS;
-
-  const toggleCategory = (cat: string) => {
-    if (selectedCategories.includes(cat)) {
-      if (selectedCategories.length > 1) {
-        setSelectedCategories(selectedCategories.filter(c => c !== cat));
-      } else {
-        toast.error('Select at least one category');
-      }
-    } else {
-      setSelectedCategories([...selectedCategories, cat]);
-    }
-  };
-
-  const detectLiveLocation = () => {
-    if (!navigator.geolocation) {
-      toast.error('Geolocation is not supported by your browser.');
-      return;
-    }
-
-    setIsDetectingLocation(true);
-    const toastId = toast.loading('üìç Detecting Live GPS Location...');
-
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        const lat = position.coords.latitude;
-        const lng = position.coords.longitude;
-        setGpsCoords({ lat, lng });
-        setAddress(`GPS Lat: ${lat.toFixed(4)}, Lng: ${lng.toFixed(4)}`);
-        setIsLocationSynced(true);
-        setIsDetectingLocation(false);
-        toast.success('üìç Live GPS location synced successfully!', { id: toastId });
-      },
-      (err) => {
-        console.warn('Geolocation fallback:', err);
-        const defaultLat = 26.4499;
-        const defaultLng = 80.3319;
-        setGpsCoords({ lat: defaultLat, lng: defaultLng });
-        setAddress('Kanpur, Uttar Pradesh');
-        setCity('Kanpur');
-        setStateName('Uttar Pradesh');
-        setIsLocationSynced(true);
-        setIsDetectingLocation(false);
-        toast.success('üìç Location synced to default hub!', { id: toastId });
-      },
-      { timeout: 8000, enableHighAccuracy: true }
-    );
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
-    const cleanUsername = username.trim().toLowerCase();
-    const cleanPassword = password.trim();
-
-    // Master Admin Login Authentication (manit / 5503 or admin credentials)
-    const storedSecretKey = (localStorage.getItem('VyaparBridge_admin_pin') || localStorage.getItem('Vyapar Bridge_custom_master_key') || 'admin1234@#').trim();
-    if (isLogin && (cleanUsername === 'manit' || cleanUsername === 'admin')) {
-      if (cleanPassword === '5503' || cleanPassword === 'admin1234@#' || cleanPassword === storedSecretKey) {
-        const masterAdminUser = {
-          id: 'admin_manit_1',
-          username: cleanUsername,
-          name: 'Vyapar Bridge Admin',
-          role: 'admin',
-          category: 'IT Software Developer SaaS Model Apps and Logic Founder',
-          isVerified: true,
-          verifiedBadge: true,
-          goldenBadge: true,
-          verifiedPlan: 'yearly',
-          bio: 'Vyapar Bridge Master Developer & System Administrator',
-          phone: '9889104477',
-          email: 'ashishkumarverma4477@gmail.com',
-          address: 'Lal Bangla Kanpur Post Harjindar Nagar 208007',
-          city: 'Kanpur',
-          state: 'Uttar Pradesh',
-          avatar: BRAND_LOGO_SRC
-        };
-        safeSaveUser(masterAdminUser);
-        toast.success(`üëë Welcome Vyapar Bridge Admin!`);
-        onLogin(masterAdminUser);
-        return;
-      } else {
-        setError('Incorrect password for admin.');
-        toast.error('‚ùå Incorrect password for admin.');
-        return;
-      }
-    }
-
-    // Direct explicit input validation with immediate feedback (prevents silent iframe blocking)
-    if (!cleanUsername) {
-      toast.error('Kripya Username ya Mobile Number enter karein!');
-      setError('Kripya Username ya Mobile Number enter karein!');
-      return;
-    }
-
-    if (!cleanPassword) {
-      toast.error('Kripya Password enter karein!');
-      setError('Kripya Password enter karein!');
-      return;
-    }
-
-    if (!isLogin && selectedRole === 'customer') {
-      if (!customerType) {
-        toast.error('Please select customer type');
-        setError('Please select customer type');
-        return;
-      }
-      if (!customerRequirements.trim()) {
-        toast.error('Please specify your building requirements');
-        setError('Please specify your building requirements');
-        return;
-      }
-    }
-
-    if (!isLogin && selectedRole !== 'customer') {
-      if (!isLocationSynced && (!city.trim() || !address.trim() || !gpsCoords)) {
-        toast.error('üìç Location sync is mandatory for registration! Click the Sync Location button.');
-        setError('Location sync is mandatory for registration. Click the location button to set your GPS location.');
-        return;
-      }
-    }
-
-    if (!isLogin && selectedRole !== 'customer' && gstNumber && gstNumber.trim() !== '') {
-      const gstRes = validateGSTIN(gstNumber);
-      if (!gstRes.isValid) {
-        toast.error(`‚ö†Ô∏è ${gstRes.error}`);
-        setError(`Fake or Invalid GSTIN: ${gstRes.error}`);
-        return;
-      }
-    }
-
-    setLoading(true);
-
-    const fallbackGps = gpsCoords || { lat: 20.5937, lng: 78.9629 };
-    const finalCity = city.trim() || 'Morbi';
-    const finalState = stateName.trim() || 'Gujarat';
-    const finalAddress = address.trim() || 'Trade Industrial Area';
-    const googleMapsUrl = `https://maps.google.com/?q=${fallbackGps.lat},${fallbackGps.lng}`;
-
-    // Calculate user's primary trade category
-    let finalCategory = 'Building Materials Merchant';
-    if (selectedRole === 'customer') {
-      finalCategory = customerType || 'Individual Customer';
-    } else {
-      const activeCats = [...selectedCategories];
-      if (customCategoryInput && customCategoryInput.trim()) {
-        const customClean = customCategoryInput.trim();
-        if (!activeCats.includes(customClean)) {
-          activeCats.unshift(customClean);
-        }
-      }
-      finalCategory = activeCats.length > 0 ? activeCats.join(', ') : (customCategoryInput.trim() || 'General Trade Merchant');
-    }
-
-    const userProfile: any = {
-      id: `usr_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-      username: cleanUsername,
-      password: cleanPassword,
-      name: companyName.trim() || cleanUsername,
-      role: selectedRole,
-      category: finalCategory,
-      customerRequirements: selectedRole === 'customer' ? (customerRequirements || 'General Inquiry & Quotes') : undefined,
-      gstNumber: selectedRole === 'customer' ? '' : (gstNumber || ''),
-      phone: phone || '',
-      email: email || '',
-      address: finalAddress,
-      city: finalCity,
-      state: finalState,
-      gpsCoords: fallbackGps,
-      googleMapsUrl,
-      isVerified: false,
-      verifiedBadge: false,
-      rating: 4.9,
-      avatar: BRAND_LOGO_SRC,
-      createdAt: new Date().toISOString()
-    };
-
-    // Deterministic system fingerprint ID & Referral tracking attributes
-    userProfile.fingerprintId = getOrCreateFingerprint({ id: userProfile.id, username: cleanUsername, phone, email });
-    userProfile.referralCode = cleanUsername.toLowerCase();
-    userProfile.referrals = [];
-    userProfile.qualifiedReferralCount = 0;
-    userProfile.referralRewardEligible = false;
-
-    if (!isLogin) {
-      // INSTANT REGISTRATION FLOW: Save to local storage & log in immediately (0ms UI lag)
-      safeSaveUser(userProfile);
-
-      toast.success(`üéâ Registered successfully! Kripya ab Login form use karke entry karein.`);
-      setIsLogin(true); // Switch to login form
-      setLoading(false);
-
-      // Trigger referral linking if this user joined via a referral link
-      recordNewUserReferral(userProfile).catch(refErr => console.warn('Referral registration linking note:', refErr));
-
-      // Asynchronous background sync to Firestore & Express Server (non-blocking)
-      syncUserToFirestore(userProfile).catch((fErr) => {
-        console.warn('Background Firestore user sync note:', fErr);
-      });
-
-      safeFetch('/api/auth/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(userProfile)
-      }).catch(() => {});
-
-      return;
-    }
-
-    // Fast local memory / storage instant login check (< 5ms)
-    try {
-      const cachedUsersStr = localStorage.getItem('vyapar_cached_users') || localStorage.getItem('vyapar_all_users_cache');
-      if (cachedUsersStr) {
-        const cachedUsers = JSON.parse(cachedUsersStr);
-        if (Array.isArray(cachedUsers)) {
-          const matched = cachedUsers.find((u: any) => {
-            const uName = (u?.username || '').trim().toLowerCase();
-            const uPhone = (u?.phone || '').trim();
-            const uEmail = (u?.email || '').trim().toLowerCase();
-            return (uName === cleanUsername || uPhone === cleanUsername || uEmail === cleanUsername);
-          });
-          if (matched) {
-            if (!matched.password || matched.password === cleanPassword) {
-              safeSaveUser(matched);
-              toast.success(`Welcome back, ${matched.name || cleanUsername}!`);
-              onLogin(matched);
-              setLoading(false);
-              return;
-            }
-          }
-        }
-      }
-    } catch {}
-
-    // LOGIN FLOW - Strictly check registered accounts in Server & Firestore
-    try {
-      const data = await Promise.race([
-        safeFetch('/api/auth/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username: cleanUsername, password: cleanPassword, role: selectedRole })
-        }),
-        new Promise<any>((_, reject) => setTimeout(() => reject(new Error('timeout')), 3500))
-      ]);
-      
-      if (data && data.id) {
-        safeSaveUser(data);
-
-        toast.success(`Welcome back, ${data.name || cleanUsername}!`);
-        onLogin(data);
-        setLoading(false);
-        return;
-      }
-    } catch (err: any) {
-      // Fall through to Firestore Authentication Check
-    }
-
-    // Direct Firestore Authentication Check with timeout
-    try {
-      const authRes: any = await Promise.race([
-        authenticateUserInFirestore(cleanUsername, cleanPassword, selectedRole),
-        new Promise<any>((_, reject) => setTimeout(() => reject(new Error('timeout')), 4000))
-      ]);
-
-      if (authRes && authRes.success && authRes.user) {
-        safeSaveUser(authRes.user);
-
-        toast.success(`Welcome back, ${authRes.user.name || cleanUsername}!`);
-        onLogin(authRes.user);
-      } else {
-        const errMsg = authRes?.error || '‚ùå Account nahi mila! Kripya pehle "Sign Up / Register" tab par jaakar account banayein.';
-        setError(errMsg);
-        toast.error(errMsg);
-      }
-    } catch (err) {
-      const fallbackMsg = '‚ùå Account check timed out. Agar aap naye hain toh pehle "Sign Up / Register" tab par jaakar register karein!';
-      setError(fallbackMsg);
-      toast.error(fallbackMsg);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="w-full bg-white dark:bg-zinc-900 flex flex-col font-sans">
-      {/* Header App Brand */}
-      <div className="p-4 sm:p-5 text-center relative overflow-hidden flex flex-col items-center border-b border-slate-100 dark:border-zinc-800" style={{ backgroundColor: '#110974', color: '#fff' }}>
-        <div className="absolute top-0 right-0 p-8 bg-blue-600/10 rounded-full blur-2xl"></div>
-        <div className="tiranga-border-circle mb-2 shadow-xl transition-transform hover:scale-105">
-          <img 
-            src={BRAND_LOGO_SRC} 
-            alt="Vyapar Bridge Logo" 
-            className="w-12 h-12 sm:w-14 sm:h-14 object-cover rounded-full bg-slate-50 p-1"
-            onError={(e) => {
-              const parent = (e.target as HTMLElement).parentElement;
-              if (parent) parent.style.display = 'none';
-            }}
-          />
-        </div>
-        <h1 
-          className="text-2xl sm:text-3xl font-black italic tracking-wider tiranga-shimmer-text flex items-center justify-center gap-2 drop-shadow-md py-0.5"
-          style={{ fontFamily: "'Playfair Display', 'Dancing Script', serif", fontWeight: 900 }}
-        >VYAPAR BRIDGE</h1>
-        <p className="text-[11px] sm:text-xs text-amber-200 font-bold leading-relaxed max-w-xs mx-auto text-balance mt-1 drop-shadow-sm uppercase tracking-wider">
-          Open Network for Digital Commerce (ONDC)
-        </p>
-        <p 
-          className="text-xs sm:text-sm font-black italic tracking-[0.2em] mt-0.5 uppercase text-center w-full bg-gradient-to-r from-amber-300 via-orange-300 to-amber-200 bg-clip-text text-transparent drop-shadow-md"
-          style={{ fontFamily: "'Playfair Display', 'Cinzel', 'Georgia', serif" }}
-        >
-          ‚ú® VOCAL FOR LOCAL ‚ú®
-        </p>
-        <div className="mt-2 inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-white/90 border border-blue-400/40 text-[10px] font-black tracking-widest uppercase shadow-sm" style={{ color: '#3030ff' }}>
-          <span>üáÆüá≥ DIGITAL INDIA NETWORK</span>
-        </div>
-      </div>
-
-        {/* 3 MAIN ROLE TABS AT TOP (Merchants, Dealers & Customer) */}
-        <div className="p-3 bg-slate-100 dark:bg-zinc-950 border-b border-slate-200 dark:border-zinc-800">
-          <label className="block text-[11px] font-bold text-black/70 dark:text-zinc-400 uppercase tracking-wider mb-2 text-center">
-            Select Your Account Type / ‡§∂‡•ç‡§∞‡•á‡§£‡•Ä ‡§ö‡•Å‡§®‡•á‡§Ç:
-          </label>
-          <div className="grid grid-cols-3 gap-1.5">
-            {/* MERCHANTS TAB */}
-            <button
-              type="button"
-              onClick={() => setSelectedRole('factory')}
-              className={cn(
-                "py-3 px-1 rounded-xl text-[10px] font-bold transition-all flex flex-col items-center justify-center gap-1 border cursor-pointer shadow-sm",
-                selectedRole === 'factory'
-                  ? "bg-blue-600 text-white border-blue-500 shadow-md ring-2 ring-blue-400/50"
-                  : "bg-white dark:bg-zinc-900 text-black dark:text-zinc-300 border-slate-200 dark:border-zinc-800 hover:border-blue-300"
-              )}
-            >
-              <Building2 className="w-4 h-4" />
-              <span className="truncate w-full text-center">MERCHANTS</span>
-              <span className="text-[9px] opacity-80 font-normal">‡§µ‡•ç‡§Ø‡§æ‡§™‡§æ‡§∞‡•Ä</span>
-            </button>
-
-            {/* DEALERS & TRADERS TAB */}
-            <button
-              type="button"
-              onClick={() => setSelectedRole('dealer')}
-              className={cn(
-                "py-3 px-1 rounded-xl text-[10px] font-bold transition-all flex flex-col items-center justify-center gap-1 border cursor-pointer shadow-sm",
-                selectedRole === 'dealer'
-                  ? "bg-emerald-600 text-white border-emerald-500 shadow-md ring-2 ring-emerald-400/50"
-                  : "bg-white dark:bg-zinc-900 text-black dark:text-zinc-300 border-slate-200 dark:border-zinc-800 hover:border-emerald-300"
-              )}
-            >
-              <Store className="w-4 h-4" />
-              <span className="truncate w-full text-center">DEALERS & TRADERS</span>
-              <span className="text-[9px] opacity-80 font-normal">‡§°‡•Ä‡§≤‡§∞ ‡§µ ‡§µ‡§ø‡§ï‡•ç‡§∞‡•á‡§§‡§æ</span>
-            </button>
-
-            {/* CUSTOMER TAB */}
-            <button
-              type="button"
-              onClick={() => setSelectedRole('customer')}
-              className={cn(
-                "py-3 px-1 rounded-xl text-[10px] font-bold transition-all flex flex-col items-center justify-center gap-1 border cursor-pointer shadow-sm",
-                selectedRole === 'customer'
-                  ? "bg-amber-600 text-black border-amber-500 shadow-md ring-2 ring-amber-400/50"
-                  : "bg-white dark:bg-zinc-900 text-black dark:text-zinc-300 border-slate-200 dark:border-zinc-800 hover:border-amber-300"
-              )}
-            >
-              <Users className="w-4 h-4" />
-              <span className="truncate w-full text-center">CUSTOMER</span>
-              <span className="text-[9px] opacity-80 font-normal">‡§ó‡•ç‡§∞‡§æ‡§π‡§ï</span>
-            </button>
-          </div>
-        </div>
-
-        {/* Selected Role Badge Header */}
-        <div className="px-6 pt-4 pb-2 text-center">
-          <div className={cn(
-            "inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold tracking-wide uppercase shadow-sm border",
-            selectedRole === 'factory' 
-              ? "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/60 dark:text-blue-300 dark:border-blue-800"
-              : (selectedRole === 'customer' ? "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/60 dark:text-amber-300 dark:border-amber-800" : "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/60 dark:text-emerald-300 dark:border-emerald-800")
-          )}>
-            {selectedRole === 'factory' ? <Building2 className="w-3.5 h-3.5" /> : (selectedRole === 'customer' ? <Users className="w-3.5 h-3.5" /> : <Store className="w-3.5 h-3.5" />)}
-            <span>
-              {selectedRole === 'factory' ? 'MERCHANTS & MANUFACTURERS PORTAL (‡§µ‡•ç‡§Ø‡§æ‡§™‡§æ‡§∞‡•Ä)' : (selectedRole === 'customer' ? 'LOCAL BUYER / CUSTOMER PORTAL (‡§ó‡•ç‡§∞‡§æ‡§π‡§ï)' : 'DEALERS & TRADERS PORTAL (‡§°‡•Ä‡§≤‡§∞ ‡§µ ‡§µ‡§ø‡§ï‡•ç‡§∞‡•á‡§§‡§æ)')}
-            </span>
-          </div>
-        </div>
-
-        {/* Login vs Signup Mode Switcher */}
-        <div className="px-6 my-2">
-          <div className="flex bg-slate-100 dark:bg-zinc-800/80 p-1 rounded-xl border border-slate-200 dark:border-zinc-700">
-            <button
-              type="button"
-              onClick={() => setIsLogin(true)}
-              className={cn(
-                "flex-1 py-2 text-xs sm:text-sm font-extrabold rounded-lg transition-all cursor-pointer text-center",
-                isLogin 
-                  ? "bg-blue-600 text-white shadow-md font-extrabold" 
-                  : "text-slate-700 dark:text-zinc-200 hover:text-blue-600 dark:hover:text-blue-400 font-bold"
-              )}
-            >
-              Log In
-            </button>
-            <button
-              type="button"
-              onClick={() => setIsLogin(false)}
-              className={cn(
-                "flex-1 py-2 text-xs sm:text-sm font-extrabold rounded-lg transition-all cursor-pointer text-center",
-                !isLogin 
-                  ? "bg-blue-600 text-white shadow-md font-extrabold" 
-                  : "text-slate-700 dark:text-zinc-200 hover:text-blue-600 dark:hover:text-blue-400 font-bold"
-              )}
-            >
-              Sign Up / Register
-            </button>
-          </div>
-        </div>
-
-        {/* Form Container */}
-        <form 
-          id="auth-login-form"
-          noValidate
-          className="p-4 sm:p-6 flex flex-col gap-3.5" 
-          onSubmit={(e) => {
-            e.preventDefault();
-            handleSubmit(e);
-          }}
-        >
-          {!isLogin && (
-            <>
-              {selectedRole === 'customer' ? (
-                <>
-                  {/* Customer Type Dropdown */}
-                  <div>
-                    <label className="block text-xs font-bold text-black dark:text-zinc-300 mb-1">
-                      Customer Type *
-                    </label>
-                    <select
-                      value={customerType}
-                      onChange={(e) => setCustomerType(e.target.value)}
-                      className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-500"
-                    >
-                      <option value="Builder">Builder</option>
-                      <option value="Architect">Architect</option>
-                      <option value="General Customer">General Customer</option>
-                    </select>
-                  </div>
-                  
-                  {/* Customer Full Name */}
-                  <div>
-                    <label className="block text-xs font-bold text-black dark:text-zinc-300 mb-1">
-                      Your First Name / Full Name *
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="Enter your full name"
-                      className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-500"
-                      value={companyName}
-                      onChange={e => setCompanyName(e.target.value)}
-                    />
-                  </div>
-
-                  {/* Phone & Email */}
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="block text-xs font-bold text-black dark:text-zinc-300 mb-1">
-                        Phone / Mobile *
-                      </label>
-                      <input
-                        type="tel"
-                        required
-                        placeholder="Enter phone number"
-                        className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-500"
-                        value={phone}
-                        onChange={e => setPhone(e.target.value)}
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-bold text-black dark:text-zinc-300 mb-1">
-                        Email ID
-                      </label>
-                      <input
-                        type="email"
-                        placeholder="Enter email address"
-                        className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-500"
-                        value={email}
-                        onChange={e => setEmail(e.target.value)}
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-black dark:text-zinc-300 mb-1">City (Optional)</label>
-                    <input
-                      type="text"
-                      placeholder="Enter your city"
-                      className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-500"
-                      value={city}
-                      onChange={e => setCity(e.target.value)}
-                    />
-                  </div>
-                  
-                  {/* Building Requirements */}
-                  <div>
-                    <label className="block text-xs font-bold text-black dark:text-zinc-300 mb-1">
-                      Building Requirements * <span className="font-normal text-[10px]">(e.g., Tiles, Sanitaryware, Bathwares, qty)</span>
-                    </label>
-                    <textarea
-                      required
-                      placeholder="E.g., Need 500 sqft vitrified tiles and 2 EWCs for my house..."
-                      className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-500 min-h-[80px]"
-                      value={customerRequirements}
-                      onChange={(e) => setCustomerRequirements(e.target.value)}
-                    ></textarea>
-                  </div>
-                </>
-              ) : (
-                <>
-                  {/* Company / Showroom Name */}
-                  <div>
-                    <label className="block text-xs font-bold text-black dark:text-zinc-300 mb-1">
-                      {selectedRole === 'factory' ? 'Factory / Company Name *' : 'Showroom / Dealership Name *'}
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      placeholder={selectedRole === 'factory' ? 'Enter Factory / Company Name' : 'Enter Showroom / Dealership Name'}
-                      className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
-                      value={companyName}
-                      onChange={e => setCompanyName(e.target.value)}
-                    />
-                  </div>
-
-                  {/* Primary Industry & Business Sector Selector */}
-                  <div className="space-y-2">
-                    <label className="block text-xs font-bold text-black dark:text-zinc-300 mb-1 flex items-center justify-between">
-                      <span>Business & Trade Sector / ‡§µ‡•ç‡§Ø‡§æ‡§™‡§æ‡§∞ ‡§∂‡•ç‡§∞‡•á‡§£‡•Ä *</span>
-                      <span className="text-[10px] text-blue-600 dark:text-blue-400 font-bold">Select or Type Category</span>
-                    </label>
-                    <select
-                      value={selectedCategories[0] || ALL_CATEGORY_OPTIONS[0]}
-                      onChange={(e) => {
-                        const chosen = e.target.value;
-                        if (chosen === 'CUSTOM_INPUT') {
-                          // Prompt or focus on custom category input field
-                          return;
-                        }
-                        if (!selectedCategories.includes(chosen)) {
-                          setSelectedCategories([chosen, ...selectedCategories.filter(c => c !== chosen)]);
-                        }
-                      }}
-                      className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-xs font-bold text-black dark:text-white outline-none focus:border-blue-500 cursor-pointer"
-                    >
-                      <optgroup label="üõ†Ô∏è Karigar, Plumbers, Electricians & Skilled Mistri (‡§ï‡§æ‡§∞‡•Ä‡§ó‡§∞ ‡§µ ‡§Æ‡§ø‡§∏‡•ç‡§§‡•ç‡§∞‡•Ä)">
-                        <option value="Plumbers & Sanitary Fitting Experts (‡§™‡•ç‡§≤‡§Ç‡§¨‡§∞ ‡§µ ‡§´‡§ø‡§ü‡§ø‡§Ç‡§ó ‡§Æ‡§ø‡§∏‡•ç‡§§‡•ç‡§∞‡•Ä)">Plumbers & Sanitary Fitting Experts (‡§™‡•ç‡§≤‡§Ç‡§¨‡§∞ ‡§µ ‡§´‡§ø‡§ü‡§ø‡§Ç‡§ó ‡§Æ‡§ø‡§∏‡•ç‡§§‡•ç‡§∞‡•Ä)</option>
-                        <option value="Electricians & Wiring Experts (‡§á‡§≤‡•á‡§ï‡•ç‡§ü‡•ç‡§∞‡•Ä‡§∂‡§ø‡§Ø‡§® ‡§µ ‡§µ‡§æ‡§Ø‡§∞‡§ø‡§Ç‡§ó)">Electricians & House Wiring Experts (‡§á‡§≤‡•á‡§ï‡•ç‡§ü‡•ç‡§∞‡•Ä‡§∂‡§ø‡§Ø‡§® ‡§µ ‡§π‡§æ‡§â‡§∏ ‡§µ‡§æ‡§Ø‡§∞‡§ø‡§Ç‡§ó)</option>
-                        <option value="Tile, Marble & Granite Masons (‡§ü‡§æ‡§á‡§≤‡•ç‡§∏ ‡§µ ‡§Æ‡§æ‡§∞‡•ç‡§¨‡§≤ ‡§Æ‡§ø‡§∏‡•ç‡§§‡•ç‡§∞‡•Ä)">Tile, Marble & Granite Masons (‡§ü‡§æ‡§á‡§≤‡•ç‡§∏, ‡§Æ‡§æ‡§∞‡•ç‡§¨‡§≤ ‡§µ ‡§ó‡•ç‡§∞‡•á‡§®‡§æ‡§á‡§ü ‡§Æ‡§ø‡§∏‡•ç‡§§‡•ç‡§∞‡•Ä)</option>
-                        <option value="Carpenters & Modular Wood Experts (‡§¨‡§¢‡§º‡§à ‡§µ ‡§≤‡§ï‡§°‡§º‡•Ä ‡§ï‡§æ‡§∞‡•Ä‡§ó‡§∞)">Carpenters & Modular Wood Experts (‡§¨‡§¢‡§º‡§à, ‡§ï‡§ø‡§ö‡§® ‡§µ ‡§´‡§∞‡•ç‡§®‡•Ä‡§ö‡§∞ ‡§ï‡§æ‡§∞‡•Ä‡§ó‡§∞)</option>
-                        <option value="Painters & Wall Putty Contractors (‡§™‡•á‡§Ç‡§ü‡§∞ ‡§µ ‡§™‡•Å‡§ü‡•ç‡§ü‡•Ä ‡§ï‡§æ‡§∞‡•Ä‡§ó‡§∞)">Painters & Wall Putty Contractors (‡§™‡•á‡§Ç‡§ü‡§∞, ‡§™‡•Å‡§ü‡•ç‡§ü‡•Ä ‡§µ ‡§™‡•Ä‡§ì‡§™‡•Ä)</option>
-                        <option value="AC, Fridge & Appliance Technicians (AC ‡§µ ‡§´‡•ç‡§∞‡§ø‡§ú ‡§Æ‡•à‡§ï‡•á‡§®‡§ø‡§ï)">AC, Fridge & Appliance Technicians (AC, ‡§´‡•ç‡§∞‡§ø‡§ú ‡§µ RO ‡§Æ‡•à‡§ï‡•á‡§®‡§ø‡§ï)</option>
-                        <option value="Welders & Iron Shed Fabricators (‡§µ‡•á‡§≤‡•ç‡§°‡§∞ ‡§µ ‡§´‡•à‡§¨‡•ç‡§∞‡§ø‡§ï‡•á‡§ü‡§∞)">Welders & Iron Shed Fabricators (‡§µ‡•á‡§≤‡•ç‡§°‡§∞, ‡§ó‡•á‡§ü ‡§µ ‡§´‡•à‡§¨‡•ç‡§∞‡§ø‡§ï‡•á‡§ü‡§∞)</option>
-                        <option value="CCTV, Network & Security Setup (CCTV ‡§µ ‡§∏‡§ø‡§ï‡•ç‡§Ø‡•ã‡§∞‡§ø‡§ü‡•Ä)">CCTV, Camera & Network Technicians (CCTV ‡§ï‡•à‡§Æ‡§∞‡§æ ‡§µ ‡§®‡•á‡§ü‡§µ‡§∞‡•ç‡§ï‡§ø‡§Ç‡§ó)</option>
-                      </optgroup>
-                      <optgroup label="üèóÔ∏è Builders, Civil Contractors & Construction">
-                        <option value="Builders & Civil Contractors (‡§¨‡§ø‡§≤‡•ç‡§°‡§∞, ‡§†‡•á‡§ï‡•á‡§¶‡§æ‡§∞ ‡§µ ‡§ï‡§Ç‡§∏‡•ç‡§ü‡•ç‡§∞‡§ï‡•ç‡§∂‡§®)">Builders & Civil Contractors (‡§¨‡§ø‡§≤‡•ç‡§°‡§∞, ‡§†‡•á‡§ï‡•á‡§¶‡§æ‡§∞ ‡§µ ‡§ï‡§Ç‡§∏‡•ç‡§ü‡•ç‡§∞‡§ï‡•ç‡§∂‡§®)</option>
-                        <option value="Civil Infrastructure, Roads & Structural Works">Civil Infra, Roads & Structural Contracting (‡§∏‡•ú‡§ï, ‡§™‡•Å‡§≤ ‡§µ ‡§∏‡•ç‡§ü‡•ç‡§∞‡§ï‡•ç‡§ö‡§∞ ‡§†‡•á‡§ï‡•á‡§¶‡§æ‡§∞)</option>
-                        <option value="Commercial Buildings, Malls & Shops">Commercial Buildings & Malls (‡§Æ‡•â‡§≤, ‡§¶‡•Å‡§ï‡§æ‡§®‡•á‡§Ç ‡§µ ‡§ë‡§´‡§ø‡§∏)</option>
-                        <option value="Residential Apartments, Villas & Plots">Residential Apartments & Villas (‡§´‡•ç‡§≤‡•à‡§ü‡•ç‡§∏, ‡§µ‡§ø‡§≤‡§æ ‡§µ ‡§™‡•ç‡§≤‡•â‡§ü‡•ç‡§∏)</option>
-                        <option value="Interior Designers, Plumbers & Electricians">Interior Designers, Plumbers & Electricians (‡§á‡§Ç‡§ü‡•Ä‡§∞‡§ø‡§Ø‡§∞, ‡§™‡•ç‡§≤‡§Ç‡§¨‡§∞ ‡§µ ‡§á‡§≤‡•á‡§ï‡•ç‡§ü‡•ç‡§∞‡§ø‡§∂‡§ø‡§Ø‡§®)</option>
-                      </optgroup>
-                      <optgroup label="üè• Doctors, Clinics, Hospitals & Healthcare">
-                        <option value="Doctors, Clinics & Hospitals (‡§°‡•â‡§ï‡•ç‡§ü‡§∞, ‡§ï‡•ç‡§≤‡•Ä‡§®‡§ø‡§ï ‡§µ ‡§Ö‡§∏‡•ç‡§™‡§§‡§æ‡§≤)">Doctors, Clinics & Hospitals (‡§°‡•â‡§ï‡•ç‡§ü‡§∞, ‡§ï‡•ç‡§≤‡•Ä‡§®‡§ø‡§ï ‡§µ ‡§Ö‡§∏‡•ç‡§™‡§§‡§æ‡§≤)</option>
-                        <option value="Pharmacy, Chemists & Surgical Equipment (‡§¶‡§µ‡§æ ‡§¶‡•Å‡§ï‡§æ‡§® ‡§µ ‡§∏‡§∞‡•ç‡§ú‡§ø‡§ï‡§≤)">Pharmacy, Chemists & Surgical Goods (‡§¶‡§µ‡§æ ‡§¶‡•Å‡§ï‡§æ‡§® ‡§µ ‡§∏‡§∞‡•ç‡§ú‡§ø‡§ï‡§≤ ‡§∏‡§æ‡§Æ‡§æ‡§®)</option>
-                        <option value="Diagnostic Labs & Pathology Centers (‡§™‡•à‡§•‡•ã‡§≤‡•â‡§ú‡•Ä ‡§µ ‡§°‡§æ‡§Ø‡§ó‡•ç‡§®‡•ã‡§∏‡•ç‡§ü‡§ø‡§ï)">Diagnostic Labs & Pathology (‡§™‡•à‡§•‡•ã‡§≤‡•â‡§ú‡•Ä ‡§≤‡•à‡§¨ ‡§µ ‡§ü‡•á‡§∏‡•ç‡§ü ‡§∏‡•á‡§Ç‡§ü‡§∞)</option>
-                      </optgroup>
-                      <optgroup label="üè® Hotels, Resorts, Guest Houses & Food">
-                        <option value="Hotels, Resorts & Guest Houses (‡§π‡•ã‡§ü‡§≤, ‡§ó‡•á‡§∏‡•ç‡§ü ‡§π‡§æ‡§â‡§∏ ‡§µ ‡§∞‡§ø‡§∏‡•â‡§∞‡•ç‡§ü)">Hotels, Resorts & Guest Houses (‡§π‡•ã‡§ü‡§≤, ‡§ó‡•á‡§∏‡•ç‡§ü ‡§π‡§æ‡§â‡§∏ ‡§µ ‡§∞‡§ø‡§∏‡•â‡§∞‡•ç‡§ü)</option>
-                        <option value="Restaurants, Cafes & Catering Services (‡§∞‡•á‡§∏‡•ç‡§ü‡•ã‡§∞‡•á‡§Ç‡§ü ‡§µ ‡§ï‡•à‡§ü‡§∞‡§ø‡§Ç‡§ó)">Restaurants, Cafes & Catering (‡§∞‡•á‡§∏‡•ç‡§ü‡•ã‡§∞‡•á‡§Ç‡§ü, ‡§ï‡•à‡§´‡•á ‡§µ ‡§ï‡•à‡§ü‡§∞‡§∞‡•ç‡§∏)</option>
-                        <option value="Banquet Halls & Marriage Lawns (‡§Æ‡•à‡§∞‡§ø‡§ú ‡§≤‡•â‡§® ‡§µ ‡§¨‡•à‡§Ç‡§ï‡•ç‡§µ‡•á‡§ü ‡§π‡•â‡§≤)">Banquet Halls & Marriage Lawns (‡§Æ‡•à‡§∞‡§ø‡§ú ‡§≤‡•â‡§® ‡§µ ‡§¨‡•à‡§Ç‡§ï‡•ç‡§µ‡•á‡§ü ‡§π‡•â‡§≤)</option>
-                      </optgroup>
-                      <optgroup label="üîß Garages, Mechanics & Auto Workshops">
-                        <option value="Automobile Garages, Mechanics & Car Service (‡§ó‡•à‡§∞‡•á‡§ú, ‡§Æ‡•à‡§ï‡•á‡§®‡§ø‡§ï ‡§µ ‡§∏‡§∞‡•ç‡§µ‡§ø‡§∏ ‡§∏‡•á‡§Ç‡§ü‡§∞)">Automobile Garages, Mechanics & Car Service (‡§ó‡•à‡§∞‡•á‡§ú, ‡§Æ‡•à‡§ï‡•á‡§®‡§ø‡§ï ‡§µ ‡§ï‡§æ‡§∞ ‡§∏‡§∞‡•ç‡§µ‡§ø‡§∏)</option>
-                        <option value="Car Wash, Detailing & Wheel Alignment (‡§ï‡§æ‡§∞ ‡§µ‡•â‡§∂ ‡§µ ‡§Ö‡§≤‡§æ‡§á‡§®‡§Æ‡•á‡§Ç‡§ü)">Car Wash, Detailing & Wheel Alignment (‡§ï‡§æ‡§∞ ‡§µ‡•â‡§∂ ‡§µ ‡§Ö‡§≤‡§æ‡§á‡§®‡§Æ‡•á‡§Ç‡§ü)</option>
-                        <option value="Truck & Commercial Fleet Repair Workshop (‡§ü‡•ç‡§∞‡§ï ‡§∞‡§ø‡§™‡•á‡§Ø‡§∞‡§ø‡§Ç‡§ó ‡§µ‡§∞‡•ç‡§ï‡§∂‡•â‡§™)">Truck & Commercial Fleet Repair Workshop (‡§ü‡•ç‡§∞‡§ï ‡§µ ‡§ï‡§Æ‡§∞‡•ç‡§∂‡§ø‡§Ø‡§≤ ‡§µ‡§∞‡•ç‡§ï‡§∂‡•â‡§™)</option>
-                        <option value="Auto Spares, Tyres & Lubricants">Auto Spares, Tyres & Lubricants (‡§ë‡§ü‡•ã ‡§™‡§æ‡§∞‡•ç‡§ü‡•ç‡§∏ ‡§µ ‡§ü‡§æ‡§Ø‡§∞)</option>
-                      </optgroup>
-                      <optgroup label="üíª IT, Computers, Mobiles & Software">
-                        <option value="Computers, Laptops & IT Hardware">Computers, Laptops & Assembly PCs (‡§ï‡§Ç‡§™‡•ç‡§Ø‡•Ç‡§ü‡§∞, ‡§≤‡•à‡§™‡§ü‡•â‡§™ ‡§µ ‡§π‡§æ‡§∞‡•ç‡§°‡§µ‡•á‡§Ø‡§∞)</option>
-                        <option value="Mobile Phones, Accessories & Repair">Mobile Phones, Accessories & Repair (‡§Æ‡•ã‡§¨‡§æ‡§á‡§≤ ‡§∂‡•â‡§™, ‡§ï‡§µ‡§∞‡•ç‡§∏ ‡§µ ‡§∞‡§ø‡§™‡•á‡§Ø‡§∞)</option>
-                        <option value="GST Billing, POS & ERP Software">GST Billing, POS & ERP Software (‡§ú‡•Ä‡§è‡§∏‡§ü‡•Ä ‡§¨‡§ø‡§≤‡§ø‡§Ç‡§ó ‡§µ ‡§à‡§Ü‡§∞‡§™‡•Ä)</option>
-                        <option value="Websites, Mobile Apps & SaaS Code">Websites, Mobile Apps & SaaS Code (‡§µ‡•á‡§¨‡§∏‡§æ‡§á‡§ü ‡§µ ‡§ê‡§™ ‡§°‡•á‡§µ‡§≤‡§™‡§Æ‡•á‡§Ç‡§ü)</option>
-                        <option value="Consumer Electronics & Appliances">Consumer Electronics & Appliances (‡§ü‡•Ä‡§µ‡•Ä, ‡§è‡§∏‡•Ä, ‡§´‡•ç‡§∞‡§ø‡§ú ‡§µ ‡§á‡§≤‡•á‡§ï‡•ç‡§ü‡•ç‡§∞‡•â‡§®‡§ø‡§ï‡•ç‡§∏)</option>
-                        <option value="Digital Marketing & IT Infrastructure">Digital Marketing & CCTV (‡§°‡§ø‡§ú‡§ø‡§ü‡§≤ ‡§Æ‡§æ‡§∞‡•ç‡§ï‡•á‡§ü‡§ø‡§Ç‡§ó ‡§µ ‡§∏‡•Ä‡§∏‡•Ä‡§ü‡•Ä‡§µ‡•Ä)</option>
-                      </optgroup>
-                      <optgroup label="üöö Transporters & Logistics Services">
-                        <option value="Truck Transporters & Logistics Services">Truck Transporters & Logistics Services (‡§ü‡•ç‡§∞‡§æ‡§Ç‡§∏‡§™‡•ã‡§∞‡•ç‡§ü ‡§µ ‡§ë‡§≤ ‡§á‡§Ç‡§°‡§ø‡§Ø‡§æ ‡§ü‡•ç‡§∞‡§ï)</option>
-                      </optgroup>
-                      <optgroup label="üöó Automobiles, Showrooms & Vehicles">
-                        <option value="Commercial Trucks & Heavy Loader Vehicles">Commercial Trucks & Cargo Vehicles (‡§ü‡•ç‡§∞‡§ï ‡§µ ‡§ï‡§Æ‡§∞‡•ç‡§∂‡§ø‡§Ø‡§≤ ‡§≤‡•ã‡§°‡§∞)</option>
-                        <option value="Cars, SUVs & Preowned Vehicle Dealers">Cars, SUVs & Preowned Vehicle Dealers (‡§ï‡§æ‡§∞ ‡§µ ‡§∏‡•á‡§ï‡•á‡§Ç‡§° ‡§π‡•à‡§Ç‡§° ‡§ï‡§æ‡§∞ ‡§∂‡•ã‡§∞‡•Ç‡§Æ)</option>
-                        <option value="Bikes, Scooters & EV Electric Vehicles">Bikes, Scooters & EV Showrooms (‡§¨‡§æ‡§á‡§ï, ‡§∏‡•ç‡§ï‡•Ç‡§ü‡•Ä ‡§µ EV)</option>
-                      </optgroup>
-                      <optgroup label="‚öôÔ∏è Hardware, Tools & Machinery">
-                        <option value="Power Tools, Hardware & Industrial Machinery">Power Tools, Hardware & Industrial Machinery (‡§™‡§æ‡§µ‡§∞ ‡§ü‡•Ç‡§≤‡•ç‡§∏ ‡§µ ‡§Æ‡§∂‡•Ä‡§®‡§∞‡•Ä)</option>
-                        <option value="Wires, Cables & Modular Switches">Wires, Cables & Switches (‡§á‡§≤‡•á‡§ï‡•ç‡§ü‡•ç‡§∞‡§ø‡§ï‡§≤ ‡§§‡§æ‡§∞ ‡§µ ‡§∏‡•ç‡§µ‡§ø‡§ö)</option>
-                        <option value="PVC/CPVC Pipes & Fittings">PVC/CPVC Pipes & Fittings (‡§™‡•Ä‡§µ‡•Ä‡§∏‡•Ä ‡§™‡§æ‡§á‡§™ ‡§µ ‡§´‡§ø‡§ü‡§ø‡§Ç‡§ó‡•ç‡§∏)</option>
-                        <option value="TMT Steel, Sariya & Cement Bags">TMT Steel, Sariya & Cement Bags (‡§∏‡§∞‡§ø‡§Ø‡§æ ‡§µ ‡§∏‡•Ä‡§Æ‡•á‡§Ç‡§ü)</option>
-                      </optgroup>
-                      <optgroup label="üß™ Plastics, PVC & Polymers">
-                        <option value="PP, HDPE, LLDPE Granules & Masterbatch">PP, HDPE, LLDPE Granules & Masterbatch (‡§™‡•ç‡§≤‡§æ‡§∏‡•ç‡§ü‡§ø‡§ï ‡§¶‡§æ‡§®‡§æ)</option>
-                        <option value="Injection Molding & Plastic Containers">Injection Molding & Containers (‡§™‡•ç‡§≤‡§æ‡§∏‡•ç‡§ü‡§ø‡§ï ‡§°‡§ø‡§¨‡•ç‡§¨‡•á)</option>
-                      </optgroup>
-                      <optgroup label="üëû Leather & Footwear">
-                        <option value="Formal Shoes, Boots & Slippers">Formal Shoes, Boots & Slippers (‡§≤‡•á‡§¶‡§∞ ‡§ú‡•Ç‡§§‡•á ‡§µ ‡§ö‡§™‡•ç‡§™‡§≤)</option>
-                        <option value="Leather Jackets, Wallets, Bags & Belts">Leather Jackets, Wallets & Bags (‡§≤‡•á‡§¶‡§∞ ‡§ú‡•à‡§ï‡•á‡§ü ‡§µ ‡§¨‡•à‡§ó)</option>
-                      </optgroup>
-                      <optgroup label="üß± Tiles, Ceramics & Sanitaryware">
-                        <option value="Vitrified Tiles (GVT/PGVT)">Vitrified Tiles (GVT/PGVT)</option>
-                        <option value="Ceramic & Wall Tiles">Ceramic & Wall Tiles</option>
-                        <option value="Sanitaryware & EWCs">Sanitaryware & EWCs</option>
-                        <option value="Bathware & CP Fittings">Bathware & CP Fittings</option>
-                        <option value="Granite, Marble & Slabs">Granite, Marble & Slabs</option>
-                      </optgroup>
-                      <optgroup label="üëó Textile & Apparel">
-                        <option value="Men's Wear & Suiting">Men's Wear & Suiting</option>
-                        <option value="Women's Ethnic & Fashion">Women's Ethnic & Fashion</option>
-                        <option value="Fabrics, Yarns & Denim">Fabrics, Yarns & Denim</option>
-                      </optgroup>
-                      <optgroup label="üåæ Grocery, FMCG & Agro">
-                        <option value="Grains, Rice & Pulses (‡§¶‡§æ‡§≤/‡§ö‡§æ‡§µ‡§≤)">Grains, Rice & Pulses (‡§¶‡§æ‡§≤/‡§ö‡§æ‡§µ‡§≤)</option>
-                        <option value="Spices & Dry Fruits (‡§Æ‡§∏‡§æ‡§≤‡•á/‡§Æ‡•á‡§µ‡•á)">Spices & Dry Fruits (‡§Æ‡§∏‡§æ‡§≤‡•á/‡§Æ‡•á‡§µ‡•á)</option>
-                        <option value="Edible Oils & Desi Ghee (‡§§‡•á‡§≤/‡§ò‡•Ä)">Edible Oils & Desi Ghee (‡§§‡•á‡§≤/‡§ò‡•Ä)</option>
-                      </optgroup>
-                      <optgroup label="‚ú® Custom / Other Trade">
-                        <option value="Other Business / Custom Trade Category (‡§Ö‡§®‡•ç‡§Ø ‡§ï‡•ã‡§à ‡§≠‡•Ä ‡§µ‡•ç‡§Ø‡§æ‡§™‡§æ‡§∞)">Other Business / Custom (‡§Ö‡§®‡•ç‡§Ø ‡§ï‡•ã‡§à ‡§≠‡•Ä ‡§µ‡•ç‡§Ø‡§æ‡§™‡§æ‡§∞)</option>
-                      </optgroup>
-                    </select>
-
-                    {/* Custom Specific Category Input Field */}
-                    <div className="bg-blue-50/70 dark:bg-blue-950/40 p-2.5 rounded-xl border border-blue-200 dark:border-blue-800 space-y-1">
-                      <label className="block text-[11px] font-bold text-blue-900 dark:text-blue-200 flex items-center gap-1.5">
-                        <Tag className="w-3.5 h-3.5 text-blue-600" />
-                        <span>Specify Your Exact Profession / Category (‡§Ö‡§™‡§®‡§æ ‡§∏‡§ü‡•Ä‡§ï ‡§µ‡•ç‡§Ø‡§æ‡§™‡§æ‡§∞ ‡§≤‡§ø‡§ñ‡•á‡§Ç):</span>
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="e.g. Civil Contractor / Heart Specialist Doctor / Grand Palace Hotel / Royal Car Garage"
-                        value={customCategoryInput}
-                        onChange={(e) => setCustomCategoryInput(e.target.value)}
-                        className="w-full bg-white dark:bg-zinc-900 border border-blue-300 dark:border-blue-700 rounded-lg px-3 py-1.5 text-xs text-black dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-                      />
-                      <p className="text-[10px] text-blue-700 dark:text-blue-300">
-                        üí° Yeh category aapki profile aur posts par highlight hogi (Jaise: Doctor, Hotel Owner, Garage, Civil Contractor aadi).
-                      </p>
-                    </div>
-
-                    <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto scrollbar-thin p-1 bg-slate-100 dark:bg-zinc-800/60 rounded-xl border border-slate-200 dark:border-zinc-800">
-                      {availableCategories.map(cat => (
-                        <button
-                          key={cat}
-                          type="button"
-                          onClick={() => toggleCategory(cat)}
-                          className={cn(
-                            "text-[11px] px-2.5 py-1 rounded-full border transition-all flex items-center gap-1 cursor-pointer",
-                            selectedCategories.includes(cat)
-                              ? "bg-blue-600 text-white border-blue-600 font-bold shadow-sm"
-                              : "bg-white dark:bg-zinc-800 text-black/80 dark:text-zinc-300 border-slate-200 dark:border-zinc-700 hover:bg-slate-50"
-                          )}
-                        >
-                          <Tag className="w-3 h-3" />
-                          <span>{cat}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* GST / Business Reg Number */}
-                  <GstInput
-                    value={gstNumber}
-                    onChange={setGstNumber}
-                    label="GST Number / GSTIN Tax ID (Optional)"
-                    placeholder="Enter GSTIN Tax ID"
-                  />
-
-                  {/* Phone & Email */}
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="block text-xs font-bold text-black dark:text-zinc-300 mb-1">
-                        Phone / Mobile *
-                      </label>
-                      <input
-                        type="tel"
-                        required
-                        placeholder="Enter phone number"
-                        className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
-                        value={phone}
-                        onChange={e => setPhone(e.target.value)}
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-bold text-black dark:text-zinc-300 mb-1">
-                        Email ID
-                      </label>
-                      <input
-                        type="email"
-                        placeholder="Enter email address"
-                        className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
-                        value={email}
-                        onChange={e => setEmail(e.target.value)}
-                      />
-                    </div>
-                  </div>
-
-                  {/* MANDATORY LOCATION SECTION WITH LIVE GPS BUTTON */}
-                  <div className="bg-slate-50 dark:bg-zinc-800/80 p-3.5 rounded-xl border-2 border-blue-500/40 space-y-2.5">
-                    <div className="flex items-center justify-between">
-                      <label className="text-xs font-bold text-black dark:text-zinc-100 flex items-center gap-1.5">
-                        <MapPin className="w-4 h-4 text-red-500" />
-                        <span>Location & GPS Address * (Mandatory)</span>
-                      </label>
-                      <span className={cn(
-                        "text-[10px] px-2 py-0.5 rounded font-bold flex items-center gap-1",
-                        isLocationSynced 
-                          ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 border border-emerald-400" 
-                          : "bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300"
-                      )}>
-                        {isLocationSynced ? <><CheckCircle2 className="w-3 h-3 text-emerald-600" /> Synced ‚úì</> : 'Required / ‡§Ö‡§®‡§ø‡§µ‡§æ‡§∞‡•ç‡§Ø'}
-                      </span>
-                    </div>
-
-                    <p className="text-[11px] text-black/70 dark:text-zinc-400">
-                      Location sync is required so buyers and dealers can easily discover your roadmap and navigate directly to your factory or showroom on Google Maps.
-                    </p>
-
-                    {/* GPS Detect & Sync Button with Green Tickmark */}
-                    {isLocationSynced ? (
-                      <div className="bg-emerald-50 dark:bg-emerald-950/60 border-2 border-emerald-500 rounded-xl p-3 flex items-center justify-between shadow-sm">
-                        <div className="flex items-center gap-2.5">
-                          <div className="w-8 h-8 rounded-full bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-md">
-                            <Check className="w-5 h-5 stroke-[3]" />
-                          </div>
-                          <div>
-                            <div className="text-xs font-bold text-emerald-800 dark:text-emerald-200 flex items-center gap-1">
-                              <span>Location Synced & Roadmap Ready</span>
-                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 fill-emerald-100 dark:fill-emerald-900" />
-                            </div>
-                            <div className="text-[10px] text-emerald-700 dark:text-emerald-400 font-medium">
-                              Google Maps navigation link active for buyers!
-                            </div>
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={detectLiveLocation}
-                          disabled={isDetectingLocation}
-                          className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300 hover:underline px-2.5 py-1 rounded-lg bg-emerald-100 dark:bg-emerald-900/80 cursor-pointer shrink-0 border border-emerald-300 dark:border-emerald-700"
-                        >
-                          {isDetectingLocation ? 'Syncing...' : 'Re-Sync GPS'}
-                        </button>
-                      </div>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={detectLiveLocation}
-                        disabled={isDetectingLocation}
-                        className="w-full bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 hover:from-blue-700 hover:to-indigo-700 text-black text-xs font-black py-2.5 px-3 rounded-xl flex items-center justify-center gap-2 transition-all shadow-md cursor-pointer disabled:opacity-50 ring-2 ring-blue-400/50"
-                      >
-                        <Locate className="w-4 h-4" />
-                        <span>üìç Sync My Location & GPS Roadmap * (Click Here)</span>
-                      </button>
-                    )}
-
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className="block text-[11px] font-semibold text-black/80 dark:text-zinc-300 mb-1">City *</label>
-                        <input
-                          type="text"
-                          required
-                          placeholder="Enter city"
-                          className="w-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-blue-500"
-                          value={city}
-                          onChange={e => {
-                            setCity(e.target.value);
-                            if (e.target.value) setIsLocationSynced(true);
-                          }}
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-[11px] font-semibold text-black/80 dark:text-zinc-300 mb-1">State *</label>
-                        <input
-                          type="text"
-                          required
-                          placeholder="Enter state"
-                          className="w-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-blue-500"
-                          value={stateName}
-                          onChange={e => setStateName(e.target.value)}
-                        />
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="block text-[11px] font-semibold text-black/80 dark:text-zinc-300 mb-1">Street Address / Landmark *</label>
-                      <input
-                        type="text"
-                        required
-                        placeholder="Enter street address / landmark"
-                        className="w-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-blue-500"
-                        value={address}
-                        onChange={e => {
-                          setAddress(e.target.value);
-                          if (e.target.value) setIsLocationSynced(true);
-                        }}
-                      />
-                    </div>
-                  </div>
-                </>
-              )}
-            </>
-          )}
-
-          {/* Username & Password */}
-          <div>
-            <label className="block text-xs font-bold text-black dark:text-zinc-300 mb-1">
-              Username or Mobile Number *
-            </label>
-            <input
-              type="text"
-              required
-              placeholder={isLogin ? "Enter username or mobile number" : "Choose username"}
-              className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
-              value={username}
-              onChange={e => setUsername(e.target.value)}
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-bold text-black dark:text-zinc-300 mb-1">
-              {isLogin ? "Password *" : "Set Password *"}
-            </label>
-            <input
-              type="password"
-              required
-              placeholder="‚Ä¢‚Ä¢‚Ä¢‚Ä¢‚Ä¢‚Ä¢‚Ä¢‚Ä¢"
-              className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-            />
-          </div>
-
-          {isLogin && (
-            <div className="flex flex-col gap-2 pt-0.5">
-              <div className="flex justify-end">
-                <button
-                  type="button"
-                  onClick={() => setShowForgotPassword(prev => !prev)}
-                  className="text-xs font-bold text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer flex items-center gap-1"
-                >
-                  <Key className="w-3.5 h-3.5" />
-                  <span>{showForgotPassword ? 'Hide Reset Options' : 'Forgot Password? (‡§™‡§æ‡§∏‡§µ‡§∞‡•ç‡§° ‡§≠‡•Ç‡§≤ ‡§ó‡§è?)'}</span>
-                </button>
-              </div>
-
-              {showForgotPassword && (
-                <div className="bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700/60 rounded-2xl p-3.5 space-y-2.5">
-                  <div className="flex items-start gap-2">
-                    <div className="w-7 h-7 rounded-lg bg-amber-100 dark:bg-amber-900/60 flex items-center justify-center text-amber-700 dark:text-amber-300 shrink-0 mt-0.5">
-                      <Lock className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <h4 className="text-xs font-bold text-slate-900 dark:text-slate-100">
-                        Admin Master Password Recovery
-                      </h4>
-                      <p className="text-[11px] text-slate-600 dark:text-slate-300 mt-0.5 leading-relaxed">
-                        Agar aap password bhool gaye hain toh Admin direct ek temporary master password generate karke share kar sakta hai.
-                      </p>
-                    </div>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const resetMsg = `Namaste Vyapar Bridge Admin,\nMain Vyapar Bridge login password bhool gaya hu.\n\nüë§ Username/Mobile: ${username.trim() || 'Nahi pata'}\n\nKripya mera temporary master password generate karke share karein.`;
-                      window.open(`https://api.whatsapp.com/send?phone=919889104477&text=${encodeURIComponent(resetMsg)}`, '_blank');
-                    }}
-                    className="w-full py-2.5 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-extrabold flex items-center justify-center gap-1.5 shadow-sm transition-all cursor-pointer"
-                  >
-                    <Share2 className="w-4 h-4" />
-                    <span>Request Master Password on WhatsApp</span>
-                  </button>
-
-                  <p className="text-[10px] text-slate-500 text-center">
-                    üìû Helpline: +91 98891 04477
-                  </p>
-                </div>
-              )}
-            </div>
-          )}
-
-          {error && (
-            <div className="bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800/60 rounded-xl p-2.5 text-red-600 dark:text-red-300 text-xs font-semibold text-center flex items-center justify-center gap-1.5">
-              <span>‚ö†Ô∏è</span>
-              <span>{error}</span>
-            </div>
-          )}
-
-          <button 
-            id="auth-submit-btn"
-            type="submit"
-            disabled={loading}
-            onClick={(e) => {
-              // Ensure direct click handles submit seamlessly even if form bubbling is intercepted
-              if (!loading) {
-                handleSubmit(e);
-              }
-            }}
-            className={cn(
-              "w-full text-white font-black text-sm rounded-xl py-3.5 mt-1 transition-all shadow-lg flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98] select-none",
-              loading ? "opacity-70 cursor-not-allowed bg-blue-500" : "bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 hover:from-blue-700 hover:to-indigo-700 hover:shadow-xl ring-2 ring-blue-400/40"
-            )}
-          >
-            {loading ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin text-white" />
-                <span>Processing... (‡§≤‡•â‡§ó‡§ø‡§® ‡§π‡•ã ‡§∞‡§π‡§æ ‡§π‡•à...)</span>
-              </>
-            ) : (
-              isLogin 
-                ? `‚ö° Log In as ${selectedRole === 'factory' ? 'Merchant / Company' : (selectedRole === 'customer' ? 'Local Customer' : 'Dealer / Trader')}` 
-                : `‚ú® Create ${selectedRole === 'factory' ? 'Merchant / Factory' : (selectedRole === 'customer' ? 'Customer' : 'Dealer / Trader')} Account`
-            )}
-          </button>
-        </form>
-    </div>
-  );
-}
-
-function SearchPage() {
-  const [query, setQuery] = useState('');
-  const [users, setUsers] = useState<any[]>([]);
-  const [selectedIndustry, setSelectedIndustry] = useState<string>('all');
-  const [selectedConnectUser, setSelectedConnectUser] = useState<any | null>(null);
-  const navigate = useNavigate();
-
-  useEffect(() => {
-    let isMounted = true;
-    const processUserList = (data: any[]) => {
-      if (!Array.isArray(data)) return;
-      setUsers(prev => {
-        const map = new Map();
-        [...prev, ...data].forEach(u => {
-          if (u && (u.id || u.name)) {
-            const key = u.id || u.gstNumber || u.name;
-            if (key && !map.has(key)) map.set(key, u);
-          }
-        });
-        return Array.from(map.values());
-      });
-    };
-
-    // 1. Initial Firestore Fetch
-    fetchAllUsersFromFirestore().then(fbUsers => {
-      if (fbUsers && fbUsers.length > 0) processUserList(fbUsers);
-    }).catch(() => {});
-
-    // 2. Real-time Subscription
-    const unsubscribe = subscribeToUsersFromFirestore((rtUsers) => {
-      if (rtUsers && rtUsers.length > 0) processUserList(rtUsers);
-    });
-
-    // 3. Backend API Fallback
-    safeFetch('/api/users')
-      .then(data => {
-        if (Array.isArray(data)) processUserList(data);
-      })
-      .catch(err => console.error('Search page user fetch error:', err));
-
-    return () => {
-      isMounted = false;
-      if (typeof unsubscribe === 'function') unsubscribe();
-    };
-  }, []);
-
-  const filteredUsers = users.filter(u => {
-    if (selectedIndustry !== 'all') {
-      const uStr = `${u.category || ''} ${u.bio || ''} ${u.name || ''} ${u.companyName || ''}`;
-      if (!matchIndustryOrSubcategory(selectedIndustry, 'all', uStr)) return false;
-    }
-
-    if (!query) return true;
-    const q = (query || '').trim().toLowerCase();
-    return (
-      (u?.name || '').toLowerCase().includes(q) || 
-      (u?.companyName || '').toLowerCase()?.includes(q) ||
-      (u?.role || '').toLowerCase().includes(q) ||
-      (u?.category || '').toLowerCase().includes(q) ||
-      (u?.city || '').toLowerCase().includes(q) ||
-      (u?.state || '').toLowerCase().includes(q) ||
-      (u?.gstNumber || '').toLowerCase().includes(q) ||
-      (u?.bio || '').toLowerCase().includes(q)
-    );
-  }).sort((a, b) => {
-    // 1. ‚Çπ1188 Golden Plan Priority #1
-    const aGold = isUser1188GoldenPlan(a) ? 3 : (a.isVerified || a.verifiedPlan === '99' ? 2 : 1);
-    const bGold = isUser1188GoldenPlan(b) ? 3 : (b.isVerified || b.verifiedPlan === '99' ? 2 : 1);
-    if (aGold !== bGold) return bGold - aGold;
-    return (a.name || '').localeCompare(b.name || '');
-  });
-
-  return (
-    <div className="max-w-2xl mx-auto w-full pt-6 pb-20 md:pb-8 px-4 relative">
-      {/* Connect Modal Dialog */}
-      {selectedConnectUser && (
-        <ConnectUserModal 
-          targetUser={selectedConnectUser}
-          onClose={() => setSelectedConnectUser(null)}
-        />
-      )}
-
-      {/* Main Search Bar */}
-      <div className="relative mb-3">
-        <Search className="w-5 h-5 absolute left-3.5 top-3 text-amber-500 font-bold" />
-        <input 
-          type="text" 
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search Dealers, Factories, Suppliers, GSTIN, City, Categories..." 
-          className="w-full bg-slate-100 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 focus:border-amber-500 rounded-xl pl-11 pr-10 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 transition-all text-black dark:text-zinc-100 font-medium shadow-inner"
-        />
-        {query && (
-          <button 
-            onClick={() => setQuery('')}
-            className="absolute right-3.5 top-3 text-black/60 hover:text-black/80 text-xs font-bold cursor-pointer"
-          >
-            Clear
-          </button>
-        )}
-      </div>
-
-      {/* Quick Industry Filter Pills */}
-      <div className="flex items-center gap-1.5 overflow-x-auto pb-3 mb-3 scrollbar-hide">
-        <button
-          onClick={() => setSelectedIndustry('all')}
-          className={cn(
-            "px-3 py-1.5 rounded-lg text-xs font-bold shrink-0 transition-all border cursor-pointer",
-            selectedIndustry === 'all'
-              ? "bg-slate-950 text-amber-400 border-amber-400 shadow-sm"
-              : "bg-white dark:bg-zinc-900 text-black/70 dark:text-zinc-400 border-slate-200 dark:border-zinc-800 hover:border-amber-400"
-          )}
-        >
-          üåê All Sectors
-        </button>
-        {ALL_INDUSTRIES.map(ind => (
-          <button
-            key={ind.id}
-            onClick={() => setSelectedIndustry(ind.id)}
-            className={cn(
-              "px-3 py-1.5 rounded-lg text-xs font-bold shrink-0 transition-all border cursor-pointer flex items-center gap-1",
-              selectedIndustry === ind.id
-                ? "bg-amber-500 text-slate-950 font-black border-amber-400 shadow-sm"
-                : "bg-white dark:bg-zinc-900 text-black/70 dark:text-zinc-400 border-slate-200 dark:border-zinc-800 hover:border-amber-400"
-            )}
-          >
-            <span>{ind.icon}</span>
-            <span>{ind.shortName}</span>
-          </button>
-        ))}
-      </div>
-
-      <div className="space-y-3">
-        <h3 className="font-bold text-xs text-black/70 dark:text-zinc-400 uppercase tracking-wider mb-2 flex items-center justify-between">
-          <span>{query || selectedIndustry !== 'all' ? `Results (${filteredUsers.length})` : 'Verified B2B Members & Dealers'}</span>
-          <span className="text-[10px] text-amber-600 dark:text-amber-400 font-bold">üáÆüá≥ All India Network</span>
-        </h3>
-        {filteredUsers.length > 0 ? (
-          filteredUsers.map(u => (
-            <div 
-              key={u.id || u.name}
-              onClick={() => setSelectedConnectUser(u)}
-              className="flex items-center justify-between p-3.5 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-xl hover:border-amber-500 dark:hover:border-amber-500 transition-all cursor-pointer group shadow-sm"
-            >
-              <div className="flex items-center gap-3">
-                <div className={cn(
-                  "w-12 h-12 rounded-full overflow-hidden flex items-center justify-center shrink-0 text-lg font-bold text-black/80 dark:text-zinc-300",
-                  u.isVerified ? "tiranga-border-circle p-[2px]" : "bg-slate-200 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700"
-                )}>
-                  <div className="w-full h-full bg-[#E6C76C] dark:bg-black rounded-full overflow-hidden flex items-center justify-center">
-                    {u.avatarUrl || u.avatar ? (
-                      <img src={u.avatarUrl || u.avatar} alt={u.name} className="w-full h-full object-cover" />
-                    ) : (
-                      u.name?.charAt(0) || 'B'
-                    )}
-                  </div>
-                </div>
-                <div>
-                  <div className="font-bold text-sm text-black dark:text-zinc-50 flex items-center gap-1.5 group-hover:text-amber-500 transition-colors">
-                    <span>{u.companyName || u.name}</span>
-                    {shouldShowVerifiedBadge(u) && <VerifiedBadge user={u} size="sm" />}
-                  </div>
-                  <div className="flex items-center gap-2 mt-0.5">
-                    {u.role !== 'customer' && (
-                      <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-amber-500/10 text-amber-700 dark:text-amber-400 capitalize truncate max-w-[120px]">
-                        {Array.isArray(u.category) ? u.category[0] : (u.category || (u.role === 'factory' ? 'üè≠ Factory / Mill' : (u.role === 'dealer' ? 'üè¨ Dealer / Dist.' : u.role)))}
-                      </span>
-                    )}
-                    <span className="text-xs text-black/60 dark:text-zinc-400">
-                      {u.city ? `${u.city}, ${u.state || ''}` : (u.category || 'Commerce')}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <button 
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setSelectedConnectUser(u);
-                  }}
-                  className="text-xs font-black px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-slate-950 shadow transition-transform active:scale-95 cursor-pointer shrink-0"
-                >
-                  ‚ö° Connect
-                </button>
-              </div>
-            </div>
-          ))
-        ) : (
-          <p className="text-center text-sm text-black/70 dark:text-zinc-400 py-8">
-            No profiles found matching "{query}". Try searching by another city, GSTIN, dealer name, or sector.
-          </p>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function RoadmapPage({ user, userLocation }: { user?: any; userLocation?: { lat: number; lng: number } | null }) {
-  const currentUser = user;
-  const activeUserId = currentUser?.id || localStorage.getItem('vyapar_user_id');
-  const [dealers, setDealers] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  // Star Rating live synchronizer inside RoadmapPage (Dealer Directory)
-  useEffect(() => {
-    const handleRatingSync = (e: CustomEvent) => {
-      const { userId: updatedId, ratingAverage: newAvg, ratingCount: newCount } = e.detail || {};
-      setDealers(prev => prev.map(d => {
-        if (String(d.id) === String(updatedId)) {
-          return { ...d, ratingAverage: newAvg, ratingCount: newCount };
-        }
-        return d;
-      }));
-    };
-
-    window.addEventListener('ratingUpdated', handleRatingSync);
-    return () => window.removeEventListener('ratingUpdated', handleRatingSync);
-  }, []);
-  const [selectedIndustryId, setSelectedIndustryId] = useState<string>('all');
-  const [selectedSubcategoryId, setSelectedSubcategoryId] = useState<string>('all');
-  const [filterRadius, setFilterRadius] = useState<'all' | '100km'>('all');
-  const [filterRole, setFilterRole] = useState<'all' | 'factory' | 'dealer'>('all');
-  const [destinationSearch, setDestinationSearch] = useState<string>('');
-
-  useEffect(() => {
-    let isMounted = true;
-    const processUsers = (data: any[]) => {
-      if (!Array.isArray(data)) return;
-      const uniqueMap = new Map();
-      data.forEach((u: any) => {
-        if (u && (u.role === 'dealer' || u.role === 'factory' || u.role === 'customer' || u.name)) {
-          const key = (u.gstNumber && u.gstNumber.trim() !== '') ? u.gstNumber.trim().toUpperCase() : (u.id || u.username);
-          if (key && !uniqueMap.has(key)) {
-            uniqueMap.set(key, u);
-          }
-        }
-      });
-      if (isMounted) {
-        setDealers(Array.from(uniqueMap.values()));
-        setLoading(false);
-      }
-    };
-
-    // 1. Initial Firestore fetch
-    fetchAllUsersFromFirestore().then(fbUsers => {
-      if (fbUsers && fbUsers.length > 0) processUsers(fbUsers);
-    }).catch(() => {});
-
-    // 2. Real-time Firestore subscription
-    const unsubscribe = subscribeToUsersFromFirestore((realtimeUsers) => {
-      if (realtimeUsers && realtimeUsers.length > 0) processUsers(realtimeUsers);
-    });
-
-    // 3. Fallback backend API fetch
-    safeFetch('/api/users')
-      .then(data => {
-        if (Array.isArray(data)) processUsers(data);
-      })
-      .catch(() => { if (isMounted) setLoading(false); });
-
-    return () => {
-      isMounted = false;
-      if (typeof unsubscribe === 'function') unsubscribe();
-    };
-  }, []);
-
-  const filteredDealers = dealers.filter(dealer => {
-    // 1. Role Filter
-    if (filterRole === 'factory' && dealer.role !== 'factory') return false;
-    if (filterRole === 'dealer' && dealer.role !== 'dealer') return false;
-
-    // 2. Industry & Subcategory Filter
-    if (selectedIndustryId !== 'all') {
-      const catStr = `${dealer.category || ''} ${dealer.subCategory || ''} ${dealer.businessType || ''}`;
-      const isMatch = matchIndustryOrSubcategory(selectedIndustryId, selectedSubcategoryId, catStr);
-      if (!isMatch) return false;
-    }
-
-    // 3. Destination search filter
-    if (destinationSearch.trim()) {
-      const dQ = destinationSearch.trim().toLowerCase();
-      const locStr = `${dealer.city || ''} ${dealer.state || ''} ${dealer.address || ''} ${dealer.name || ''}`.toLowerCase();
-      if (!locStr.includes(dQ)) return false;
-    }
-
-    // 4. Proximity Radius Filter (100km Plan)
-    if (filterRadius === '100km' && userLocation) {
-      const lat = dealer.gpsCoords?.lat ?? dealer.lat;
-      const lng = dealer.gpsCoords?.lng ?? dealer.lng;
-      if (lat !== undefined && lng !== undefined && !isNaN(Number(lat)) && !isNaN(Number(lng))) {
-        const dist = calculateDistance(userLocation.lat, userLocation.lng, Number(lat), Number(lng));
-        if (dist > 100) return false;
-      }
-    }
-
-    return true;
-  }).sort((a, b) => {
-    // MANDATORY PRIORITY RULE:
-    // 1. ‚Çπ1188 Golden Plan users get TOP PRIORITY (Rank 3)
-    // 2. ‚Çπ99 Blue Plan verified users get SECOND PRIORITY (Rank 2)
-    // 3. Regular users get Rank 1
-    const aRank = isUser1188GoldenPlan(a) ? 3 : (a.isVerified || a.verifiedPlan === '99' ? 2 : 1);
-    const bRank = isUser1188GoldenPlan(b) ? 3 : (b.isVerified || b.verifiedPlan === '99' ? 2 : 1);
-
-    if (aRank !== bRank) {
-      return bRank - aRank; // Higher rank always on top
-    }
-
-    // Within same priority tier: sort closest to user location/destination first
-    if (userLocation) {
-      const latA = a.gpsCoords?.lat ?? a.lat;
-      const lngA = a.gpsCoords?.lng ?? a.lng;
-      const latB = b.gpsCoords?.lat ?? b.lat;
-      const lngB = b.gpsCoords?.lng ?? b.lng;
-
-      if (latA !== undefined && lngA !== undefined && latB !== undefined && lngB !== undefined) {
-        const distA = calculateDistance(userLocation.lat, userLocation.lng, Number(latA), Number(lngA));
-        const distB = calculateDistance(userLocation.lat, userLocation.lng, Number(latB), Number(lngB));
-        return distA - distB;
-      }
-    }
-
-    return (a.name || '').localeCompare(b.name || '');
-  });
-
-  if (!user?.isVerified && user?.role === 'customer') {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-[80vh] p-6 text-center">
-        <div className="w-20 h-20 bg-amber-100 dark:bg-amber-900/30 rounded-full flex items-center justify-center mb-6">
-          <Lock className="w-10 h-10 text-amber-600" />
-        </div>
-        <h2 className="text-2xl font-bold mb-2">GPS Roadmap is Locked</h2>
-        <p className="text-black/70 dark:text-zinc-400 max-w-md mb-8">
-          The GPS Roadmap feature is exclusive to verified members. 
-          Get verified to see all companies and dealers on the map with direct navigation.
-        </p>
-        <button 
-          onClick={() => window.dispatchEvent(new CustomEvent('openVerifyModal'))}
-          className="bg-blue-600 hover:bg-blue-700 text-black font-bold py-3 px-8 rounded-xl shadow-lg transition-all"
-        >
-          Get Verified Access
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <div className="p-4 md:p-6 pb-24 md:pb-6">
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
-        <div>
-          <h1 className="text-2xl font-black text-black dark:text-zinc-50 uppercase tracking-tight">All India Business Roadmap</h1>
-          <p className="text-xs font-bold text-black/70 dark:text-zinc-400 uppercase tracking-widest mt-1">
-            Navigate to verified Factories, Mills, Dealers & Distributors across India
-          </p>
-        </div>
-        <div className="flex items-center gap-2 px-4 py-2 bg-blue-50 dark:bg-blue-900/20 rounded-2xl border border-blue-100 dark:border-blue-800">
-          <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
-          <span className="text-[10px] font-black text-blue-700 dark:text-blue-300 uppercase tracking-widest">Live GPS Network</span>
-        </div>
-      </div>
-
-      {/* Destination Location Search Input */}
-      <div className="relative mb-4">
-        <MapPin className="w-5 h-5 absolute left-3.5 top-3 text-amber-500 font-bold" />
-        <input 
-          type="text" 
-          value={destinationSearch}
-          onChange={(e) => setDestinationSearch(e.target.value)}
-          placeholder="üìç Destination Search: City, State, Pin Code or Area (e.g. Morbi, Surat, Delhi, Bangalore)..." 
-          className="w-full bg-slate-100 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 focus:border-amber-500 rounded-2xl pl-11 pr-10 py-2.5 text-xs font-bold focus:outline-none focus:ring-2 focus:ring-amber-500 transition-all text-black dark:text-zinc-100 shadow-inner placeholder-zinc-500"
-        />
-        {destinationSearch && (
-          <button 
-            onClick={() => setDestinationSearch('')}
-            className="absolute right-3.5 top-3 text-black/60 hover:text-black/80 text-xs font-bold cursor-pointer"
-          >
-            Clear
-          </button>
-        )}
-      </div>
-
-      {/* ALL INDIA COMMERCE HUB: MULTI-INDUSTRY TABS & SUBCATEGORIES */}
-      <IndustryCommerceHub
-        selectedIndustryId={selectedIndustryId}
-        onSelectIndustry={setSelectedIndustryId}
-        selectedSubcategoryId={selectedSubcategoryId}
-        onSelectSubcategory={setSelectedSubcategoryId}
-        filterRadius={filterRadius}
-        onChangeFilterRadius={setFilterRadius}
-        filterRole={filterRole}
-        onChangeFilterRole={setFilterRole}
-        userLocation={userLocation}
-        dealersList={dealers}
-      />
-
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {loading ? (
-          [...Array(6)].map((_, i) => (
-            <div key={i} className="bg-slate-50 dark:bg-zinc-900 h-64 rounded-3xl animate-pulse border border-slate-100 dark:border-zinc-800" />
-          ))
-        ) : filteredDealers.length > 0 ? (
-          filteredDealers.map(dealer => {
-            const lat = dealer.gpsCoords?.lat ?? dealer.lat;
-            const lng = dealer.gpsCoords?.lng ?? dealer.lng;
-            const dist = (userLocation && lat !== undefined && lng !== undefined && !isNaN(Number(lat)) && !isNaN(Number(lng)))
-              ? calculateDistance(userLocation.lat, userLocation.lng, Number(lat), Number(lng))
-              : null;
-
-            return (
-              <div key={dealer.id} className="group bg-white dark:bg-zinc-950 border border-slate-200 dark:border-zinc-800 rounded-[2rem] p-6 shadow-sm hover:shadow-xl transition-all duration-500 relative overflow-hidden flex flex-col justify-between">
-                {/* Background Accent */}
-                <div className="absolute top-0 right-0 w-32 h-32 bg-amber-500/5 rounded-full -mr-16 -mt-16 group-hover:scale-150 transition-transform duration-700"></div>
-                
-                <div className="relative flex flex-col">
-                  <div className="flex items-start justify-between mb-4">
-                    <div className="flex items-center gap-3.5">
-                      <div className="w-14 h-14 rounded-2xl overflow-hidden bg-slate-100 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 shadow-inner group-hover:rotate-3 transition-transform duration-500 shrink-0">
-                        {dealer.avatarUrl ? (
-                          <img src={dealer.avatarUrl} alt={dealer.name} className="w-full h-full object-cover" />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center font-black text-black dark:text-zinc-200 text-lg bg-amber-500/10">
-                            {dealer.name?.charAt(0) || 'B'}
-                          </div>
-                        )}
-                      </div>
-                      <div className="min-w-0">
-                        <h3 className="font-black text-sm text-black dark:text-zinc-50 uppercase tracking-tight flex items-center gap-1.5 leading-tight mb-1 truncate">
-                          {dealer.name}
-                          {shouldShowVerifiedBadge(dealer) && <VerifiedBadge user={dealer} size="sm" />}
-                          
-                          {/* Interactive Star Reputation Badge in Dealer Directory */}
-                          {dealer.role !== 'customer' && (
-                            <span className="rainbow-star-badge inline-flex items-center gap-1 px-2 py-0.5 rounded-xl select-none ml-1.5 shrink-0 backdrop-blur-md">
-                              <span className="flex items-center">
-                                {[1, 2, 3, 4, 5].map((star) => {
-                                  const currentAvg = Number(dealer.ratingAverage || 0);
-                                  const isFilled = star <= Math.round(currentAvg);
-                                  return (
-                                    <span
-                                      key={star}
-                                      onClick={async (e) => {
-                                        e.stopPropagation();
-                                        if (!activeUserId) {
-                                          toast.error('üîê Please Login or Register to Rate users!');
-                                          window.dispatchEvent(new CustomEvent('openAuthModal'));
-                                          return;
-                                        }
-                                        if (String(dealer.id) === String(activeUserId)) {
-                                          toast.error("You cannot rate your own profile!");
-                                          return;
-                                        }
-                                        try {
-                                          const res = await fetch(`/api/users/${dealer.id}/rate`, {
-                                            method: 'POST',
-                                            headers: { 'Content-Type': 'application/json' },
-                                            body: JSON.stringify({ raterId: activeUserId, stars: star })
-                                          });
-                                          const resData = await res.json();
-                                          if (resData.success) {
-                                            toast.success(`‚≠ê Rated ${star} Stars!`);
-                                            
-                                            // Dispatch global event to update across the app
-                                            window.dispatchEvent(new CustomEvent('ratingUpdated', { 
-                                              detail: { 
-                                                userId: dealer.id, 
-                                                ratingAverage: resData.ratingAverage, 
-                                                ratingCount: resData.ratingCount 
-                                              } 
-                                            }));
-                                          } else {
-                                            toast.error(resData.error || "Failed to submit rating.");
-                                          }
-                                        } catch (err) {
-                                          toast.error("Failed to submit rating.");
-                                        }
-                                      }}
-                                      className={`p-0.5 transition-transform duration-200 hover:scale-125 ${String(dealer.id) === String(activeUserId) ? 'cursor-default' : 'cursor-pointer'}`}
-                                      title={`Rate ${dealer.name} ${star} Stars`}
-                                    >
-                                      <Star
-                                        className={`w-2.5 h-2.5 ${getStarColorClass(star, isFilled, 'text-zinc-300 dark:text-zinc-600')}`}
-                                        fill={isFilled ? 'currentColor' : 'none'}
-                                        />
-                                    </span>
-                                  );
-                                })}
-                              </span>
-                              <span className="text-[9px] font-black text-amber-600 dark:text-amber-400">
-                                {Number(dealer.ratingAverage || 0).toFixed(1)}
-                                <span className="text-zinc-400 dark:text-zinc-500 font-normal ml-0.5">({Number(dealer.ratingCount || 0)})</span>
-                              </span>
-                            </span>
-                          )}
-                        </h3>
-                        <div className="flex items-center flex-wrap gap-1.5">
-                          {isUser1188GoldenPlan(dealer) && (
-                            <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-500 border border-amber-500/40 shadow-xs">
-                              üëë Top Priority #1
-                            </span>
-                          )}
-                          <span className={cn(
-                            "text-[9px] font-black uppercase tracking-[0.15em] px-2 py-0.5 rounded-md",
-                            dealer.role === 'factory'
-                              ? "bg-amber-500/20 text-amber-700 dark:text-amber-400 border border-amber-500/30"
-                              : "bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 border border-blue-500/30"
-                          )}>
-                            {dealer.role === 'factory' ? 'üè≠ Factory / Mill' : 'üè¨ Dealer / Dist.'}
-                          </span>
-                          <span className="text-[9px] font-bold bg-slate-100 dark:bg-zinc-800 text-black/70 dark:text-zinc-400 px-2 py-0.5 rounded-md truncate max-w-[140px]">
-                            {dealer.category || 'Commerce'}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Distance calculation badge removed per user request to avoid misleading distance numbers, showing pure address/city */}
-
-                  <div className="flex flex-col gap-2 mb-6">
-
-                    <div className="flex items-center gap-2.5 text-xs text-black/80 dark:text-zinc-400 font-bold uppercase tracking-wider">
-                      <div className="p-1.5 bg-slate-50 dark:bg-zinc-900 rounded-lg shrink-0">
-                        <MapPin className="w-3.5 h-3.5 text-amber-500" />
-                      </div>
-                      <span className="truncate">{dealer.city || 'City'}, {dealer.state || 'India'}</span>
-                    </div>
-                    {dealer.gstNumber && (
-                      <div className="flex items-center gap-2.5 text-[11px] text-emerald-600 dark:text-emerald-400 font-bold">
-                        <div className="p-1.5 bg-slate-50 dark:bg-zinc-900 rounded-lg shrink-0">
-                          <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />
-                        </div>
-                        <span className="truncate">GSTIN: {dealer.gstNumber}</span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <div className="mt-auto grid grid-cols-2 gap-2.5 pt-2 border-t border-slate-100 dark:border-zinc-900">
-                  <Link 
-                    to={`/profile/${dealer.id}`}
-                    className="flex items-center justify-center gap-1.5 py-2.5 bg-slate-950 dark:bg-zinc-100 text-amber-400 dark:text-black rounded-xl text-[10px] font-black uppercase tracking-wider transition-all hover:opacity-90 active:scale-95"
-                  >
-                    View Catalog
-                  </Link>
-                  <a 
-                    href={dealer.googleMapsUrl || `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent((dealer.name || '') + ' ' + (dealer.city || '') + ' ' + (dealer.state || ''))}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="flex items-center justify-center gap-1.5 py-2.5 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black rounded-xl text-[10px] uppercase tracking-wider transition-all active:scale-95 shadow-sm"
-                  >
-                    <Navigation className="w-3.5 h-3.5 text-slate-950" />
-                    GPS Nav
-                  </a>
-                </div>
-              </div>
-            );
-          })
-        ) : (
-          <div className="col-span-full py-16 flex flex-col items-center justify-center text-center bg-slate-50 dark:bg-zinc-900/40 rounded-3xl border border-slate-200 dark:border-zinc-800 p-8">
-            <div className="w-20 h-20 bg-amber-500/10 rounded-full flex items-center justify-center mb-4 border border-amber-500/30">
-              <Building2 className="w-8 h-8 text-amber-500" />
-            </div>
-            <h3 className="text-lg font-black text-black dark:text-zinc-50 uppercase tracking-wider mb-2">No Matching Businesses Found</h3>
-            <p className="text-xs text-black/70 dark:text-zinc-400 max-w-md mb-6 font-medium">
-              No registered factories or dealers match your current industry and radius filters. Try switching to "All Industries" or "All India VIP Plan".
-            </p>
-            <div className="flex gap-3">
-              <button 
-                onClick={() => {
-                  setSelectedIndustryId('all');
-                  setSelectedSubcategoryId('all');
-                  setFilterRadius('all');
-                  setFilterRole('all');
-                }}
-                className="px-5 py-2.5 bg-amber-500 text-slate-950 rounded-xl font-black uppercase text-xs tracking-wider shadow-md hover:bg-amber-400 transition-all cursor-pointer"
-              >
-                Reset All Filters
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function CommunityPage({ user }: { user?: any }) {
-  const [posts, setPosts] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let isCancelled = false;
-    const loadCommunityPosts = async () => {
-      let backendPosts: any[] = [];
-      try {
-        const query = user?.id ? `?currentUserId=${user.id}` : '';
-        const data = await safeFetch(`/api/posts${query}`);
-        if (Array.isArray(data)) backendPosts = data;
-      } catch (e) {}
-
-      let fbPosts: any[] = [];
-      try {
-        fbPosts = await fetchPostsFromFirestore();
-      } catch (e) {}
-
-      const postMap = new Map<string, any>();
-      backendPosts.forEach(p => { if (p && p.id) postMap.set(String(p.id), p); });
-      fbPosts.forEach(p => {
-        if (p && p.id) {
-          const existing = postMap.get(String(p.id)) || {};
-          postMap.set(String(p.id), mergePostSafely(existing, p));
-        }
-      });
-
-      const allCombined = Array.from(postMap.values());
-      const cleanData = filterOutHiddenContent(allCombined, user?.id);
-      const imagePosts = cleanData.filter((p: any) => p.type === 'image' || (!p.type && p.mediaUrl && !p.mediaUrl.match(/\.(mp4|webm|mov|m4v)(\?.*)?$/i)));
-      if (!isCancelled) {
-        setPosts(imagePosts.sort((a, b) => {
-      const isAGolden = a.user?.goldenBadge || a.user?.verifiedPlan === 'yearly';
-      const isBGolden = b.user?.goldenBadge || b.user?.verifiedPlan === 'yearly';
-      const isABlue = a.user?.isVerified;
-      const isBBlue = b.user?.isVerified;
-      if (isAGolden && !isBGolden) return -1;
-      if (!isAGolden && isBGolden) return 1;
-      if (isABlue && !isBBlue) return -1;
-      if (!isABlue && isBBlue) return 1;
-      const timeA = typeof a.createdAt === 'number' ? a.createdAt : new Date(a.createdAt || 0).getTime();
-      const timeB = typeof b.createdAt === 'number' ? b.createdAt : new Date(b.createdAt || 0).getTime();
-      return timeB - timeA;
-    }));
-        setLoading(false);
-      }
-    };
-
-    loadCommunityPosts();
-
-    const unsubscribe = subscribeToPostsFromFirestore((realtimePosts) => {
-      if (!isCancelled && Array.isArray(realtimePosts)) {
-        const cleanRealtime = filterOutHiddenContent(realtimePosts, user?.id);
-        const imagePosts = cleanRealtime.filter((p: any) => p.type === 'image' || (!p.type && p.mediaUrl && !p.mediaUrl.match(/\.(mp4|webm|mov|m4v)(\?.*)?$/i)));
-        setPosts(imagePosts.sort((a, b) => {
-      const isAGolden = a.user?.goldenBadge || a.user?.verifiedPlan === 'yearly';
-      const isBGolden = b.user?.goldenBadge || b.user?.verifiedPlan === 'yearly';
-      const isABlue = a.user?.isVerified;
-      const isBBlue = b.user?.isVerified;
-      if (isAGolden && !isBGolden) return -1;
-      if (!isAGolden && isBGolden) return 1;
-      if (isABlue && !isBBlue) return -1;
-      if (!isABlue && isBBlue) return 1;
-      const timeA = typeof a.createdAt === 'number' ? a.createdAt : new Date(a.createdAt || 0).getTime();
-      const timeB = typeof b.createdAt === 'number' ? b.createdAt : new Date(b.createdAt || 0).getTime();
-      return timeB - timeA;
-    }));
-        setLoading(false);
-      }
-    });
-
-    return () => {
-      isCancelled = true;
-      unsubscribe();
-    };
-  }, [user?.id]);
-
-  return (
-    <div className="p-4 md:p-6 pb-24 md:pb-6">
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-bold text-black dark:text-zinc-50">Community Tab</h1>
-          <p className="text-sm font-semibold text-black/75 dark:text-zinc-300">Exclusive visual directory for local businesses, manufacturers, and buyers</p>
-        </div>
-        <Users className="w-8 h-8 text-blue-500" />
-      </div>
-
-      {loading ? (
-        <div className="grid grid-cols-3 gap-1 md:gap-4">
-          {[...Array(12)].map((_, i) => (
-            <div key={i} className="aspect-square bg-slate-50 dark:bg-zinc-900 animate-pulse rounded-lg" />
-          ))}
-        </div>
-      ) : posts.length > 0 ? (
-        <div className="grid grid-cols-3 gap-1.5 md:gap-4">
-          {posts.map(post => (
-            <Link 
-              key={post.id} 
-              to={`/profile/${post.userId}`}
-              className="group relative aspect-square bg-slate-100 dark:bg-zinc-900 overflow-hidden rounded-lg sm:rounded-xl border border-slate-200/60 dark:border-zinc-800 shadow-xs"
-            >
-              <img 
-                src={post.mediaUrl} 
-                alt={post.title || post.userName || 'Visual directory post'} 
-                className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105" 
-                loading="lazy"
-              />
-              
-              {/* Creator Name on Top of Small Post Block */}
-              <div className="absolute top-0 inset-x-0 p-1.5 sm:p-2 bg-gradient-to-b from-black/85 via-black/45 to-transparent z-10 flex items-center justify-between gap-1 pointer-events-none">
-                <div className="flex items-center gap-1 min-w-0">
-                  <span className="text-[10px] sm:text-xs font-black text-white drop-shadow-[0_1px_3px_rgba(0,0,0,0.95)] truncate tracking-tight">
-                    {post.user?.name || post.userName || post.user?.companyName || 'Member'}
-                  </span>
-                  {(shouldShowVerifiedBadge(post.user) || shouldShowVerifiedBadge(post)) && (
-                    <VerifiedBadge user={post.user} size="sm" />
-                  )}
-                </div>
-              </div>
-
-              <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-3 text-white">
-                <div className="flex items-center gap-1">
-                  <Heart className="w-4 h-4 sm:w-5 sm:h-5 fill-white text-white" />
-                  <span className="font-bold text-xs sm:text-sm">{post.likesCount || 0}</span>
-                </div>
-                <div className="flex items-center gap-1">
-                  <MessageCircle className="w-4 h-4 sm:w-5 sm:h-5 fill-white text-white" />
-                  <span className="font-bold text-xs sm:text-sm">{post.commentsCount || 0}</span>
-                </div>
-              </div>
-            </Link>
-          ))}
-        </div>
-      ) : (
-        <div className="text-center py-20">
-          <p className="text-black/70 dark:text-zinc-400">No images posted in the community yet.</p>
-        </div>
-      )}</div>
-  );
-}
-
-function ExplorePage({ user, userLocation }: { user?: any, userLocation?: {lat: number, lng: number} | null }) {
-  const [posts, setPosts] = useState<any[]>([]);
-  const [activeExploreIndex, setActiveExploreIndex] = useState<number | null>(null);
-
-  useEffect(() => {
-    const handleDeleted = (e: any) => {
-      const deletedId = e.detail?.postId || e.detail?.reelId;
-      if (deletedId) {
-        setPosts(prev => prev.filter(p => String(p.id) !== String(deletedId)));
-      }
-    };
-    window.addEventListener('postDeleted', handleDeleted);
-    window.addEventListener('reelDeleted', handleDeleted);
-    return () => {
-      window.removeEventListener('postDeleted', handleDeleted);
-      window.removeEventListener('reelDeleted', handleDeleted);
-    };
-  }, []);
-
-  useEffect(() => {
-    let isCancelled = false;
-    const loadExplorePosts = async () => {
-      let backendPosts: any[] = [];
-      try {
-        const query = user?.id ? `?currentUserId=${user.id}` : '';
-        const data = await safeFetch(`/api/posts${query}`);
-        if (Array.isArray(data)) backendPosts = data;
-      } catch (e) {}
-
-      let fbPosts: any[] = [];
-      try {
-        fbPosts = await fetchPostsFromFirestore();
-      } catch (e) {}
-
-      const postMap = new Map<string, any>();
-      backendPosts.forEach(p => { if (p && p.id) postMap.set(String(p.id), p); });
-      fbPosts.forEach(p => {
-        if (p && p.id) {
-          const existing = postMap.get(String(p.id)) || {};
-          postMap.set(String(p.id), mergePostSafely(existing, p));
-        }
-      });
-
-      const allCombined = Array.from(postMap.values());
-      const cleanData = filterOutHiddenContent(allCombined, user?.id);
-      if (!isCancelled) {
-        setPosts(cleanData.sort((a, b) => {
-      const isAGolden = a.user?.goldenBadge || a.user?.verifiedPlan === 'yearly';
-      const isBGolden = b.user?.goldenBadge || b.user?.verifiedPlan === 'yearly';
-      const isABlue = a.user?.isVerified;
-      const isBBlue = b.user?.isVerified;
-      if (isAGolden && !isBGolden) return -1;
-      if (!isAGolden && isBGolden) return 1;
-      if (isABlue && !isBBlue) return -1;
-      if (!isABlue && isBBlue) return 1;
-      const timeA = typeof a.createdAt === 'number' ? a.createdAt : new Date(a.createdAt || 0).getTime();
-      const timeB = typeof b.createdAt === 'number' ? b.createdAt : new Date(b.createdAt || 0).getTime();
-      return timeB - timeA;
-    }));
-      }
-    };
-
-    loadExplorePosts();
-
-    const unsubscribe = subscribeToPostsFromFirestore((realtimePosts) => {
-      if (!isCancelled && Array.isArray(realtimePosts)) {
-        const cleanRealtime = filterOutHiddenContent(realtimePosts, user?.id);
-        setPosts(cleanRealtime.sort((a, b) => {
-      const isAGolden = a.user?.goldenBadge || a.user?.verifiedPlan === 'yearly';
-      const isBGolden = b.user?.goldenBadge || b.user?.verifiedPlan === 'yearly';
-      const isABlue = a.user?.isVerified;
-      const isBBlue = b.user?.isVerified;
-      if (isAGolden && !isBGolden) return -1;
-      if (!isAGolden && isBGolden) return 1;
-      if (isABlue && !isBBlue) return -1;
-      if (!isABlue && isBBlue) return 1;
-      const timeA = typeof a.createdAt === 'number' ? a.createdAt : new Date(a.createdAt || 0).getTime();
-      const timeB = typeof b.createdAt === 'number' ? b.createdAt : new Date(b.createdAt || 0).getTime();
-      return timeB - timeA;
-    }));
-      }
-    });
-
-    return () => {
-      isCancelled = true;
-      unsubscribe();
-    };
-  }, [user?.id]);
-
-  return (
-    <div className="max-w-4xl mx-auto w-full pt-4 md:pt-8 pb-20 md:pb-8 px-1 md:px-4">
-      {posts.length > 0 ? (
-        <div className="grid grid-cols-3 gap-1.5 md:gap-4">
-          {posts.map((post, idx) => (
-            <div 
-              key={post.id} 
-              onClick={() => setActiveExploreIndex(idx)}
-              className="aspect-square bg-slate-200 dark:bg-zinc-800 group relative overflow-hidden cursor-pointer rounded-lg sm:rounded-xl border border-slate-200/60 dark:border-zinc-800 shadow-xs"
-            >
-              {/* Creator Name on Top of Small Post Block */}
-              <div className="absolute top-0 inset-x-0 p-1.5 sm:p-2 bg-gradient-to-b from-black/85 via-black/45 to-transparent z-10 flex items-center justify-between gap-1 pointer-events-none">
-                <div className="flex items-center gap-1 min-w-0">
-                  <span className="text-[10px] sm:text-xs font-black text-white drop-shadow-[0_1px_3px_rgba(0,0,0,0.95)] truncate tracking-tight">
-                    {post.user?.name || post.userName || post.user?.companyName || 'Member'}
-                  </span>
-                  {(shouldShowVerifiedBadge(post.user) || shouldShowVerifiedBadge(post)) && (
-                    <VerifiedBadge user={post.user} size="sm" />
-                  )}
-                </div>
-              </div>
-
-              {post.mediaUrl && post.mediaUrl.trim() !== '' ? (
-                post.type === 'video' || post.mediaUrl.match(/\.(mp4|webm|mov|m4v)(\?.*)?$/i) ? (
-                  <div className="relative w-full h-full bg-zinc-900 flex items-center justify-center">
-                    {post.thumbnailUrl ? (
-                      <img 
-                        src={post.thumbnailUrl} 
-                        alt="Video explore" 
-                        className="w-full h-full object-cover transition-transform group-hover:scale-105" 
-                        loading="lazy" 
-                        onError={(e) => {
-                          e.currentTarget.style.display = 'none';
-                        }}
-                      />
-                    ) : null}
-                    <div className="absolute top-2 right-2 p-1 rounded-full bg-black/60 text-white backdrop-blur-sm">
-                      <Film className="w-3.5 h-3.5" />
-                    </div>
-                  </div>
-                ) : post.type === 'pdf' || post.mediaUrl.match(/\.pdf(\?.*)?$/i) ? (
-                  <PdfCardViewer post={post} variant="grid" />
-                ) : (
-                  <img src={post.mediaUrl} alt="Explore" className="w-full h-full object-cover transition-transform group-hover:scale-105" />
-                )
-              ) : (
-                <div className="w-full h-full p-2 flex items-center justify-center text-xs font-semibold text-black dark:text-zinc-300 text-center bg-slate-100 dark:bg-zinc-900">
-                  {post.content || post.title}
-                </div>
-              )}
-              <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-4 text-black font-bold text-sm">
-                <span className="flex items-center gap-1"><Heart className="w-5 h-5 fill-white" /> {post.likes || 0}</span>
-                <span className="flex items-center gap-1"><MessageCircle className="w-5 h-5 fill-white" /> {post.comments || 0}</span>
-              </div>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="text-center py-16 text-black/70 dark:text-zinc-400">
-          <p className="text-base font-semibold">No media posts in Explore yet.</p>
-          <p className="text-xs mt-1">Publish new posts to see them showcased in the Explore grid!</p>
-        </div>
-      )}
-
-      {activeExploreIndex !== null && (
-        <FullScreenFeedViewerModal
-          posts={posts}
-          initialIndex={activeExploreIndex}
-          currentUser={user}
-          onClose={() => setActiveExploreIndex(null)}
-          userLocation={userLocation}
-        />
-      )}</div>
-  );
-}
-
-function ReelsPage({ user, userLocation }: { user?: any, userLocation?: {lat: number, lng: number} | null }) {
-  const [reels, setReels] = useState<any[]>([]);
-
-  // Real-time rating synchronization inside ReelsPage component
-  useEffect(() => {
-    const handleRatingSync = (e: CustomEvent) => {
-      const { userId: updatedId, ratingAverage: newAvg, ratingCount: newCount } = e.detail || {};
-      setReels(prev => prev.map(r => {
-        const rUser = r.user || {};
-        const authorInfo = r.authorInfo || {};
-        if (String(r.userId) === String(updatedId) || String(rUser.id) === String(updatedId) || String(authorInfo.id) === String(updatedId)) {
-          return {
-            ...r,
-            user: {
-              ...rUser,
-              ratingAverage: newAvg,
-              ratingCount: newCount
-            },
-            authorInfo: {
-              ...authorInfo,
-              ratingAverage: newAvg,
-              ratingCount: newCount
-            }
-          };
-        }
-        return r;
-      }));
-    };
-    window.addEventListener('ratingUpdated', handleRatingSync);
-    return () => window.removeEventListener('ratingUpdated', handleRatingSync);
-  }, []);
-  const [currentIndex, setCurrentIndex] = useState(0);
-  const fileInputRef = React.useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    window.dispatchEvent(new CustomEvent('vyapar_reel_viewing_active', { detail: { active: true } }));
-    window.dispatchEvent(new CustomEvent('pause_all_feed_videos'));
-    return () => {
-      window.dispatchEvent(new CustomEvent('vyapar_reel_viewing_active', { detail: { active: false } }));
-    };
-  }, []);
-
-  // New upload state
-  const [isPreviewModalOpen, setIsPreviewModalOpen] = useState(false);
-  const [isMusicModalOpen, setIsMusicModalOpen] = useState(false);
-  const [selectedMusic, setSelectedMusic] = useState<any>(null);
-  const [pendingFile, setPendingFile] = useState<File | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [reelTitle, setReelTitle] = useState('');
-  const [reelContent, setReelContent] = useState('');
-  const [reelHashtags, setReelHashtags] = useState('');
-  const [isSuggestingReelTags, setIsSuggestingReelTags] = useState(false);
-  const [isShortage, setIsShortage] = useState(false);
-  const [minPrice, setMinPrice] = useState('');
-  const [maxPrice, setMaxPrice] = useState('');
-  const [priceUnit, setPriceUnit] = useState('Box');
-  const [isPublishing, setIsPublishing] = useState(false);
-  const [originalVolume, setOriginalVolume] = useState<number>(1);
-  const [musicVolume, setMusicVolume] = useState<number>(1);
-  const [isMediaReady, setIsMediaReady] = useState(false);
-  const [reelAspectRatio, setReelAspectRatio] = useState<'9/16' | '16/9' | '1/1'>('9/16');
-
-  // Priority sort function: Creators followed by user appear FIRST
-  const sortReelsByFollowedFirst = (list: any[]) => {
-    const followedList = getFollowedUsers();
-    const followedReels: any[] = [];
-    const otherReels: any[] = [];
-
-    list.forEach(item => {
-      const authorId = String(item.userId || item.user?.id || item.userName || item.user?.name || item.name || '');
-      const isFollowed = isUserFollowed(authorId) || followedList.includes(authorId);
-      if (isFollowed) {
-        followedReels.push(item);
-      } else {
-        otherReels.push(item);
-      }
-    });
-
-    const sortByTime = (a: any, b: any) => {
-      const timeA = typeof a.createdAt === 'number' ? a.createdAt : new Date(a.createdAt || 0).getTime();
-      const timeB = typeof b.createdAt === 'number' ? b.createdAt : new Date(b.createdAt || 0).getTime();
-      return timeB - timeA;
-    };
-
-    followedReels.sort(sortByTime);
-    otherReels.sort(sortByTime);
-
-    return [...followedReels, ...otherReels];
-  };
-
-  useEffect(() => {
-    const loadAllReels = async () => {
-      let backendPosts: any[] = [];
-      try {
-        const query = user?.id ? `?currentUserId=${user.id}` : '';
-        const data = await safeFetch(`/api/posts${query}`);
-        if (Array.isArray(data)) backendPosts = data;
-      } catch (e) {}
-
-      let fbPosts: any[] = [];
-      try {
-        fbPosts = await fetchPostsFromFirestore();
-      } catch (e) {}
-
-      const postMap = new Map<string, any>();
-      DEFAULT_B2B_POSTS.forEach(p => {
-        if (p && p.id) postMap.set(String(p.id), p);
-      });
-      backendPosts.forEach(p => {
-        if (p && p.id) {
-          const existing = postMap.get(String(p.id)) || {};
-          postMap.set(String(p.id), mergePostSafely(existing, p));
-        }
-      });
-      fbPosts.forEach(p => {
-        if (p && p.id) {
-          const existing = postMap.get(String(p.id)) || {};
-          postMap.set(String(p.id), mergePostSafely(existing, p));
-        }
-      });
-
-      const allCombined = Array.from(postMap.values());
-      const cleanData = filterOutHiddenContent(allCombined, user?.id);
-      const isReelVideo = (p: any) => {
-        if (!p) return false;
-        if (p.type === 'video' || p.type === 'reel' || p.isReel) return true;
-        const m = String(p.mediaUrl || p.videoUrl || p.video || p.externalLink || '');
-        if (isYouTubeUrl(m)) return true;
-        if (m.startsWith('indexeddb:') || m.startsWith('data:video') || m.startsWith('blob:') || m.startsWith('/uploads/') || m.startsWith('http')) return true;
-        if (m.match(/\.(mp4|webm|mov|m4v|mkv|3gp)(\?.*)?$/i)) return true;
-        if (p.hashtags && (p.hashtags.includes('#reel') || p.hashtags.includes('#reels') || p.hashtags.includes('#video'))) return true;
-        if (p.title === 'New B2B Reel' || p.content === 'Uploaded from Reels') return true;
-        return false;
-      };
-
-      const videoPosts = cleanData.filter(isReelVideo);
-
-      setReels(sortReelsByFollowedFirst(videoPosts));
-    };
-
-    loadAllReels();
-
-    const unsubscribe = subscribeToPostsFromFirestore((realtimePosts) => {
-      if (Array.isArray(realtimePosts)) {
-        const postMap = new Map<string, any>();
-        DEFAULT_B2B_POSTS.forEach(p => {
-          if (p && p.id) postMap.set(String(p.id), p);
-        });
-        realtimePosts.forEach(p => {
-          if (p && p.id) {
-            const existing = postMap.get(String(p.id)) || {};
-            postMap.set(String(p.id), mergePostSafely(existing, p));
-          }
-        });
-        const combinedPosts = Array.from(postMap.values());
-        const cleanRealtime = filterOutHiddenContent(combinedPosts, user?.id);
-        const now = Date.now();
-        const videoPosts = cleanRealtime.filter(p => {
-          if (!p) return false;
-          let isVideo = false;
-          if (p.type === 'video' || p.type === 'reel' || p.isReel) isVideo = true;
-          const m = p.mediaUrl || p.videoUrl || p.video || '';
-          if (!isVideo && (m.startsWith('indexeddb:') || m.startsWith('data:video') || m.startsWith('blob:'))) isVideo = true;
-          if (!isVideo && m.match(/\.(mp4|webm|mov|m4v|mkv|3gp)(\?.*)?$/i)) isVideo = true;
-          if (!isVideo && p.hashtags && p.hashtags.includes('#reel')) isVideo = true;
-          if (!isVideo && (p.title === 'New B2B Reel' || p.content === 'Uploaded from Reels')) isVideo = true;
-          
-          if (!isVideo) return false;
-          
-          // 24-Hour Expiration Check (Only hides from global feed, doesn't delete)
-          let createdAtMs = now;
-          if (p.createdAt) {
-            if (typeof p.createdAt === 'number' && p.createdAt > 1000000000) {
-              createdAtMs = p.createdAt;
-            } else if (typeof p.createdAt === 'object' && p.createdAt.seconds) {
-              createdAtMs = p.createdAt.seconds * 1000;
-            } else if (typeof p.createdAt === 'string') {
-              const num = Number(p.createdAt);
-              if (!isNaN(num) && num > 1000000000) createdAtMs = num;
-              else {
-                const parsed = new Date(p.createdAt).getTime();
-                if (!isNaN(parsed) && parsed > 1000000000) createdAtMs = parsed;
-              }
-            }
-          }
-          // Keep all reels permanently accessible in the B2B catalog
-          return true;
-        });
-        const sorted = sortReelsByFollowedFirst(videoPosts);
-        setReels(prev => {
-          const mergedWithBlobs = sorted.map(newReel => {
-            const idStr = String(newReel.id);
-            const cached = getCachedVideoUrlInMemory(idStr);
-            const oldReel = prev.find(p => String(p.id) === idStr);
-            const validVideo = cached || (oldReel?.mediaUrl && !oldReel.mediaUrl.startsWith('data:image') ? oldReel.mediaUrl : null) || (oldReel?.videoUrl && !oldReel.videoUrl.startsWith('data:image') ? oldReel.videoUrl : null) || newReel.mediaUrl;
-            return {
-              ...newReel,
-              mediaUrl: validVideo,
-              videoUrl: validVideo
-            };
-          });
-
-          // Preserve optimistic local uploads that haven't synced to Firestore yet
-          const unSyncedOptimistic = prev.filter(oldR => oldR.isMyUpload && !mergedWithBlobs.some(nr => String(nr.id) === String(oldR.id)));
-          const combinedWithOptimistic = [...unSyncedOptimistic, ...mergedWithBlobs];
-
-          if (prev.length === 0) return combinedWithOptimistic;
-          const prevIds = prev.map(r => String(r.id)).join(',');
-          const newIds = combinedWithOptimistic.map(r => String(r.id)).join(',');
-          if (prevIds === newIds) {
-            return prev.map(oldReel => {
-              const fresh = combinedWithOptimistic.find(s => String(s.id) === String(oldReel.id));
-              return fresh ? { ...oldReel, likesCount: fresh.likesCount, commentsCount: fresh.commentsCount, viewsCount: fresh.viewsCount } : oldReel;
-            });
-          }
-          return combinedWithOptimistic;
-        });
-      }
-    });
-
-    const handleReelDeleted = (e: any) => {
-      const deletedId = e.detail.reelId;
-      setReels(prev => prev.filter(r => r.id !== deletedId));
-    };
-
-    const handleFollowUpdated = () => {
-      setReels(prev => sortReelsByFollowedFirst([...prev]));
-    };
-
-    window.addEventListener('reelDeleted', handleReelDeleted);
-    window.addEventListener('followedUsersUpdated', handleFollowUpdated);
-
-    return () => {
-      unsubscribe();
-      window.removeEventListener('reelDeleted', handleReelDeleted);
-      window.removeEventListener('followedUsersUpdated', handleFollowUpdated);
-    };
-  }, [user?.id]);
-
-  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    // Instant preview generation (0.001s zero delay)
-    const isVideoFile = file.type.startsWith('video') || /\.(mp4|webm|mov|m4v|mkv)$/i.test(file.name);
-    setIsMediaReady(!isVideoFile);
-    setReelAspectRatio('9/16');
-    setPendingFile(file);
-    const objUrl = URL.createObjectURL(file);
-    setPreviewUrl(objUrl);
-    setIsPreviewModalOpen(true);
-    if (e.target) e.target.value = '';
-
-    // Asynchronous background duration validation without auto-closing
-    validateMediaDuration(file).then(validation => {
-      if (!validation.valid) {
-        toast.info('Note: Long videos (>60s) may process longer.', { id: 'reels_page_dur_note' });
-      }
-    }).catch(() => {});
-  };
-
-  const handleCustomAudioUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    
-    const tid = toast.loading('Uploading custom sound...');
-    try {
-      const audioDataUrl = await fileToDataURL(file);
-      const customMusicObj = {
-        id: `music_${Date.now()}`,
-        title: file.name.replace(/\.[^/.]+$/, "") || 'Custom Sound',
-        artist: user?.name || 'User Upload',
-        audioUrl: audioDataUrl
-      };
-
-      try {
-        const formData = new FormData();
-        formData.append('musicFile', file);
-        formData.append('title', customMusicObj.title);
-        formData.append('artist', customMusicObj.artist);
-        fetch('/api/music', { method: 'POST', body: formData }).catch(() => {});
-      } catch (e) {}
-
-      setSelectedMusic(customMusicObj);
-      toast.success('Sound uploaded successfully!', { id: tid });
-    } catch (err) {
-      toast.error('Upload failed', { id: tid });
-    }
-    if (e.target) e.target.value = '';
-  };
-
-  const finalizeUpload = async () => {
-    if (!pendingFile) return;
-    
-    // Resilient current user retrieval
-    let currentUser = user;
-    if (!currentUser?.id) {
-      try {
-        const stored = localStorage.getItem('user') || localStorage.getItem('Vyapar Bridge_user');
-        if (stored) currentUser = JSON.parse(stored);
-      } catch (e) {}
-    }
-
-    if (!currentUser?.id || currentUser?.id?.startsWith('demo_') || currentUser?.id?.startsWith('user_guest_')) {
-      toast.error('üîê Only registered Buyers and Sellers can upload reels or stories. Please register or login!');
-      window.dispatchEvent(new CustomEvent('openAuthModal'));
-      setIsPreviewModalOpen(false);
-      return;
-    }
-
-    const activeUser = currentUser;
-
-    setIsPublishing(true);
-    const toastId = toast.loading('Publishing Reel & Syncing to Firebase...');
-    const generatedReelId = `reel_${Date.now()}`;
-
-    // Determine exact media type (Image vs Video)
-    const isVideoFile = pendingFile.type.startsWith('video') || /\.(mp4|webm|mov|m4v|mkv)$/i.test(pendingFile.name);
-    const mediaType = isVideoFile ? 'video' : 'image';
-
-    // 1. Direct Firebase Storage Upload for Permanent Vercel & Multi-device Playback
-    let firebaseStorageUrl = '';
-    try {
-      const sanitizedName = (pendingFile.name || 'video.mp4').replace(/[^a-zA-Z0-9.-]/g, '_');
-      const storagePath = `reels/${generatedReelId}_${sanitizedName}`;
-      firebaseStorageUrl = await uploadFileToFirebaseStorage(pendingFile, storagePath);
-    } catch (storageErr) {
-      console.warn('Profile Firebase Storage upload note:', storageErr);
-    }
-
-    // Convert file to resilient persistent Data URL & Thumbnail
-    let persistentMediaUrl = firebaseStorageUrl || '';
-    let videoThumbnailUrl = '';
-    let videoStreamUrl = firebaseStorageUrl || previewUrl || (pendingFile ? URL.createObjectURL(pendingFile) : '');
-    try {
-      if (!isVideoFile) {
-        persistentMediaUrl = firebaseStorageUrl || (await optimizeImageForPersistence(pendingFile));
-        videoThumbnailUrl = persistentMediaUrl;
-      } else {
-        videoThumbnailUrl = await generateVideoThumbnail(pendingFile);
-        if (!firebaseStorageUrl && pendingFile.size <= 0.5 * 1024 * 1024) {
-          try {
-            const videoBase64 = await fileToDataURL(pendingFile);
-            if (videoBase64 && videoBase64.startsWith('data:video')) {
-              videoStreamUrl = videoBase64;
-              persistentMediaUrl = videoBase64;
-            }
-          } catch (e) {}
-        }
-        if (!persistentMediaUrl) {
-          persistentMediaUrl = firebaseStorageUrl || videoThumbnailUrl;
-        }
-      }
-    } catch (e) {
-      console.warn('Reel file conversion note:', e);
-    }
-
-    const localMediaUrl = firebaseStorageUrl || (isVideoFile ? (videoStreamUrl && !videoStreamUrl.startsWith('blob:') ? videoStreamUrl : videoThumbnailUrl) : (persistentMediaUrl || videoThumbnailUrl));
-
-    const authorName = activeUser?.name || 'Vyapar Member';
-    const authorAvatar = activeUser?.avatarUrl || activeUser?.avatar || BRAND_LOGO_SRC;
-    const authorRole = activeUser?.role || 'factory';
-
-    const authorUser = {
-      id: String(activeUser.id),
-      name: authorName,
-      avatarUrl: authorAvatar,
-      avatar: authorAvatar,
-      role: authorRole,
-      isVerified: Boolean(activeUser.isVerified)
-    };
-
-    // Save reel ID in user's created reels list so it shows across all pages and profiles
-    try {
-      const existingStr = localStorage.getItem('vyapar_my_reel_ids');
-      const existingIds = existingStr ? JSON.parse(existingStr) : [];
-      if (!existingIds.includes(generatedReelId)) {
-        existingIds.unshift(generatedReelId);
-        localStorage.setItem('vyapar_my_reel_ids', JSON.stringify(existingIds.slice(0, 50)));
-      }
-    } catch (e) {}
-
-    try {
-      const formData = new FormData();
-      formData.append('id', generatedReelId);
-      formData.append('title', 'New B2B Reel');
-      formData.append('content', 'Uploaded from Reels');
-      formData.append('hashtags', '#reel #b2b #tiles #products');
-      formData.append('userId', String(activeUser.id));
-      formData.append('createdAt', String(Date.now()));
-      formData.append('userName', authorUser.name);
-      formData.append('userRole', authorUser.role);
-      formData.append('userAvatar', authorUser.avatarUrl);
-      formData.append('type', mediaType);
-      formData.append('thumbnailUrl', videoThumbnailUrl || localMediaUrl);
-      formData.append('persistentMediaUrl', persistentMediaUrl || videoThumbnailUrl || localMediaUrl);
-      if (!(persistentMediaUrl || '').includes('firebasestorage.googleapis.com')) {
-        formData.append('media', pendingFile);
-      }
-
-      if (minPrice || maxPrice) {
-        formData.append('minRate', minPrice);
-        formData.append('maxRate', maxPrice);
-        formData.append('unit', priceUnit);
-      }
-
-      if (selectedMusic) {
-        formData.append('musicId', selectedMusic.id || '');
-        formData.append('musicTitle', selectedMusic.title || '');
-        formData.append('musicArtist', selectedMusic.artist || '');
-        formData.append('musicUrl', selectedMusic.audioUrl || selectedMusic.musicUrl || selectedMusic.url || '');
-      }
-      formData.append('musicVolume', String(musicVolume));
-      formData.append('originalVolume', String(originalVolume));
-
-      let publishedReel: any = null;
-      let isBlocked = false;
-
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 180000);
-
-        const response = await fetch('/api/posts', {
-          method: 'POST',
-          body: formData,
-          signal: controller.signal
-        });
-        clearTimeout(timeoutId);
-
-        const data = await response.json();
-
-        if (data && data.blocked) {
-          isBlocked = true;
-          toast.error(data.error || '‚õî AI Safety Guardrail: Content blocked.', { id: toastId });
-          window.alert("‚ö†Ô∏è UPLOAD FAILED\n\nYour content was blocked by our AI Guardrail.");
-          return;
-        }
-
-        if (response.ok && data && data.success && data.post) {
-          publishedReel = data.post;
-        }
-      } catch (e) {
-        console.warn('Backend API note, publishing directly to Firestore:', e);
-      }
-
-      if (!isBlocked) {
-        const finalTitle = reelTitle.trim() || 'New B2B Reel';
-        const finalContent = reelContent.trim() || 'Uploaded from Reels';
-        const finalHashtags = reelHashtags.trim() || '#reel #b2b #tiles #products';
-        const stockStatus = isShortage ? 'out_of_stock' : 'in_stock';
-
-        const moderation = await moderateContentUniversally({
-          title: finalTitle,
-          content: finalContent,
-          hashtags: finalHashtags,
-          mediaType: mediaType,
-          mediaUrl: localMediaUrl,
-          userId: activeUser.id,
-          userRole: authorRole
-        });
-
-        const isPendingApproval = !moderation.approved;
-
-        const musicObj = selectedMusic ? {
-          id: selectedMusic.id,
-          title: selectedMusic.title || 'Selected Music',
-          artist: selectedMusic.artist || 'Vyapar Bridge',
-          audioUrl: selectedMusic.audioUrl || selectedMusic.musicUrl || selectedMusic.url
-        } : null;
-
-        const isPersistentUrl = publishedReel?.mediaUrl && (
-          publishedReel.mediaUrl.startsWith('data:') || 
-          publishedReel.mediaUrl.startsWith('https://') || 
-          publishedReel.mediaUrl.startsWith('http://') || publishedReel.mediaUrl.startsWith('/uploads')
-        ) && !publishedReel.mediaUrl.includes('localhost');
-        const resolvedUrl = (isPersistentUrl ? publishedReel.mediaUrl : null) || localMediaUrl || videoStreamUrl || '';
-        const resolvedThumb = publishedReel?.thumbnailUrl || videoThumbnailUrl || resolvedUrl;
-
-        if (pendingFile && isVideoFile) {
-          await saveVideoBlob(generatedReelId, pendingFile).catch(() => {});
-          cacheVideoUrlInMemory(generatedReelId, resolvedUrl);
-        }
-
-        const finalReel = publishedReel ? {
-          ...publishedReel,
-          id: generatedReelId,
-          title: finalTitle,
-          content: finalContent,
-          description: finalContent,
-          hashtags: finalHashtags,
-          type: publishedReel.type || mediaType,
-          isReel: true,
-          mediaUrl: resolvedUrl,
-          thumbnailUrl: resolvedThumb,
-          persistentMediaUrl: persistentMediaUrl || resolvedThumb || resolvedUrl,
-          status: isPendingApproval ? 'pending' : (publishedReel.status || 'approved'),
-          pending_admin_approval: isPendingApproval,
-          aiFlagReason: moderation.reason || publishedReel.aiFlagReason || null,
-          user: publishedReel.user && publishedReel.user.name ? publishedReel.user : authorUser,
-          userAvatar: authorUser.avatarUrl,
-          music: publishedReel.music || musicObj,
-          minRate: (minPrice || maxPrice) ? minPrice : (publishedReel.minRate || undefined),
-          maxRate: (minPrice || maxPrice) ? maxPrice : (publishedReel.maxRate || undefined),
-          unit: (minPrice || maxPrice) ? priceUnit : (publishedReel.unit || undefined),
-          stockStatus,
-          isShortcut: isShortage,
-          isShortage,
-          isMyUpload: true
-        } : {
-          id: generatedReelId,
-          userId: String(activeUser.id),
-          userName: authorUser.name,
-          userRole: authorUser.role,
-          userAvatar: authorUser.avatarUrl,
-          title: finalTitle,
-          content: finalContent,
-          description: finalContent,
-          hashtags: finalHashtags,
-          type: mediaType,
-          isReel: true,
-          mediaUrl: resolvedUrl,
-          thumbnailUrl: resolvedThumb,
-          persistentMediaUrl: persistentMediaUrl || resolvedThumb || resolvedUrl,
-          minRate: (minPrice || maxPrice) ? minPrice : undefined,
-          maxRate: (minPrice || maxPrice) ? maxPrice : undefined,
-          unit: (minPrice || maxPrice) ? priceUnit : undefined,
-          stockStatus,
-          isShortcut: isShortage,
-          isShortage,
-          category: 'Commercial Wholesale', postedFrom: 'profile', isPermanent: true,
-          visibility: 'public',
-          status: isPendingApproval ? 'pending' : 'approved',
-          pending_admin_approval: isPendingApproval,
-          aiFlagReason: moderation.reason || null,
-          likesCount: 0,
-          viewsCount: 1,
-          createdAt: Date.now(),
-          music: musicObj,
-          user: authorUser,
-          isMyUpload: true
-        };
-
-        // MANDATORY: Await complete Firestore document write BEFORE updating home screen feed!
-        await syncPostToFirestore(finalReel);
-
-        // Update state & dispatch event after Firebase document write completes
-        setReels(prev => [finalReel, ...prev]);
-        setCurrentIndex(0);
-        window.dispatchEvent(new CustomEvent('postCreated', { detail: finalReel }));
-
-        playBubblePopSound();
-        if (isPendingApproval) {
-          toast.info(moderation.userNotice || '‚è≥ Business Verification: Aapka post Admin Review ke liye bhej diya gaya hai. Business network security ke liye moderation team verify karegi.', { id: toastId });
-        } else {
-          toast.success('üéâ Reel published & saved to Firebase successfully!', { id: toastId });
-        }
-
-        setIsPreviewModalOpen(false);
-        setPendingFile(null);
-        setPreviewUrl(null);
-        setSelectedMusic(null);
-        setReelTitle('');
-        setReelContent('');
-        setReelHashtags('');
-        setIsShortage(false);
-        setMinPrice('');
-        setMaxPrice('');
-        setPriceUnit('Box');
-      }
-    } catch (err) {
-      console.error('Reel upload error:', err);
-      toast.error('Failed to upload reel', { id: toastId });
-    } finally {
-      setIsPublishing(false);
-    }
-  };
-
-  const [direction, setDirection] = useState<number>(0);
-  const isWheeling = React.useRef(false);
-
-  const goToNext = () => {
-    if (currentIndex < reels.length - 1) {
-      setDirection(1);
-      setCurrentIndex(prev => prev + 1);
-    }
-  };
-
-  const goToPrev = () => {
-    if (currentIndex > 0) {
-      setDirection(-1);
-      setCurrentIndex(prev => prev - 1);
-    }
-  };
-
-  // Keyboard navigation for reels
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'ArrowDown' || e.key === 'PageDown' || e.key === 'j' || e.key === 'J') {
-        e.preventDefault();
-        goToNext();
-      } else if (e.key === 'ArrowUp' || e.key === 'PageUp' || e.key === 'k' || e.key === 'K') {
-        e.preventDefault();
-        goToPrev();
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentIndex, reels.length]);
-
-  // Mouse wheel trackpad scroll navigation (Instagram style)
-  const handleWheel = (e: React.WheelEvent) => {
-    if (isWheeling.current || reels.length <= 1) return;
-    if (Math.abs(e.deltaY) > 25) {
-      isWheeling.current = true;
-      if (e.deltaY > 0) {
-        goToNext();
-      } else {
-        goToPrev();
-      }
-      setTimeout(() => {
-        isWheeling.current = false;
-      }, 400);
-    }
-  };
-
-  const currentReel = reels.length > 0 && currentIndex >= 0 && currentIndex < reels.length ? reels[currentIndex] : null;
-
-  return (
-    <div 
-      onWheel={handleWheel}
-      className="w-full h-[calc(100dvh-56px)] md:h-[calc(100vh-64px)] flex items-center justify-center bg-black md:bg-zinc-950 overflow-hidden relative select-none"
-    >
-      {/* Hidden file input for uploading reels */}
-      <input 
-        type="file" 
-        ref={fileInputRef} 
-        accept="video/*,image/*" 
-        className="hidden" 
-        onChange={handleFileSelect} 
-      />
-
-      {/* Reel Phone Container (Instagram Viewport) */}
-      {reels.length > 0 ? (
-        <div className="relative w-full md:max-w-[420px] h-full md:max-h-[850px] aspect-auto md:aspect-[9/16] flex flex-col items-center justify-center bg-black overflow-hidden md:rounded-2xl md:border md:border-zinc-800 shadow-2xl mx-auto my-auto">
-          {/* Top Instagram-Style Header */}
-          <div className="absolute top-0 inset-x-0 z-30 flex items-center justify-between px-4 pt-3.5 pb-2 bg-gradient-to-b from-black/80 via-black/30 to-transparent pointer-events-none">
-            <div className="flex items-center gap-1.5 pointer-events-auto">
-              <span className="font-extrabold text-lg sm:text-xl text-white tracking-tight drop-shadow-md">
-                Reels
-              </span>
-            </div>
-          </div>
-
-          {/* Active Reel with Smooth Hardware-Accelerated Transition */}
-          <div className="w-full h-full relative overflow-hidden">
-            <AnimatePresence mode="popLayout" custom={direction}>
-              <motion.div 
-                key={currentReel?.id || currentIndex}
-                custom={direction}
-                initial={(dir: number) => ({
-                  y: dir > 0 ? '100%' : dir < 0 ? '-100%' : 0,
-                  opacity: 1
-                })}
-                animate={{
-                  y: 0,
-                  opacity: 1,
-                  transition: {
-                    y: { type: 'spring', stiffness: 320, damping: 28 },
-                    opacity: { duration: 0.15 }
-                  }
-                }}
-                exit={(dir: number) => ({
-                  y: dir > 0 ? '-100%' : '100%',
-                  opacity: 1,
-                  transition: {
-                    y: { type: 'spring', stiffness: 320, damping: 28 },
-                    opacity: { duration: 0.15 }
-                  }
-                })}
-                className="w-full h-full flex items-center justify-center relative overflow-hidden"
-              >
-                <ReelCard reel={currentReel} currentUser={user} userLocation={userLocation} />
-              </motion.div>
-            </AnimatePresence>
-          </div>
-        </div>
-      ) : (
-        <div className="text-center py-20 px-4 text-white flex flex-col items-center justify-center">
-          <div className="w-16 h-16 rounded-full bg-zinc-900 border border-zinc-800 flex items-center justify-center mb-4">
-            <Film className="w-8 h-8 text-blue-500" />
-          </div>
-          <h3 className="text-xl font-bold mb-2">No Video Reels Published Yet</h3>
-          <p className="text-sm text-zinc-400 max-w-sm mb-6">
-            Upload your factory or showroom video reels to showcase your tile products to B2B buyers across India!
-          </p>
-          <button 
-            onClick={() => fileInputRef.current?.click()}
-            className="bg-blue-600 hover:bg-blue-500 text-white font-bold text-sm px-6 py-3 rounded-full shadow-lg flex items-center gap-2 cursor-pointer transition-transform active:scale-95 border border-blue-400/40"
-          >
-            <Plus className="w-5 h-5 stroke-[3]" />
-            <span>Upload First Reel</span>
-          </button>
-        </div>
-      )}
-
-      {/* Reel Upload Preview Modal */}
-      {isPreviewModalOpen && previewUrl && (
-        <div className="fixed inset-0 z-[200] bg-black/90 backdrop-blur-md flex flex-col items-center justify-center p-3 sm:p-4 overflow-y-auto">
-          <div className="w-full max-w-[400px] bg-zinc-950 rounded-3xl border border-zinc-800 flex flex-col shadow-2xl overflow-hidden my-auto p-3.5 relative">
-            
-            {/* Ring Buffering Loading Overlay while uploading to Firebase */}
-            {isPublishing && (
-              <div className="absolute inset-0 z-50 bg-zinc-950/95 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center animate-in fade-in duration-200">
-                <div className="relative w-20 h-20 mb-5 flex items-center justify-center">
-                  {/* Outer spinning ring buffering loader */}
-                  <div className="absolute inset-0 border-4 border-blue-500/20 border-t-blue-500 border-r-indigo-500 rounded-full animate-spin"></div>
-                  {/* Inner counter-spinning ring */}
-                  <div className="absolute inset-2 border-4 border-amber-500/20 border-b-amber-400 rounded-full animate-spin" style={{ animationDirection: 'reverse', animationDuration: '1.2s' }}></div>
-                  <Video className="w-8 h-8 text-blue-400 animate-pulse" />
-                </div>
-                
-                <h3 className="text-base font-black text-white mb-1.5 uppercase tracking-wide">
-                  Uploading to Firebase...
-                </h3>
-                
-                <p className="text-xs text-zinc-300 leading-relaxed max-w-xs mb-4">
-                  Jab tak video Firebase database me fully save na ho jaye tab tak wait karein. Complete hone ke baad hi Home Feed par show hogi.
-                </p>
-
-                <div className="flex items-center gap-2 px-3.5 py-2 rounded-full bg-blue-500/10 border border-blue-500/30 text-blue-300 text-[11px] font-mono font-bold">
-                  <div className="w-2.5 h-2.5 rounded-full bg-blue-400 animate-ping"></div>
-                  <span>Syncing Video with Cloud Database...</span>
-                </div>
-              </div>
-            )}
-
-            {/* Header */}
-            <div className="flex items-center justify-between pb-3 border-b border-zinc-800/80 mb-3">
-              <button 
-                onClick={() => {
-                  setIsPreviewModalOpen(false);
-                  setPreviewUrl(null);
-                  setPendingFile(null);
-                  setMinPrice('');
-                  setMaxPrice('');
-                  setPriceUnit('Box');
-                }} 
-                className="p-2 bg-zinc-900 hover:bg-zinc-800 rounded-full text-zinc-300 transition-colors cursor-pointer"
-              >
-                <ArrowLeft className="w-5 h-5" />
-              </button>
-              
-              <div className="flex items-center gap-2">
-                <span className="text-white font-black text-xs uppercase tracking-widest">Reel Preview</span>
-                <span className="text-[10px] bg-blue-600/30 text-blue-400 border border-blue-500/30 px-2 py-0.5 rounded-full font-mono font-bold">
-                  {reelAspectRatio}
-                </span>
-              </div>
-
-              <div className="w-8"></div>
-            </div>
-
-            {/* Dynamic Aspect Ratio Media Player Box */}
-            <div className={`w-full rounded-2xl overflow-hidden bg-black relative flex items-center justify-center border border-zinc-800/80 shadow-inner ${
-              reelAspectRatio === '9/16' ? 'aspect-[9/16] max-h-[48vh] mx-auto' :
-              reelAspectRatio === '16/9' ? 'aspect-[16/9] max-h-[36vh] w-full' :
-              'aspect-square max-h-[42vh] mx-auto'
-            }`}>
-              {pendingFile?.type.startsWith('video') || (pendingFile?.name && /\.(mp4|webm|mov|m4v|mkv)$/i.test(pendingFile.name)) ? (
-                <video 
-                  autoPlay
-                  preload="metadata" 
-                  controls
-                  src={previewUrl || ''} 
-                  className="w-full h-full object-contain transform-gpu will-change-transform" 
-                  loop 
-                  muted={Boolean(selectedMusic ? originalVolume === 0 : false)} 
-                  playsInline
-                  onLoadedMetadata={(e) => {
-                    setIsMediaReady(true);
-                    const v = e.currentTarget;
-                    const w = v.videoWidth || 1080;
-                    const h = v.videoHeight || 1920;
-                    const ratio = w / h;
-                    if (ratio < 0.75) setReelAspectRatio('9/16');
-                    else if (ratio > 1.25) setReelAspectRatio('16/9');
-                    else setReelAspectRatio('1/1');
-                    v.play().catch(() => {
-                      v.muted = true;
-                      v.play().catch(() => {});
-                    });
-                  }}
-                  onCanPlay={() => setIsMediaReady(true)}
-                  ref={(el) => { 
-                    if (el) {
-                      el.volume = selectedMusic ? originalVolume : 1;
-                      if (el.paused) { 
-                        const p = el.play(); 
-                        if (p !== undefined) {
-                          p.catch(() => {
-                            el.muted = true;
-                            el.play().catch(() => {});
-                          });
-                        } 
-                      }
-                    }
-                  }}
-                />
-              ) : (
-                <img 
-                  src={previewUrl} 
-                  alt="Preview" 
-                  className="w-full h-full object-contain transform-gpu"
-                  onLoad={(e) => {
-                    setIsMediaReady(true);
-                    const img = e.currentTarget;
-                    const w = img.naturalWidth || 1080;
-                    const h = img.naturalHeight || 1080;
-                    const ratio = w / h;
-                    if (ratio < 0.75) setReelAspectRatio('9/16');
-                    else if (ratio > 1.25) setReelAspectRatio('16/9');
-                    else setReelAspectRatio('1/1');
-                  }}
-                />
-              )}
-
-              {selectedMusic && (selectedMusic.audioUrl || selectedMusic.musicUrl || selectedMusic.url) && (
-                <>
-                  <audio 
-                    key={selectedMusic.audioUrl || selectedMusic.musicUrl || selectedMusic.url || selectedMusic.id}
-                    src={selectedMusic.audioUrl || selectedMusic.musicUrl || selectedMusic.url} 
-                    loop 
-                    playsInline 
-                    autoPlay
-                    className="hidden" 
-                    ref={(el) => { 
-                      if (el) {
-                        el.volume = musicVolume;
-                        if (el.paused) { const p = el.play(); if (p !== undefined) p.catch(()=>{}); } 
-                      }
-                    }} 
-                  />
-                  <div className="absolute top-2.5 left-2.5 z-20 bg-black/80 backdrop-blur-md border border-amber-500/50 text-amber-300 px-3 py-1 rounded-full text-[11px] font-bold flex items-center gap-1.5 shadow-lg animate-pulse">
-                    <Volume2 className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                    <span className="truncate max-w-[150px]">{selectedMusic.title || 'Sound Active'}</span>
-                  </div>
-                </>
-              )}
-
-              {!isMediaReady && (
-                <div className="absolute inset-0 bg-zinc-900/90 flex flex-col items-center justify-center gap-2">
-                  <div className="w-8 h-8 border-3 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-                  <span className="text-[11px] text-zinc-400 font-bold uppercase tracking-wider">Loading Preview...</span>
-                </div>
-              )}
-            </div>
-
-            {/* Bottom Controls: Sound buttons appear ONLY when media preview is ready */}
-            {isMediaReady && (
-              <div className="mt-3 flex flex-col gap-2 bg-zinc-900/90 p-2.5 rounded-2xl border border-zinc-800">
-                <div className="flex items-center gap-2">
-                  <button 
-                    type="button"
-                    onClick={() => setIsMusicModalOpen(true)}
-                    className="flex-1 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-white py-2 px-3 rounded-xl flex items-center justify-center gap-2 text-xs font-bold transition-all cursor-pointer"
-                  >
-                    <Volume2 className="w-4 h-4 text-amber-400 shrink-0" />
-                    <span className="truncate">{selectedMusic ? `Sound: ${selectedMusic.title}` : 'üéµ Add Official Sound'}</span>
-                  </button>
-
-                  <button 
-                    type="button"
-                    onClick={() => document.getElementById('custom-audio-upload-reels')?.click()}
-                    className="bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-white py-2 px-3 rounded-xl flex items-center justify-center gap-1.5 text-xs font-bold transition-all shrink-0 cursor-pointer"
-                  >
-                    <Upload className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                    <span>Upload MP3</span>
-                  </button>
-
-                  <input 
-                    id="custom-audio-upload-reels" 
-                    type="file" 
-                    accept="audio/mp3,audio/mpeg,audio/wav" 
-                    className="hidden" 
-                    onChange={handleCustomAudioUpload}
-                  />
-                </div>
-
-                {selectedMusic && (
-                  <div className="bg-black/70 rounded-xl p-2.5 border border-zinc-800 text-xs">
-                    <div className="flex items-center justify-between gap-3 text-[11px] text-zinc-300">
-                      <span>Original Audio</span>
-                      <input 
-                        type="range" min="0" max="1" step="0.05" 
-                        value={originalVolume} 
-                        onChange={(e) => setOriginalVolume(parseFloat(e.target.value))}
-                        className="w-28 h-1 bg-zinc-700 rounded-lg appearance-none cursor-pointer" 
-                      />
-                      <span className="font-mono text-[10px] w-8 text-right">{Math.round(originalVolume * 100)}%</span>
-                    </div>
-                    <div className="flex items-center justify-between gap-3 text-[11px] text-emerald-400 mt-2">
-                      <span>Music Track</span>
-                      <input 
-                        type="range" min="0" max="1" step="0.05" 
-                        value={musicVolume} 
-                        onChange={(e) => setMusicVolume(parseFloat(e.target.value))}
-                        className="w-28 h-1 bg-zinc-700 rounded-lg appearance-none cursor-pointer" 
-                      />
-                      <span className="font-mono text-[10px] w-8 text-right">{Math.round(musicVolume * 100)}%</span>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Form Fields matching Profile Create Post */}
-            <div className="mt-3 space-y-3 text-left">
-              {/* Reel Title */}
-              <div>
-                <label className="block text-[11px] font-bold text-zinc-300 mb-1">
-                  Reel Title / Product Name (‡§∂‡•Ä‡§∞‡•ç‡§∑‡§ï)
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. 600x1200mm Glossy Finish Tiles, Vitrified Slab..."
-                  value={reelTitle}
-                  onChange={e => setReelTitle(e.target.value)}
-                  className="w-full bg-zinc-900 border border-zinc-700/80 rounded-xl px-3 py-2 text-xs font-bold text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-
-              {/* Reel Description */}
-              <div>
-                <label className="block text-[11px] font-bold text-zinc-300 mb-1">
-                  Description / Details (‡§µ‡§ø‡§µ‡§∞‡§£)
-                </label>
-                <textarea
-                  rows={2}
-                  placeholder="Enter business details, specifications, packaging, grade..."
-                  value={reelContent}
-                  onChange={e => setReelContent(e.target.value)}
-                  className="w-full bg-zinc-900 border border-zinc-700/80 rounded-xl px-3 py-2 text-xs font-bold text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-                />
-              </div>
-
-              {/* Hashtags & AI Suggest */}
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="text-[11px] font-bold text-zinc-300">
-                    Hashtags & Tags (‡§π‡•à‡§∂‡§ü‡•à‡§ó)
-                  </label>
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      if (!reelTitle && !reelContent) {
-                        toast.error('Please add title or description first');
-                        return;
-                      }
-                      setIsSuggestingReelTags(true);
-                      try {
-                        const tags = await suggestHashtagsWithAI(reelTitle, reelContent);
-                        if (tags) {
-                          setReelHashtags(tags);
-                          toast.success('‚ú® AI Hashtags generated!');
-                        }
-                      } catch (e) {
-                        toast.error('Could not generate tags');
-                      } finally {
-                        setIsSuggestingReelTags(false);
-                      }
-                    }}
-                    disabled={isSuggestingReelTags}
-                    className="text-[10px] font-black text-amber-400 hover:text-amber-300 flex items-center gap-1 cursor-pointer bg-amber-500/10 px-2 py-0.5 rounded-full border border-amber-500/30"
-                  >
-                    <Sparkles className="w-3 h-3 animate-spin" />
-                    <span>{isSuggestingReelTags ? 'Suggesting...' : '‚ú® Suggest with AI'}</span>
-                  </button>
-                </div>
-                <input
-                  type="text"
-                  placeholder="#tiles #vitrified #ceramic #wholesale #morbi"
-                  value={reelHashtags}
-                  onChange={e => setReelHashtags(e.target.value)}
-                  className="w-full bg-zinc-900 border border-zinc-700/80 rounded-xl px-3 py-2 text-xs font-bold text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-            </div>
-
-            {/* B2B Wholesale Price Range for Reel */}
-            <div className="mt-3 p-3 rounded-2xl bg-amber-500/10 border border-amber-500/25 space-y-2.5 text-left">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-1.5">
-                  <div className="w-5 h-5 rounded-md bg-amber-500/20 text-amber-400 flex items-center justify-center font-black text-xs">
-                    ‚Çπ
-                  </div>
-                  <span className="text-[11px] font-black text-amber-300 uppercase tracking-wider">
-                    Wholesale Price Range (‡§ï‡•Ä‡§Æ‡§§ ‡§¶‡§æ‡§Ø‡§∞‡§æ)
-                  </span>
-                </div>
-                <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                  Optional
-                </span>
-              </div>
-
-              <div className="grid grid-cols-3 gap-2">
-                <div>
-                  <label className="block text-[10px] font-bold text-zinc-300 mb-1">
-                    Min Rate (‚Çπ)
-                  </label>
-                  <div className="relative">
-                    <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-bold text-zinc-500">
-                      ‚Çπ
-                    </span>
-                    <input 
-                      type="number"
-                      min="0"
-                      step="any"
-                      value={minPrice}
-                      onChange={(e) => setMinPrice(e.target.value)}
-                      placeholder="e.g. 150"
-                      className="w-full bg-zinc-900 border border-zinc-700/80 rounded-xl pl-6 pr-2 py-2 text-xs font-bold text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-[10px] font-bold text-zinc-300 mb-1">
-                    Max Rate (‚Çπ)
-                  </label>
-                  <div className="relative">
-                    <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-bold text-zinc-500">
-                      ‚Çπ
-                    </span>
-                    <input 
-                      type="number"
-                      min="0"
-                      step="any"
-                      value={maxPrice}
-                      onChange={(e) => setMaxPrice(e.target.value)}
-                      placeholder="e.g. 240"
-                      className="w-full bg-zinc-900 border border-zinc-700/80 rounded-xl pl-6 pr-2 py-2 text-xs font-bold text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-[10px] font-bold text-zinc-300 mb-1">
-                    Unit (‡§á‡§ï‡§æ‡§à)
-                  </label>
-                  <select
-                    value={priceUnit}
-                    onChange={(e) => setPriceUnit(e.target.value)}
-                    className="w-full bg-zinc-900 border border-zinc-700/80 rounded-xl px-2 py-2 text-xs font-bold text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
-                  >
-                    <option value="Box">Per Box</option>
-                    <option value="Sq.Ft">Per Sq.Ft</option>
-                    <option value="Sq.Mtr">Per Sq.Mtr</option>
-                    <option value="Piece">Per Piece</option>
-                    <option value="Brass">Per Brass</option>
-                    <option value="Ton">Per Ton</option>
-                  </select>
-                </div>
-              </div>
-            </div>
-
-            {/* Stock Shortage Status Toggle */}
-            <div className="mt-3 p-3 rounded-2xl bg-zinc-900 border border-zinc-800 flex items-center justify-between text-left">
-              <div className="flex items-center gap-2">
-                <div className={cn(
-                  "w-7 h-7 rounded-lg flex items-center justify-center text-xs font-bold",
-                  isShortage ? "bg-red-500/20 text-red-400" : "bg-emerald-500/20 text-emerald-400"
-                )}>
-                  {isShortage ? '‚ö†Ô∏è' : '‚úÖ'}
-                </div>
-                <div>
-                  <div className="text-xs font-bold text-white">
-                    Stock Availability (‡§∏‡•ç‡§ü‡•â‡§ï ‡§â‡§™‡§≤‡§¨‡•ç‡§ß‡§§‡§æ)
-                  </div>
-                  <div className="text-[10px] text-zinc-400">
-                    {isShortage ? '‚ö†Ô∏è Item Shortage / Out of Stock' : '‚úÖ In Stock (‡§™‡§∞‡•ç‡§Ø‡§æ‡§™‡•ç‡§§ ‡§∏‡•ç‡§ü‡•â‡§ï ‡§â‡§™‡§≤‡§¨‡•ç‡§ß)'}
-                  </div>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsShortage(!isShortage)}
-                className={cn(
-                  "px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer border",
-                  isShortage 
-                    ? "bg-red-600 hover:bg-red-700 text-white border-red-500" 
-                    : "bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-500"
-                )}
-              >
-                {isShortage ? '‚ö†Ô∏è Shortage' : '‚úÖ In Stock'}
-              </button>
-            </div>
-
-            {/* Action Bar */}
-            <div className="mt-3">
-              <button 
-                onClick={finalizeUpload}
-                disabled={isPublishing}
-                className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-black py-3 px-4 rounded-xl text-xs uppercase tracking-widest shadow-lg shadow-blue-900/30 transition-all flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
-              >
-                {isPublishing ? (
-                  <div className="flex items-center gap-2">
-                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
-                    <span>Publishing Reel...</span>
-                  </div>
-                ) : (
-                  <>
-                    <PlusSquare className="w-4 h-4" />
-                    <span>Publish Reel to Feed</span>
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Music Selection Modal */}
-      <MusicSelectionModal 
-        isOpen={isMusicModalOpen} 
-        onClose={() => setIsMusicModalOpen(false)} 
-        onSelect={(music) => {
-          setSelectedMusic(music);
-          setIsMusicModalOpen(false);
-        }} 
-      /></div>
-  );
-}
-
-function NotificationsPage({ user }: { user: any }) {
-  const navigate = useNavigate();
-  const [notifications, setNotifications] = useState<any[]>([]);
-  const [selectedPost, setSelectedPost] = useState<any>(null);
-
-  if (!user) {
-    return (
-      <div className="max-w-2xl mx-auto w-full pt-20 pb-20 px-4 text-center">
-        <Bell className="w-16 h-16 text-slate-700 dark:text-zinc-700 mx-auto mb-4" />
-        <h2 className="text-xl font-bold text-black dark:text-zinc-50 mb-2">Login Required</h2>
-        <p className="text-black/70 max-w-sm mx-auto mb-6">Sign in to see your notifications and updates.</p>
-        <Link to="/" onClick={() => window.dispatchEvent(new CustomEvent('openAuthModal'))} className="bg-blue-600 hover:bg-blue-700 text-black font-bold py-2 px-6 rounded-full transition-colors inline-block">Sign In</Link>
-      </div>
-    );
-  }
-
-  useEffect(() => {
-    if (user?.id) {
-      const fetchNotifs = () => {
-        fetch('/api/notifications?userId=' + user.id)
-          .then(res => (res.ok && res.headers.get('content-type')?.includes('application/json')) ? res.json() : [])
-          .then(data => {
-            if (Array.isArray(data)) {
-              setNotifications(data);
-              if (data.some((n: any) => !n.read)) {
-                fetch('/api/notifications/read', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ userId: user.id })
-                }).then(() => {
-                  window.dispatchEvent(new Event('notificationsRead'));
-                }).catch(() => {});
-              }
-            }
-          })
-          .catch(() => {});
-      };
-      fetchNotifs();
-      const interval = setInterval(fetchNotifs, 10000);
-      return () => clearInterval(interval);
-    }
-  }, [user?.id]);
-
-  const [activeMenuId, setActiveMenuId] = useState<number | null>(null);
-
-  const handleDelete = (id: number) => {
-    if (confirm('Delete this notification?')) {
-      fetch('/api/notifications/' + id, { method: 'DELETE' })
-        .then(() => {
-          setNotifications(notifications.filter(n => n.id !== id));
-          setActiveMenuId(null);
-        })
-        .catch(() => {});
-    }
-  };
-
-  const handleNotificationClick = async (notif: any) => {
-    if (notif.action.includes('following')) {
-      navigate('/profile/' + notif.actorId);
-    } else if (notif.targetId) {
-      try {
-        const res = await safeFetch(`/api/posts/${notif.targetId}?currentUserId=${user.id}`);
-        setSelectedPost(res);
-      } catch (err) {
-        toast.error('Post not found or deleted');
-      }
-    }
-  };
-
-  return (
-    <div className="max-w-2xl mx-auto w-full pt-8 pb-20 md:pb-8 px-4">
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="text-2xl font-bold">Notifications</h2>
-        <button 
-          onClick={() => navigate('/')}
-          className="p-2 hover:bg-slate-100 dark:hover:bg-zinc-800 rounded-full transition-colors cursor-pointer"
-          title="Close"
-        >
-          <X className="w-6 h-6 text-black/70 hover:text-red-500 transition-colors" />
-        </button>
-      </div>
-      
-      <div className="space-y-4">
-        <h3 className="font-semibold text-black dark:text-zinc-50 mt-6 mb-4">This Month</h3>
-        {notifications.map(notif => {
-          // Special view for requirement leads that need GSTIN unlock
-          if (notif.type === 'requirement_lead' && (!user.gstNumber || user.gstNumber.trim() === '')) {
-            return (
-              <div key={notif.id} className="relative border border-amber-200 dark:border-amber-900 bg-amber-50 dark:bg-amber-950/20 p-4 rounded-xl flex flex-col gap-3 group">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-full bg-amber-100 dark:bg-amber-900 flex items-center justify-center text-amber-600 dark:text-amber-400 font-bold shrink-0">
-                    <ClipboardList className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <p className="text-sm font-semibold text-black dark:text-zinc-50">{notif.actorName} sent a building requirement</p>
-                    <p className="text-xs text-black/70">New Lead</p>
-                  </div>
-                  <div className="ml-auto relative">
-                    <button onClick={() => setActiveMenuId(activeMenuId === notif.id ? null : notif.id)} className="p-2 text-black/70 hover:bg-slate-100 dark:hover:bg-zinc-800 rounded-full transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100">
-                      <MoreHorizontal className="w-5 h-5" />
-                    </button>
-                    {activeMenuId === notif.id && (
-                      <div className="absolute right-0 mt-1 w-32 bg-white dark:bg-zinc-900 rounded-md shadow-lg z-10 border border-slate-200 dark:border-zinc-800 overflow-hidden">
-                        <button onClick={() => handleDelete(notif.id)} className="w-full text-left px-4 py-2 text-red-600 font-semibold text-sm hover:bg-slate-50 dark:hover:bg-zinc-800">
-                          Delete
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-                <div className="relative overflow-hidden rounded-lg border border-slate-200 dark:border-zinc-800 bg-white/50 dark:bg-zinc-900/50 p-4">
-                  <div className="blur-sm select-none opacity-40 space-y-2 pointer-events-none">
-                    <p className="text-sm font-bold">Requirements:</p>
-                    <p className="text-sm">Tiles: 5000 sqft</p>
-                    <p className="text-sm">EWC: 10 units</p>
-                    <p className="text-sm">Mixers: 20 units</p>
-                  </div>
-                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/60 dark:bg-zinc-900/60 backdrop-blur-sm z-10 text-center px-4">
-                    <Lock className="w-6 h-6 text-black dark:text-zinc-300 mb-2" />
-                    <p className="text-sm font-bold text-black dark:text-zinc-50 mb-1">GSTIN Required</p>
-                    <p className="text-xs text-black dark:text-zinc-300 max-w-[250px]">Update your GSTIN in Edit Profile to unlock and view customer requirements.</p>
-                  </div>
-                </div>
-              </div>
-            );
-          }
-
-          // Unified Tag-Based Notification View
-          return (
-            <div key={notif.id} className="flex flex-col gap-2 relative group p-3 rounded-xl hover:bg-slate-50 dark:hover:bg-zinc-900/50 transition-colors border border-transparent hover:border-slate-100 dark:hover:border-zinc-800">
-              <div className="flex items-center justify-between w-full">
-                <span className={cn(
-                  "text-[10px] font-black px-2.5 py-0.5 rounded-full uppercase tracking-wider",
-                  notif.type === 'message' ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400" :
-                  notif.type === 'requirement_lead' ? "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400" :
-                  notif.type === 'like' ? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400" :
-                  notif.type === 'comment' ? "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400" :
-                  notif.type === 'share' ? "bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-400" :
-                  notif.type === 'save' ? "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-400" :
-                  "bg-slate-100 text-slate-700 dark:bg-zinc-800 dark:text-zinc-400"
-                )}>
-                  {notif.type === 'requirement_lead' ? 'Enquiry' : notif.type || 'Activity'}
-                </span>
-                
-                <div className="flex items-center gap-2">
-                  {notif.type === 'message' ? (
-                    <button onClick={() => navigate('/chat')} className="bg-[#10b981] hover:bg-[#059669] text-white font-bold px-3 py-1 rounded-full text-[11px] transition-colors shadow-sm">
-                      Reply in Chat
-                    </button>
-                  ) : (
-                    <button className="bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 dark:hover:bg-zinc-700 text-black dark:text-zinc-50 font-semibold px-3 py-1 rounded-full text-[11px] transition-colors shadow-sm">
-                      Following
-                    </button>
-                  )}
-                  
-                  <div className="relative">
-                    <button onClick={() => setActiveMenuId(activeMenuId === notif.id ? null : notif.id)} className="p-1.5 text-black/70 hover:bg-slate-200 dark:hover:bg-zinc-800 rounded-full transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100">
-                      <MoreHorizontal className="w-5 h-5" />
-                    </button>
-                    {activeMenuId === notif.id && (
-                      <div className="absolute right-0 mt-1 w-32 bg-white dark:bg-zinc-900 rounded-md shadow-lg z-10 border border-slate-200 dark:border-zinc-800 overflow-hidden">
-                        <button onClick={() => handleDelete(notif.id)} className="w-full text-left px-4 py-2 text-red-600 font-semibold text-sm hover:bg-slate-50 dark:hover:bg-zinc-800">
-                          Delete
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-              
-              <div className="flex items-center gap-3 cursor-pointer mt-1" onClick={() => notif.type === 'message' ? navigate('/chat') : handleNotificationClick(notif)}>
-                <div className="w-12 h-12 rounded-full bg-slate-200 dark:bg-zinc-800 flex items-center justify-center font-bold text-black/70 overflow-hidden border-2 border-slate-200 dark:border-zinc-700 shrink-0">
-                  {notif.actorAvatar ? (
-                    <img src={notif.actorAvatar} alt={notif.actorName} className="w-full h-full object-cover" />
-                  ) : (
-                    notif.actorName?.charAt(0) || 'U'
-                  )}
-                </div>
-                <div className="flex-1">
-                  <p className="text-[15px] leading-tight">
-                    <span className="font-bold mr-1 hover:underline text-black dark:text-white" onClick={(e) => {
-                      e.stopPropagation();
-                      navigate('/profile/' + notif.actorId);
-                    }}>{notif.actorName}</span>
-                    <span className="text-black/80 dark:text-zinc-300">{notif.action}</span>
-                  </p>
-                  
-                  {/* Show Enquiry Details if present & unlocked */}
-                  {notif.type === 'requirement_lead' && notif.details && (
-                    <div className="mt-2 bg-white dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800 rounded-lg p-2.5 space-y-1 inline-block min-w-[200px]">
-                      {notif.details.tilesQty && <p className="text-xs"><span className="font-semibold text-black dark:text-zinc-300">Tiles:</span> {notif.details.tilesQty}</p>}
-                      {notif.details.ewcQty && <p className="text-xs"><span className="font-semibold text-black dark:text-zinc-300">EWC/Toilets:</span> {notif.details.ewcQty}</p>}
-                      {notif.details.mixerQty && <p className="text-xs"><span className="font-semibold text-black dark:text-zinc-300">Mixers:</span> {notif.details.mixerQty}</p>}
-                      {notif.details.other && <p className="text-xs"><span className="font-semibold text-black dark:text-zinc-300">Other:</span> {notif.details.other}</p>}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          );
-        })}
-        {notifications.length === 0 && <p className="text-black/70">No notifications.</p>}
-      </div>
-      
-      {/* Post Modal */}
-      {selectedPost && (
-        <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-zinc-900 max-w-xl w-full max-h-[90vh] overflow-y-auto rounded-2xl relative border border-slate-200 dark:border-zinc-800 shadow-2xl">
-            <button 
-              onClick={() => setSelectedPost(null)}
-              className="absolute top-4 right-4 z-10 p-2 bg-black/50 hover:bg-black/80 text-black rounded-full backdrop-blur-sm transition-colors"
-            >
-              <X className="w-5 h-5" />
-            </button>
-            <div className="p-4 sm:p-6">
-              <PostItem 
-                post={selectedPost} 
-                currentUser={user} 
-                onPostDeleted={() => setSelectedPost(null)}
-                onPostUpdated={(p) => setSelectedPost(p)}
-              />
-            </div>
-          </div>
-        </div>
-      )}</div>
-  );
-}
-
-
-
-
-function ImageCropperModal({
-  isOpen,
-  imageSrc,
-  onClose,
-  onSave
-}: {
-  isOpen: boolean;
-  imageSrc: string;
-  onClose: () => void;
-  onSave: (croppedDataUrl: string) => void;
-}) {
-  const [zoom, setZoom] = useState(1);
-  const [rotation, setRotation] = useState(0);
-  const [position, setPosition] = useState({ x: 0, y: 0 });
-  const [isDragging, setIsDragging] = useState(false);
-  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
-  const imageRef = React.useRef<HTMLImageElement>(null);
-
-  useEffect(() => {
-    if (isOpen) {
-      setZoom(1);
-      setRotation(0);
-      setPosition({ x: 0, y: 0 });
-    }
-  }, [isOpen, imageSrc]);
-
-  if (!isOpen || !imageSrc) return null;
-
-  const handleMouseDown = (e: React.MouseEvent | React.TouchEvent) => {
-    setIsDragging(true);
-    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
-    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
-    setDragStart({ x: clientX - position.x, y: clientY - position.y });
-  };
-
-  const handleMouseMove = (e: React.MouseEvent | React.TouchEvent) => {
-    if (!isDragging) return;
-    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
-    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
-    setPosition({
-      x: clientX - dragStart.x,
-      y: clientY - dragStart.y
-    });
-  };
-
-  const handleMouseUp = () => {
-    setIsDragging(false);
-  };
-
-  const handleCropSave = () => {
-    const img = new window.Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      const targetWidth = 1200;
-      const targetHeight = 400; // 3:1 aspect ratio banner
-      canvas.width = targetWidth;
-      canvas.height = targetHeight;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-
-      ctx.fillStyle = '#0f172a';
-      ctx.fillRect(0, 0, targetWidth, targetHeight);
-
-      ctx.save();
-      ctx.translate(targetWidth / 2, targetHeight / 2);
-      ctx.rotate((rotation * Math.PI) / 180);
-      ctx.scale(zoom, zoom);
-
-      const scaleToFit = Math.max(targetWidth / img.width, targetHeight / img.height);
-      const drawWidth = img.width * scaleToFit;
-      const drawHeight = img.height * scaleToFit;
-
-      const scaleFactor = targetHeight / 240;
-      const drawX = -drawWidth / 2 + (position.x * scaleFactor);
-      const drawY = -drawHeight / 2 + (position.y * scaleFactor);
-
-      ctx.drawImage(img, drawX, drawY, drawWidth, drawHeight);
-      ctx.restore();
-
-      const croppedDataUrl = canvas.toDataURL('image/jpeg', 0.85);
-      onSave(croppedDataUrl);
-    };
-    img.src = imageSrc;
-  };
-
-  return (
-    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/85 backdrop-blur-md p-4 animate-in fade-in duration-200">
-      <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-2xl w-full overflow-hidden shadow-2xl flex flex-col text-black">
-        <div className="p-4 border-b border-zinc-800 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Crop className="w-5 h-5 text-emerald-400" />
-            <h3 className="font-semibold text-lg">Crop & Adjust Cover Photo</h3>
-          </div>
-          <button 
-            onClick={onClose}
-            className="p-1.5 hover:bg-zinc-800 rounded-full transition-colors text-zinc-400 hover:text-black cursor-pointer"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        <div className="p-6 flex flex-col items-center justify-center bg-zinc-950 select-none">
-          <p className="text-xs text-zinc-400 mb-3 flex items-center gap-1.5">
-            üí° Drag image to position. Use sliders to zoom or rotate.
-          </p>
-          
-          <div 
-            className="relative w-full max-w-xl h-52 sm:h-60 rounded-xl overflow-hidden bg-slate-50 border-2 border-dashed border-emerald-500/50 cursor-grab active:cursor-grabbing flex items-center justify-center shadow-inner"
-            onMouseDown={handleMouseDown}
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
-            onMouseLeave={handleMouseUp}
-            onTouchStart={handleMouseDown}
-            onTouchMove={handleMouseMove}
-            onTouchEnd={handleMouseUp}
-          >
-            <img 
-              ref={imageRef}
-              src={imageSrc} 
-              alt="Cover to Crop" 
-              draggable={false}
-              className="max-w-none transition-transform duration-75 pointer-events-none"
-              style={{
-                transform: `translate(${position.x}px, ${position.y}px) scale(${zoom}) rotate(${rotation}deg)`,
-                maxHeight: '100%',
-                objectFit: 'contain'
-              }}
-            />
-            
-            <div className="absolute inset-0 pointer-events-none border border-white/20 grid grid-cols-3 grid-rows-3">
-              <div className="border-r border-b border-white/10"></div>
-              <div className="border-r border-b border-white/10"></div>
-              <div className="border-b border-white/10"></div>
-              <div className="border-r border-b border-white/10"></div>
-              <div className="border-r border-b border-white/10"></div>
-              <div className="border-b border-white/10"></div>
-              <div className="border-r border-white/10"></div>
-              <div className="border-r border-white/10"></div>
-              <div></div>
-            </div>
-          </div>
-
-          <div className="w-full max-w-xl mt-6 space-y-4">
-            <div className="flex items-center gap-4">
-              <span className="text-xs font-semibold text-zinc-400 w-16">Zoom:</span>
-              <button 
-                onClick={() => setZoom(prev => Math.max(0.8, prev - 0.2))}
-                className="p-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-zinc-200 text-xs font-bold cursor-pointer"
-              >
-                -
-              </button>
-              <input 
-                type="range" 
-                min="0.8" 
-                max="3" 
-                step="0.05"
-                value={zoom}
-                onChange={(e) => setZoom(parseFloat(e.target.value))}
-                className="flex-1 accent-emerald-500 h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer"
-              />
-              <button 
-                onClick={() => setZoom(prev => Math.min(3, prev + 0.2))}
-                className="p-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-zinc-200 text-xs font-bold cursor-pointer"
-              >
-                +
-              </button>
-              <span className="text-xs text-zinc-400 w-10 text-right">{Math.round(zoom * 100)}%</span>
-            </div>
-
-            <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-zinc-800/80">
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-semibold text-zinc-400">Position:</span>
-                <button 
-                  onClick={() => setPosition({ x: 0, y: 0 })}
-                  className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 rounded-md text-xs font-medium text-zinc-300 cursor-pointer"
-                >
-                  Center
-                </button>
-                <button 
-                  onClick={() => setPosition({ x: 0, y: 35 })}
-                  className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 rounded-md text-xs font-medium text-zinc-300 cursor-pointer"
-                >
-                  Top
-                </button>
-                <button 
-                  onClick={() => setPosition({ x: 0, y: -35 })}
-                  className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 rounded-md text-xs font-medium text-zinc-300 cursor-pointer"
-                >
-                  Bottom
-                </button>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <button 
-                  onClick={() => setRotation(prev => (prev + 90) % 360)}
-                  className="px-3 py-1 bg-zinc-800 hover:bg-zinc-700 rounded-md text-xs font-medium text-zinc-200 flex items-center gap-1 cursor-pointer"
-                >
-                  Rotate 90¬∞
-                </button>
-                <button 
-                  onClick={() => { setZoom(1); setPosition({ x: 0, y: 0 }); setRotation(0); }}
-                  className="px-3 py-1 bg-zinc-800 hover:bg-zinc-700 rounded-md text-xs font-medium text-red-400 cursor-pointer"
-                >
-                  Reset
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="p-4 border-t border-zinc-800 flex items-center justify-end gap-3 bg-zinc-900">
-          <button 
-            onClick={onClose}
-            className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-xl text-sm font-semibold text-zinc-300 transition-colors cursor-pointer"
-          >
-            Cancel
-          </button>
-          <button 
-            onClick={handleCropSave}
-            className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 rounded-xl text-sm font-semibold text-black shadow-lg transition-colors flex items-center gap-2 cursor-pointer"
-          >
-            <Check className="w-4 h-4" /> Save Cover to ID (Device Cache)
-          </button>
-        </div>
-      </div></div>
-  );
-}
-
-function EditProfileModal({ isOpen, onClose, user, onSave, onOpenVerify }: { isOpen: boolean, onClose: () => void, user: any, onSave: (u: any) => void, onOpenVerify?: () => void }) {
-  const [name, setName] = useState(user?.name || '');
-  const [role, setRole] = useState<string>(user?.role || 'factory');
-  const [category, setCategory] = useState(user?.category || (user?.role === 'admin' ? 'IT Software Developer SaaS Model Apps and Logic Founder' : 'Vitrified Tiles'));
-  const [gstNumber, setGstNumber] = useState(user?.gstNumber || '');
-  const [bio, setBio] = useState(user?.bio || '');
-  const [email, setEmail] = useState(user?.email || '');
-  const [website, setWebsite] = useState(user?.website || '');
-  const [facebookUrl, setFacebookUrl] = useState(user?.facebookUrl || '');
-  const [twitterUrl, setTwitterUrl] = useState(user?.twitterUrl || '');
-  const [instagramUrl, setInstagramUrl] = useState(user?.instagramUrl || '');
-  const [phone, setPhone] = useState(user?.phone || '');
-  
-  // Privacy States (Instagram style)
-  const [hidePhone, setHidePhone] = useState(user?.hidePhone || false);
-  const [hideAddress, setHideAddress] = useState(user?.hideAddress || false);
-  const [hideEmail, setHideEmail] = useState(user?.hideEmail || false);
-  const [hideGst, setHideGst] = useState(user?.hideGst || false);
-  
-  // Location States
-  const [address, setAddress] = useState(user?.address || '');
-  const [city, setCity] = useState(user?.city || '');
-  const [stateName, setStateName] = useState(user?.state || '');
-  const [gpsCoords, setGpsCoords] = useState<{ lat: number; lng: number } | null>(user?.gpsCoords || null);
-  const [isDetectingLocation, setIsDetectingLocation] = useState(false);
-
-  const [coverUrl, setCoverUrl] = useState(user?.coverUrl || '');
-  const [avatarUrl, setAvatarUrl] = useState(user?.avatarUrl || '');
-  const [catalogueUrl, setCatalogueUrl] = useState(user?.catalogueUrl || '');
-  const [catalogueName, setCatalogueName] = useState(user?.catalogueName || '');
-  const [loading, setLoading] = useState(false);
-
-  // Change Password States
-  const [showPasswordSection, setShowPasswordSection] = useState(false);
-  const [currentPasswordInput, setCurrentPasswordInput] = useState('');
-  const [newPasswordInput, setNewPasswordInput] = useState('');
-  const [confirmPasswordInput, setConfirmPasswordInput] = useState('');
-  const [isChangingPass, setIsChangingPass] = useState(false);
-  const [showPassText, setShowPassText] = useState(false);
-
-  const coverFileInputRef = React.useRef<HTMLInputElement>(null);
-  const avatarFileInputRef = React.useRef<HTMLInputElement>(null);
-  const catalogueFileInputRef = React.useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (isOpen) {
-      setName(user?.name || '');
-      setRole(user?.role || 'factory');
-      setCategory(user?.category || (user?.role === 'admin' ? 'IT Software Developer SaaS Model Apps and Logic Founder' : 'Vitrified Tiles'));
-      setGstNumber(user?.gstNumber || '');
-      setBio(user?.bio || '');
-      setEmail(user?.email || '');
-      setWebsite(user?.website || '');
-      setFacebookUrl(user?.facebookUrl || '');
-      setTwitterUrl(user?.twitterUrl || '');
-      setInstagramUrl(user?.instagramUrl || '');
-      setPhone(user?.phone || '');
-      setAddress(user?.address || '');
-      setCity(user?.city || '');
-      setStateName(user?.state || '');
-      setGpsCoords(user?.gpsCoords || null);
-      setCoverUrl(user?.coverUrl || '');
-      setAvatarUrl(user?.avatarUrl || '');
-      setCatalogueUrl(user?.catalogueUrl || '');
-      setCatalogueName(user?.catalogueName || '');
-      setHidePhone(user?.hidePhone || false);
-      setHideAddress(user?.hideAddress || false);
-      setHideEmail(user?.hideEmail || false);
-      setHideGst(user?.hideGst || false);
-      setShowPasswordSection(false);
-      setCurrentPasswordInput('');
-      setNewPasswordInput('');
-      setConfirmPasswordInput('');
-    }
-  }, [isOpen, user]);
-
-  const handleChangePassword = async () => {
-    if (!newPasswordInput.trim()) {
-      toast.error('Please enter a new password (‡§®‡§Ø‡§æ ‡§™‡§æ‡§∏‡§µ‡§∞‡•ç‡§° ‡§¶‡§∞‡•ç‡§ú ‡§ï‡§∞‡•á‡§Ç)!');
-      return;
-    }
-    if (newPasswordInput.trim().length < 4) {
-      toast.error('Password must be at least 4 characters long!');
-      return;
-    }
-    if (newPasswordInput.trim() !== confirmPasswordInput.trim()) {
-      toast.error('New Password and Confirm Password do not match (‡§¶‡•ã‡§®‡•ã‡§Ç ‡§™‡§æ‡§∏‡§µ‡§∞‡•ç‡§° ‡§∏‡§Æ‡§æ‡§® ‡§π‡•ã‡§®‡•á ‡§ö‡§æ‡§π‡§ø‡§è)!');
-      return;
-    }
-
-    setIsChangingPass(true);
-    const toastId = toast.loading('Updating your password...');
-
-    try {
-      const res = await userChangeOwnPassword(user?.id || '1', currentPasswordInput, newPasswordInput, user?.password);
-      if (res.success) {
-        toast.success('üîí Password updated successfully! Ab aap apne naye password se login kar sakte hain.', { id: toastId });
-        setCurrentPasswordInput('');
-        setNewPasswordInput('');
-        setConfirmPasswordInput('');
-        setShowPasswordSection(false);
-        if (user) {
-          const updatedUserWithPass = { ...user, password: newPasswordInput.trim() };
-          onSave(updatedUserWithPass);
-        }
-      } else {
-        toast.error(res.error || 'Failed to update password', { id: toastId });
-      }
-    } catch (err: any) {
-      toast.error(err?.message || 'Error updating password', { id: toastId });
-    } finally {
-      setIsChangingPass(false);
-    }
-  };
-
-  if (!isOpen) return null;
-
-  const detectLiveLocationInEdit = () => {
-    if (!navigator.geolocation) {
-      toast.error('Geolocation is not supported by your browser.');
-      return;
-    }
-
-    setIsDetectingLocation(true);
-    const toastId = toast.loading('üìç Detecting Live GPS Location...');
-
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        const lat = position.coords.latitude;
-        const lng = position.coords.longitude;
-        setGpsCoords({ lat, lng });
-        setAddress(`GPS Lat: ${lat.toFixed(4)}, Lng: ${lng.toFixed(4)}`);
-        if (!city) setCity('');
-        if (!stateName) setStateName('');
-        setIsDetectingLocation(false);
-        toast.success('üìç Live GPS location updated! Please confirm City & State.', { id: toastId });
-      },
-      (err) => {
-        console.warn('Geolocation fallback:', err);
-        const defaultLat = 20.5937;
-        const defaultLng = 78.9629;
-        setGpsCoords({ lat: defaultLat, lng: defaultLng });
-        setAddress('India Hub');
-        if (!city) setCity('');
-        if (!stateName) setStateName('');
-        setIsDetectingLocation(false);
-        toast.success('üìç Location set to default India Hub!', { id: toastId });
-      },
-      { timeout: 8000, enableHighAccuracy: true }
-    );
-  };
-
-  const handleCoverFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setCoverUrl(reader.result as string);
-        toast.success('Cover image selected');
-      };
-      reader.readAsDataURL(file);
-    }
-  };
-
-  const handleAvatarFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setAvatarUrl(reader.result as string);
-        toast.success('Profile photo selected');
-      };
-      reader.readAsDataURL(file);
-    }
-  };
-
-  const handleCatalogueFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      if (file.type !== 'application/pdf') {
-        toast.error('Please upload a valid PDF file.');
-        return;
-      }
-      
-      const formData = new FormData();
-      formData.append('media', file);
-      
-      const uploadToast = toast.loading('Uploading catalogue...');
-      try {
-        const response = await fetch('/api/upload', {
-          method: 'POST',
-          body: formData
-        });
-        const data = await response.json();
-        if (data.url) {
-          setCatalogueUrl(data.url);
-          setCatalogueName(file.name);
-          toast.success('Catalogue uploaded successfully', { id: uploadToast });
-        } else {
-          throw new Error('Upload failed');
-        }
-      } catch (err) {
-        toast.error('Failed to upload catalogue', { id: uploadToast });
-      }
-    }
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!user?.id || user?.id?.startsWith('demo_') || user?.id?.startsWith('user_guest_')) {
-      toast.error('üîê Only registered Buyers and Sellers can update business profiles. Please register or login!');
-      window.dispatchEvent(new CustomEvent('openAuthModal'));
-      onClose();
-      return;
-    }
-    if (!name.trim()) {
-      toast.error('Profile Name / Business Name is mandatory!');
-      return;
-    }
-
-    if (gstNumber && gstNumber.trim() !== '') {
-      const gstRes = validateGSTIN(gstNumber);
-      if (!gstRes.isValid) {
-        toast.error(`‚ö†Ô∏è ${gstRes.error}`);
-        return;
-      }
-    }
-
-    setLoading(true);
-
-    const googleMapsUrl = gpsCoords 
-      ? `https://maps.google.com/?q=${gpsCoords.lat},${gpsCoords.lng}`
-      : (address || city || stateName) 
-        ? `https://maps.google.com/?q=${encodeURIComponent(address + ', ' + city + ', ' + stateName)}`
-        : '';
-
-    const payload = {
-      name: name.trim(),
-      role,
-      category,
-      gstNumber,
-      bio,
-      email,
-      website,
-      facebookUrl,
-      twitterUrl,
-      instagramUrl,
-      phone,
-      address,
-      city,
-      state: stateName,
-      gpsCoords: gpsCoords || null,
-      googleMapsUrl,
-      coverUrl,
-      avatarUrl,
-      catalogueUrl,
-      catalogueName,
-      hidePhone,
-      hideAddress,
-      hideEmail,
-      hideGst
-    };
-
-    const updatedUser = { ...user, ...payload, avatar: payload.avatarUrl || user?.avatar };
-    updateCachedUsers(updatedUser);
-    syncUserToFirestore(updatedUser);
-    window.dispatchEvent(new CustomEvent('vyapar_user_avatar_updated', { detail: updatedUser }));
-    
-    try {
-      const res = await fetch(`/api/users/${user?.id || '1'}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      const data = await res.json();
-      if (data.success && data.user) {
-        updateCachedUsers(data.user);
-        syncUserToFirestore(data.user);
-        onSave(data.user);
-        toast.success('Profile & Location updated successfully!');
-        onClose();
-      } else {
-        onSave(updatedUser);
-        toast.success('Profile saved successfully!');
-        onClose();
-      }
-    } catch (e) {
-      onSave(updatedUser);
-      toast.success('Profile saved successfully!');
-      onClose();
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
-      <div className="bg-white dark:bg-zinc-900 w-full max-w-md md:max-w-2xl lg:max-w-3xl rounded-xl overflow-hidden shadow-2xl max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between p-4 border-b border-slate-200 dark:border-zinc-800">
-          <h3 className="font-semibold text-lg flex items-center gap-2">
-            <span>Edit Profile & Location</span>
-            <MapPin className="w-4 h-4 text-red-500" />
-          </h3>
-          <button onClick={onClose} className="p-1 hover:bg-slate-100 dark:hover:bg-zinc-800 rounded-full transition-colors cursor-pointer">
-            <XCircle className="w-6 h-6 text-black/70" />
-          </button>
-        </div>
-        <form onSubmit={handleSubmit} className="p-6 flex flex-col gap-4 overflow-y-auto scrollbar-thin">
-          {/* Category & Role Switcher */}
-          <div className="p-3.5 bg-slate-50 dark:bg-zinc-800/80 rounded-xl border border-slate-200 dark:border-zinc-700 space-y-3">
-            <div>
-              <label className="block text-xs font-bold text-black dark:text-zinc-200 mb-1.5 flex items-center justify-between">
-                <span>Account Role / ‡§™‡•ç‡§∞‡§ï‡§æ‡§∞:</span>
-                <span className="text-[10px] text-blue-600 font-semibold dark:text-blue-400">Select Role</span>
-              </label>
-              
-              {/* If user is admin, show Admin badge & allow selecting */}
-              {user?.role === 'admin' || user?.id === 'admin_manit_1' || user?.username === 'manit' ? (
-                <div className="px-3 py-2 bg-purple-50 dark:bg-purple-950/50 border border-purple-300 dark:border-purple-800 rounded-lg text-sm font-bold text-purple-700 dark:text-purple-300 flex items-center justify-between shadow-xs">
-                  <span className="flex items-center gap-2">
-                    <ShieldCheck className="w-4 h-4 text-purple-600 shrink-0" />
-                    üëë Vyapar Bridge Admin / Master Control
-                  </span>
-                  <span className="text-[10px] bg-purple-200 dark:bg-purple-900 text-purple-900 dark:text-purple-200 px-2 py-0.5 rounded-full font-black uppercase tracking-wider">
-                    Role: Admin
-                  </span>
-                </div>
-              ) : (
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setRole('factory')}
-                    className={cn(
-                      "px-2.5 py-2 rounded-lg text-xs font-bold border transition-all flex items-center justify-center gap-1.5 cursor-pointer",
-                      role === 'factory' 
-                        ? "bg-blue-600 text-white border-blue-600 shadow-sm" 
-                        : "bg-white dark:bg-zinc-900 text-slate-700 dark:text-zinc-300 border-slate-200 dark:border-zinc-700 hover:border-blue-400"
-                    )}
-                  >
-                    <Building2 className="w-3.5 h-3.5 shrink-0" />
-                    <span>Merchant (‡§µ‡•ç‡§Ø‡§æ‡§™‡§æ‡§∞‡•Ä)</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setRole('dealer')}
-                    className={cn(
-                      "px-2.5 py-2 rounded-lg text-xs font-bold border transition-all flex items-center justify-center gap-1.5 cursor-pointer",
-                      role === 'dealer' 
-                        ? "bg-emerald-600 text-white border-emerald-600 shadow-sm" 
-                        : "bg-white dark:bg-zinc-900 text-slate-700 dark:text-zinc-300 border-slate-200 dark:border-zinc-700 hover:border-emerald-400"
-                    )}
-                  >
-                    <Store className="w-3.5 h-3.5 shrink-0" />
-                    <span>Dealer (‡§°‡•Ä‡§≤‡§∞)</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setRole('contractor')}
-                    className={cn(
-                      "px-2.5 py-2 rounded-lg text-xs font-bold border transition-all flex items-center justify-center gap-1.5 cursor-pointer",
-                      role === 'contractor' 
-                        ? "bg-amber-600 text-white border-amber-600 shadow-sm" 
-                        : "bg-white dark:bg-zinc-900 text-slate-700 dark:text-zinc-300 border-slate-200 dark:border-zinc-700 hover:border-amber-400"
-                    )}
-                  >
-                    <Building2 className="w-3.5 h-3.5 shrink-0" />
-                    <span>Contractor (‡§†‡•á‡§ï‡•á‡§¶‡§æ‡§∞)</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setRole('customer')}
-                    className={cn(
-                      "px-2.5 py-2 rounded-lg text-xs font-bold border transition-all flex items-center justify-center gap-1.5 cursor-pointer",
-                      role === 'customer' 
-                        ? "bg-rose-600 text-white border-rose-600 shadow-sm" 
-                        : "bg-white dark:bg-zinc-900 text-slate-700 dark:text-zinc-300 border-slate-200 dark:border-zinc-700 hover:border-rose-400"
-                    )}
-                  >
-                    <ShoppingCart className="w-3.5 h-3.5 shrink-0" />
-                    <span>Customer (‡§ó‡•ç‡§∞‡§æ‡§π‡§ï)</span>
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {/* Custom / Business Category Input (Editable for everyone, including Admin & Customer) */}
-            <div className="space-y-1.5 pt-1">
-              <label className="block text-xs font-bold text-black dark:text-zinc-200">
-                Business / Profession Category (‡§®‡§æ‡§Æ ‡§ï‡•á ‡§®‡•Ä‡§ö‡•á ‡§¶‡§ø‡§ñ‡§®‡•á ‡§µ‡§æ‡§≤‡•Ä ‡§Ö‡§∏‡§≤‡•Ä ‡§∂‡•ç‡§∞‡•á‡§£‡•Ä):
-              </label>
-              <div className="space-y-2">
-                <input
-                  type="text"
-                  value={category}
-                  onChange={e => setCategory(e.target.value)}
-                  placeholder="e.g. IT Software Developer SaaS Model Apps and Logic Founder, Ceramic Tiles..."
-                  className="w-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-xs font-semibold text-black dark:text-zinc-100 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 shadow-xs"
-                />
-                
-                <div className="flex items-center gap-2">
-                  <span className="text-[11px] font-medium text-slate-500 dark:text-zinc-400 whitespace-nowrap">‡§Ø‡§æ ‡§∏‡•Ç‡§ö‡•Ä ‡§∏‡•á ‡§ö‡•Å‡§®‡•á‡§Ç:</span>
-                  <select 
-                    value=""
-                    onChange={e => {
-                      if (e.target.value) {
-                        setCategory(e.target.value);
-                      }
-                    }} 
-                    className="w-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-700 dark:text-zinc-300 focus:outline-none focus:border-blue-500"
-                  >
-                    <option value="">-- Select Industry Preset --</option>
-                    {(user?.role === 'admin' || user?.id === 'admin_manit_1' || user?.username === 'manit') && (
-                      <option value="IT Software Developer SaaS Model Apps and Logic Founder">IT Software Developer SaaS Model Apps and Logic Founder</option>
-                    )}
-                    {ALL_INDUSTRIES.map(ind => (
-                      <optgroup key={ind.id} label={`${ind.icon} ${ind.name}`}>
-                        {ind.subcategories.map(sub => (
-                          <option key={sub.id} value={sub.name}>{sub.name}</option>
-                        ))}
-                      </optgroup>
-                    ))}
-                    <option value="General Commerce">General Commerce / Other</option>
-                  </select>
-                </div>
-              </div>
-              <p className="text-[10px] text-slate-500 dark:text-zinc-400 italic">
-                üí° ‡§Ø‡§π‡§æ‡§Å ‡§Ü‡§™ ‡§ú‡•ã ‡§≠‡•Ä ‡§∂‡•ç‡§∞‡•á‡§£‡•Ä/‡§ï‡§æ‡§Æ ‡§≤‡§ø‡§ñ‡•á‡§Ç‡§ó‡•á, ‡§µ‡§π‡•Ä ‡§Ü‡§™‡§ï‡•Ä ‡§™‡•ç‡§∞‡•ã‡§´‡§º‡§æ‡§á‡§≤, ‡§™‡•ã‡§∏‡•ç‡§ü ‡§î‡§∞ ‡§∏‡§∞‡•ç‡§ö ‡§Æ‡•á‡§Ç ‡§Ü‡§™‡§ï‡•á ‡§®‡§æ‡§Æ ‡§ï‡•á ‡§®‡•Ä‡§ö‡•á ‡§¶‡§ø‡§ñ‡•á‡§ó‡•Ä‡•§
-              </p>
-            </div>
-          </div>
-
-          {/* LOCATION SETTING WITH LIVE GPS DETECTOR (OPTIONAL IN EDIT PROFILE) */}
-          <div className="bg-blue-50/70 dark:bg-zinc-800/90 p-3.5 rounded-xl border border-blue-500/30 space-y-2.5">
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-bold text-black dark:text-zinc-100 flex items-center gap-1.5">
-                <MapPin className="w-4 h-4 text-blue-500" />
-                <span>Business Location & Address (Optional)</span>
-              </label>
-            </div>
-
-            <button
-              type="button"
-              onClick={detectLiveLocationInEdit}
-              disabled={isDetectingLocation}
-              className="w-full bg-blue-600 hover:bg-blue-700 text-black text-xs font-bold py-2 px-3 rounded-lg flex items-center justify-center gap-2 transition-all cursor-pointer shadow-sm disabled:opacity-50"
-            >
-              <Locate className="w-4 h-4" />
-              <span>{isDetectingLocation ? 'Detecting GPS...' : 'üìç Update My Live GPS Location'}</span>
-            </button>
-
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="block text-[11px] font-semibold text-black dark:text-zinc-300 mb-1">City (Optional)</label>
-                <input 
-                  type="text" 
-                  value={city} 
-                  onChange={e => setCity(e.target.value)} 
-                  placeholder="Enter city"
-                  className="w-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-blue-500"
-                />
-              </div>
-              <div>
-                <label className="block text-[11px] font-semibold text-black dark:text-zinc-300 mb-1">State (Optional)</label>
-                <input 
-                  type="text" 
-                  value={stateName} 
-                  onChange={e => setStateName(e.target.value)} 
-                  placeholder="Enter state"
-                  className="w-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-blue-500"
-                />
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-[11px] font-semibold text-black dark:text-zinc-300 mb-1">Full Street Address (Optional)</label>
-              <input 
-                type="text" 
-                value={address} 
-                onChange={e => setAddress(e.target.value)} 
-                placeholder="Enter street address"
-                className="w-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-blue-500"
-              />
-            </div>
-          </div>
-
-          {/* Cover Photo Upload Preview */}
-          <div>
-            <label className="block text-xs font-semibold mb-1">Profile Cover Banner Image (Optional)</label>
-            <div className="relative w-full h-24 rounded-lg overflow-hidden bg-slate-100 border border-slate-200 dark:border-zinc-700 mb-1 flex items-center justify-center group">
-              {coverUrl ? (
-                <img src={coverUrl} alt="Cover Preview" className="w-full h-full object-cover" />
-              ) : (
-                <span className="text-xs text-black/60 font-medium">No cover image uploaded</span>
-              )}
-              <button 
-                type="button" 
-                onClick={() => coverFileInputRef.current?.click()}
-                className="absolute bottom-2 right-2 bg-black/70 hover:bg-black text-black text-[11px] px-2.5 py-1 rounded-md flex items-center gap-1 backdrop-blur-sm transition-colors cursor-pointer"
-              >
-                <Camera className="w-3.5 h-3.5" /> Upload Cover
-              </button>
-            </div>
-            <input 
-              type="file" 
-              ref={coverFileInputRef} 
-              accept="image/*" 
-              className="hidden" 
-              onChange={handleCoverFileChange} 
-            />
-          </div>
-
-          {/* Avatar Photo Section */}
-          <div className="flex items-center gap-3 my-1">
-            <div 
-              onClick={() => avatarFileInputRef.current?.click()}
-              className="relative w-14 h-14 rounded-full bg-slate-200 dark:bg-zinc-800 flex items-center justify-center font-bold text-black/70 text-xl shrink-0 overflow-hidden cursor-pointer group border-2 border-blue-500 shadow-md"
-            >
-              {avatarUrl ? (
-                <img src={avatarUrl} alt="Avatar" className="w-full h-full object-cover" />
-              ) : (
-                <span style={{ fontFamily: "'Great Vibes', 'Dancing Script', cursive" }}>{name?.charAt(0) || user?.name?.charAt(0) || 'U'}</span>
-              )}
-              <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                <Camera className="w-4 h-4 text-black" />
-              </div>
-            </div>
-            <div>
-              <div 
-                className="font-black italic tracking-wider text-lg text-black dark:text-zinc-100"
-                style={{ fontFamily: "'Playfair Display', 'Dancing Script', serif", fontWeight: 900 }}
-              >
-                {name || user?.name || 'User'}
-              </div>
-              <button 
-                type="button" 
-                onClick={() => avatarFileInputRef.current?.click()} 
-                className="text-blue-500 text-xs font-semibold hover:text-blue-600 flex items-center gap-1 mt-0.5 cursor-pointer"
-              >
-                <Upload className="w-3 h-3" /> Change profile photo
-              </button>
-            </div>
-            <input 
-              type="file" 
-              ref={avatarFileInputRef} 
-              accept="image/*" 
-              className="hidden" 
-              onChange={handleAvatarFileChange} 
-            />
-          </div>
-
-
-          
-          <div>
-            <label className="block text-xs font-bold text-black dark:text-zinc-200 mb-1">
-              {role === 'customer' ? 'Your Full Name *' : 'Profile Name / Business Name *'} <span className="text-red-500 font-bold">(Mandatory / ‡§Ü‡§µ‡§∂‡•ç‡§Ø‡§ï)</span>
-            </label>
-            <input 
-              type="text" 
-              required
-              value={name} 
-              onChange={e => setName(e.target.value)} 
-              placeholder={role === 'customer' ? 'Enter your full name' : 'Enter profile / business name'}
-              className="w-full bg-slate-50 dark:bg-zinc-800 border-2 border-blue-500/50 rounded-lg px-3 py-2 text-sm font-semibold focus:outline-none focus:border-blue-500"
-            />
-          </div>
-
-          {role !== 'customer' && (
-            <GstInput 
-              value={gstNumber} 
-              onChange={setGstNumber} 
-              label="GST Number / GSTIN Tax ID"
-              placeholder="Enter GSTIN Tax ID"
-            />
-          )}
-
-          <div>
-            <label className="block text-xs font-semibold mb-1">{role === 'customer' ? 'Your Bio / About' : 'Bio / About Business'}</label>
-            <textarea 
-              value={bio} 
-              onChange={e => setBio(e.target.value)} 
-              className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500 resize-none h-16"
-              placeholder={role === 'customer' ? 'Tell people about yourself...' : 'Tell dealers and factories about your tile products and capacity...'}
-            />
-          </div>
-
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className="block text-xs font-semibold mb-1">Phone Number</label>
-              <input 
-                type="tel" 
-                value={phone} 
-                onChange={e => setPhone(e.target.value)} 
-                placeholder="Enter phone number"
-                className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold mb-1">Email ID</label>
-              <input 
-                type="email" 
-                value={email} 
-                onChange={e => setEmail(e.target.value)} 
-                placeholder="Enter email address"
-                className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
-              />
-            </div>
-          </div>
-          {role !== 'customer' && (
-            <div className="space-y-3">
-              <div>
-                <label className="block text-sm font-semibold mb-1">Website</label>
-                <input 
-                  type="text" 
-                  value={website} 
-                  onChange={e => setWebsite(e.target.value)} 
-                  className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-slate-400"
-                  placeholder="Enter website link"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-semibold mb-1 text-blue-600 dark:text-blue-600 flex items-center gap-2"><Facebook className="w-4 h-4"/> Facebook Link</label>
-                <input 
-                  type="text" 
-                  value={facebookUrl} 
-                  onChange={e => setFacebookUrl(e.target.value)} 
-                  className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
-                  placeholder="https://facebook.com/yourpage"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-semibold mb-1 text-sky-500 flex items-center gap-2"><Twitter className="w-4 h-4"/> Twitter Link</label>
-                <input 
-                  type="text" 
-                  value={twitterUrl} 
-                  onChange={e => setTwitterUrl(e.target.value)} 
-                  className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-sky-500"
-                  placeholder="https://twitter.com/yourhandle"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-semibold mb-1 text-pink-500 flex items-center gap-2"><Instagram className="w-4 h-4"/> Instagram Link</label>
-                <input 
-                  type="text" 
-                  value={instagramUrl} 
-                  onChange={e => setInstagramUrl(e.target.value)} 
-                  className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-pink-500"
-                  placeholder="https://instagram.com/yourprofile"
-                />
-              </div>
-            </div>
-          )}
-
-          {/* Privacy Controls (Instagram Style) */}
-          <div className="p-3.5 bg-slate-50 dark:bg-zinc-800/80 rounded-xl border border-slate-200 dark:border-zinc-700 space-y-2.5">
-            <div className="flex items-center gap-2 text-black dark:text-zinc-100 font-bold text-xs">
-              <Lock className="w-4 h-4 text-purple-500" />
-              <span>Profile Privacy Controls / ‡§®‡§ø‡§ú‡§§‡§æ ‡§®‡§ø‡§Ø‡§Ç‡§§‡•ç‡§∞‡§£ (Hide Info)</span>
-            </div>
-            <p className="text-[11px] text-black/70 dark:text-zinc-400">
-              Check the boxes below to hide specific contact and location details from your public wall profile:
-            </p>
-
-            <div className="space-y-2 text-xs font-semibold">
-              <label className="flex items-center justify-between cursor-pointer p-2 bg-white dark:bg-zinc-900 rounded-lg border border-slate-200 dark:border-zinc-700/60">
-                <span className="flex items-center gap-2 text-black dark:text-zinc-200">
-                  <Phone className="w-3.5 h-3.5 text-emerald-500" /> Hide Mobile / Phone Number
-                </span>
-                <input 
-                  type="checkbox" 
-                  checked={hidePhone} 
-                  onChange={e => setHidePhone(e.target.checked)}
-                  className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 cursor-pointer" 
-                />
-              </label>
-
-              <label className="flex items-center justify-between cursor-pointer p-2 bg-white dark:bg-zinc-900 rounded-lg border border-slate-200 dark:border-zinc-700/60">
-                <span className="flex items-center gap-2 text-black dark:text-zinc-200">
-                  <MapPin className="w-3.5 h-3.5 text-red-500" /> Hide Street Address & Live GPS Maps
-                </span>
-                <input 
-                  type="checkbox" 
-                  checked={hideAddress} 
-                  onChange={e => setHideAddress(e.target.checked)}
-                  className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 cursor-pointer" 
-                />
-              </label>
-
-              <label className="flex items-center justify-between cursor-pointer p-2 bg-white dark:bg-zinc-900 rounded-lg border border-slate-200 dark:border-zinc-700/60">
-                <span className="flex items-center gap-2 text-black dark:text-zinc-200">
-                  <Mail className="w-3.5 h-3.5 text-indigo-500" /> Hide Email ID
-                </span>
-                <input 
-                  type="checkbox" 
-                  checked={hideEmail} 
-                  onChange={e => setHideEmail(e.target.checked)}
-                  className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 cursor-pointer" 
-                />
-              </label>
-
-              <label className="flex items-center justify-between cursor-pointer p-2 bg-white dark:bg-zinc-900 rounded-lg border border-slate-200 dark:border-zinc-700/60">
-                <span className="flex items-center gap-2 text-black dark:text-zinc-200">
-                  <ShieldCheck className="w-3.5 h-3.5 text-amber-500" /> Hide GSTIN Tax Number
-                </span>
-                <input 
-                  type="checkbox" 
-                  checked={hideGst} 
-                  onChange={e => setHideGst(e.target.checked)}
-                  className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 cursor-pointer" 
-                />
-              </label>
-            </div>
-          </div>
-
-          {/* Password & Security Settings (Change Password) */}
-          <div className="p-3.5 bg-slate-50 dark:bg-zinc-800/80 rounded-xl border border-slate-200 dark:border-zinc-700 space-y-2.5">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-black dark:text-zinc-100 font-bold text-xs">
-                <Key className="w-4 h-4 text-amber-500" />
-                <span>Password & Security (‡§™‡§æ‡§∏‡§µ‡§∞‡•ç‡§° ‡§¨‡§¶‡§≤‡•á‡§Ç)</span>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowPasswordSection(prev => !prev)}
-                className="text-xs font-bold text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer"
-              >
-                {showPasswordSection ? 'Cancel' : 'Change Password'}
-              </button>
-            </div>
-
-            {showPasswordSection ? (
-              <div className="space-y-3 pt-2 border-t border-slate-200 dark:border-zinc-700">
-                <p className="text-[11px] text-slate-600 dark:text-zinc-400">
-                  Master Password se login hone ke baad aap yahan se apna manpasand naya password set kar sakte hain:
-                </p>
-
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 dark:text-zinc-300 mb-1">
-                    Current / Master Password (‡§µ‡§∞‡•ç‡§§‡§Æ‡§æ‡§® ‡§™‡§æ‡§∏‡§µ‡§∞‡•ç‡§°)
-                  </label>
-                  <div className="relative">
-                    <input
-                      type={showPassText ? "text" : "password"}
-                      value={currentPasswordInput}
-                      onChange={e => setCurrentPasswordInput(e.target.value)}
-                      placeholder="Enter current or master password"
-                      className="w-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-xs focus:outline-none focus:border-amber-500 pr-9"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowPassText(prev => !prev)}
-                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-zinc-200 cursor-pointer"
-                    >
-                      {showPassText ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                    </button>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-700 dark:text-zinc-300 mb-1">
-                      New Password *
-                    </label>
-                    <input
-                      type={showPassText ? "text" : "password"}
-                      value={newPasswordInput}
-                      onChange={e => setNewPasswordInput(e.target.value)}
-                      placeholder="Min 4 characters"
-                      className="w-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:border-amber-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-700 dark:text-zinc-300 mb-1">
-                      Confirm New Password *
-                    </label>
-                    <input
-                      type={showPassText ? "text" : "password"}
-                      value={confirmPasswordInput}
-                      onChange={e => setConfirmPasswordInput(e.target.value)}
-                      placeholder="Repeat new password"
-                      className="w-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:border-amber-500"
-                    />
-                  </div>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={handleChangePassword}
-                  disabled={isChangingPass}
-                  className="w-full py-2 px-3 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm transition-all cursor-pointer disabled:opacity-50"
-                >
-                  <Lock className="w-3.5 h-3.5" />
-                  <span>{isChangingPass ? 'Updating Password...' : 'Save New Password (‡§®‡§Ø‡§æ ‡§™‡§æ‡§∏‡§µ‡§∞‡•ç‡§° ‡§∏‡•Å‡§∞‡§ï‡•ç‡§∑‡§ø‡§§ ‡§ï‡§∞‡•á‡§Ç)'}</span>
-                </button>
-              </div>
-            ) : (
-              <p className="text-[11px] text-slate-500 dark:text-zinc-400">
-                Aap jab chahein apna login password badal sakte hain.
-              </p>
-            )}
-          </div>
-
-          {/* Vyapar Bridge Verification Badge Option (Hidden if already verified) */}
-          {!user?.isVerified && (
-            <div className="bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-950/40 dark:to-indigo-950/40 p-3.5 rounded-xl border border-blue-200 dark:border-blue-800/60 flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <ShieldCheck className="w-5 h-5 text-blue-600 dark:text-blue-600 shrink-0" />
-                <div>
-                  <div className="text-xs font-bold text-black dark:text-black flex items-center gap-1">
-                    Vyapar Bridge Verified
-                  </div>
-                  <div className="text-[11px] text-black/80 dark:text-zinc-400">
-                    Get blue checkmark badge
-                  </div>
-                </div>
-              </div>
-              {onOpenVerify && (
-                <button 
-                  type="button" 
-                  onClick={() => { onClose(); onOpenVerify(); }}
-                  className="bg-blue-600 hover:bg-blue-700 text-black font-bold px-3 py-1.5 rounded-lg text-xs shadow-sm transition-colors cursor-pointer shrink-0"
-                >
-                  Choose Verified
-                </button>
-              )}
-            </div>
-          )}
-
-          <button 
-            type="submit" 
-            disabled={loading}
-            className="w-full bg-[#0095f6] hover:bg-[#1877f2] text-black font-semibold rounded-lg py-2.5 mt-2 transition-colors disabled:opacity-50 cursor-pointer"
-          >
-            {loading ? 'Saving...' : 'Save Profile'}
-          </button>
-        </form>
-      </div></div>
-  );
-}
-
-{/* PROFILE SETTINGS & ACCOUNT SIDEBAR DRAWER */}
-function ProfileSettingsDrawer({ 
-  isOpen, 
-  onClose, 
-  user, 
-  onLogout, 
-  onOpenEditProfile, 
-  onOpenVerify, 
-  onOpenApprovalCenter,
-  onOpenCalculator,
-  onOpenReferrals,
-  onToggleTheme, 
-  isDark,
-  onOpenMasterConsole,
-  deferredPrompt,
-  setDeferredPrompt
-}: { 
-  isOpen: boolean; 
-  onClose: () => void; 
-  user: any; 
-  onLogout: () => void; 
-  onOpenEditProfile: () => void; 
-  onOpenVerify: () => void; 
-  onOpenApprovalCenter?: () => void;
-  onOpenCalculator: () => void;
-  onOpenReferrals?: () => void;
-  onToggleTheme: () => void; 
-  isDark: boolean; 
-  onOpenMasterConsole?: () => void;
-  deferredPrompt?: any;
-  setDeferredPrompt?: (p: any) => void;
-}) {
-  const navigate = useNavigate();
-  const [showDeleteModal, setShowDeleteModal] = useState(false);
-  const [isDeletingId, setIsDeletingId] = useState(false);
-  const [activeView, setActiveView] = useState<'menu' | 'sounds'>('menu');
-  const [soundSettings, setSoundSettings] = useState(() => getSoundSettingsSync());
-  
-  const toggleSound = (key: keyof typeof soundSettings) => {
-    const next = { ...soundSettings, [key]: !soundSettings[key] };
-    setSoundSettings(next);
-    updateSoundSettings(next);
-  };
-  
-  // Reset view when opening/closing
-  useEffect(() => {
-    if (!isOpen) setActiveView('menu');
-  }, [isOpen]);
-
-  if (!isOpen) return null;
-
-  return (
-    <>
-    <div className="fixed inset-0 z-[150] flex justify-end bg-black/60 backdrop-blur-sm transition-opacity" onClick={onClose}>
-      <div 
-        className="w-full max-w-xs sm:max-w-sm h-full bg-white dark:bg-zinc-950 text-black dark:text-zinc-50 shadow-2xl flex flex-col border-l border-slate-200 dark:border-zinc-800 overflow-y-auto animate-in slide-in-from-right duration-700"
-        onClick={e => e.stopPropagation()}
-      >
-        {/* Drawer Header */}
-        <div className="p-4 border-b border-slate-200 dark:border-zinc-800 flex items-center justify-between bg-slate-50/90 dark:bg-zinc-900/80 sticky top-0 z-10 backdrop-blur-md">
-          <div className="flex items-center gap-2">
-            {activeView === 'sounds' ? (
-              <button onClick={() => setActiveView('menu')} className="p-1 hover:bg-slate-200 dark:hover:bg-zinc-800 rounded-full cursor-pointer"><ArrowLeft className="w-5 h-5 text-blue-500" /></button>
-            ) : (
-              <Menu className="w-5 h-5 text-blue-500" />
-            )}
-            <h3 className="font-bold text-base tracking-wide">{activeView === 'sounds' ? 'Sound Settings' : 'Settings & Navigation'}</h3>
-          </div>
-          <button 
-            onClick={onClose}
-            className="p-1.5 hover:bg-slate-200 dark:hover:bg-zinc-800 rounded-full transition-colors text-black/70 dark:text-zinc-400 hover:text-black dark:hover:text-black cursor-pointer"
-          >
-            <XCircle className="w-6 h-6" />
-          </button>
-        </div>
-
-
-        {activeView === 'sounds' ? (
-          <div className="p-4 space-y-6">
-            <p className="text-xs text-black/60 dark:text-zinc-400 mb-4">Toggle app sound effects for different interactions.</p>
-            
-            <div className="space-y-4">
-              {[
-                { key: 'likes', label: 'Like / Heart', icon: Heart, color: 'text-red-500' },
-                { key: 'comments', label: 'Comment / App Pop', icon: MessageCircle, color: 'text-emerald-500' },
-                { key: 'shares', label: 'Share', icon: Share2, color: 'text-blue-500' },
-                { key: 'saves', label: 'Save / Bookmark', icon: Bookmark, color: 'text-amber-500' },
-                { key: 'enquiries', label: 'Enquiry / Lead', icon: MessageSquare, color: 'text-emerald-600' },
-                { key: 'messages', label: 'Direct Messages & Notifications', icon: Bell, color: 'text-indigo-500' },
-              ].map(item => (
-                <div key={item.key} className="flex items-center justify-between p-3 rounded-xl bg-slate-50 dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800">
-                  <div className="flex items-center gap-3">
-                    <item.icon className={"w-5 h-5 " + item.color} />
-                    <span className="font-semibold text-sm">{item.label}</span>
-                  </div>
-                  <button 
-                    onClick={() => toggleSound(item.key as any)}
-                    className={"w-11 h-6 rounded-full transition-colors relative cursor-pointer " + (soundSettings[item.key as keyof typeof soundSettings] ? "bg-emerald-500" : "bg-slate-300 dark:bg-zinc-700")}
-                  >
-                    <div className={"w-5 h-5 bg-white rounded-full absolute top-0.5 transition-transform " + (soundSettings[item.key as keyof typeof soundSettings] ? "translate-x-5" : "translate-x-0.5")} />
-                  </button>
-                </div>
-              ))}
-            </div>
-            
-            <button 
-              onClick={() => { playEnquirySound(); playMessageSound(); }}
-              className="mt-6 w-full p-3 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400 rounded-xl font-bold text-sm hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors"
-            >
-              Test Sounds
-            </button>
-          </div>
-        ) : (
-          <>
-        {/* User / Guest Mini Profile Banner */}
-        {user ? (
-          <div 
-            onClick={() => { onClose(); navigate('/profile'); }}
-            className="p-4 border-b border-slate-100 dark:border-zinc-900 bg-gradient-to-br from-blue-500/10 via-indigo-500/5 to-transparent flex items-center gap-3.5 hover:bg-blue-50/40 dark:hover:bg-zinc-900/40 transition-colors cursor-pointer group"
-          >
-            <div className="w-12 h-12 rounded-full bg-slate-200 dark:bg-zinc-800 border-2 border-blue-500 overflow-hidden shrink-0 shadow-md group-hover:scale-105 transition-transform">
-              {user?.avatarUrl ? (
-                <img src={user.avatarUrl} alt={user.name} className="w-full h-full object-cover" />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center font-black text-lg text-blue-600 dark:text-blue-600">
-                  {user?.name?.charAt(0) || 'U'}
-                </div>
-              )}
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-1">
-                <h4 className="font-bold text-sm truncate">
-                  {user?.name || 'User'}
-                </h4>
-                {shouldShowVerifiedBadge(user) && <VerifiedBadge user={user} size="sm" />}
-              </div>
-              <p className="text-[11px] text-black/70 dark:text-zinc-400 capitalize truncate">{Array.isArray(user?.category) ? user.category[0] : (user?.category || user?.role || 'Member')} ‚Ä¢ {user?.city || 'India'}</p>
-              <span className="inline-block text-[10px] bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300 font-extrabold px-2 py-0.5 rounded-full mt-0.5">
-                {user?.isVerified ? '‚úì Vyapar Bridge Verified' : 'Free Profile'}
-              </span>
-            </div>
-          </div>
-        ) : (
-          <div className="p-4 border-b border-slate-100 dark:border-zinc-900 bg-gradient-to-br from-blue-600/15 via-indigo-600/10 to-transparent flex flex-col gap-3">
-            <div className="flex items-center gap-3">
-              <div className="w-12 h-12 rounded-full bg-blue-100 dark:bg-zinc-800 border-2 border-blue-500 flex items-center justify-center text-blue-600 dark:text-blue-600 font-black text-lg shadow-md">
-                G
-              </div>
-              <div>
-                <h4 className="font-black text-sm text-black dark:text-zinc-50">Guest Visitor</h4>
-                <p className="text-xs text-black/70 dark:text-zinc-400">Public feed & search active</p>
-              </div>
-            </div>
-            <button
-              onClick={() => {
-                onClose();
-                window.dispatchEvent(new CustomEvent('openAuthModal'));
-              }}
-              className="w-full py-2.5 px-4 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-black font-black text-sm rounded-xl shadow-lg transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-95"
-            >
-              <LogIn className="w-4 h-4" />
-              <span>Login / Register Account</span>
-            </button>
-          </div>
-        )}
-
-        {/* Settings Navigation List */}
-        <div className="p-3 flex-1 space-y-2">
-          {/* Sound Settings */}
-          <button 
-            onClick={() => setActiveView('sounds')}
-            className="w-full p-3 rounded-xl hover:bg-slate-100 dark:hover:bg-zinc-900 flex items-center gap-3 transition-colors text-left font-semibold text-sm cursor-pointer group"
-          >
-            <div className="p-2 rounded-lg bg-pink-50 dark:bg-pink-950 text-pink-600 dark:text-pink-400 group-hover:scale-110 transition-transform">
-              <Volume2 className="w-4 h-4" />
-            </div>
-            <div className="flex-1">
-              <div className="text-black dark:text-zinc-100">Sound & Notifications</div>
-              <div className="text-[11px] font-normal text-black/70 dark:text-zinc-400">Manage UI interaction sounds and alerts</div>
-            </div>
-          </button>
-
-          {/* Vyapar Calculator */}
-          <button 
-            onClick={() => { onClose(); onOpenCalculator(); }}
-            className="w-full p-3 rounded-xl hover:bg-slate-100 dark:hover:bg-zinc-900 flex items-center gap-3 transition-colors text-left font-semibold text-sm cursor-pointer group"
-          >
-            <div className="p-2 rounded-lg bg-emerald-50 dark:bg-emerald-950 text-emerald-600 dark:text-emerald-400 group-hover:scale-110 transition-transform">
-              <Calculator className="w-4 h-4" />
-            </div>
-            <div className="flex-1">
-              <div className="text-black dark:text-zinc-100">Vyapar Calculator</div>
-              <div className="text-[11px] font-normal text-black/70 dark:text-zinc-400">Calculate tiles, items & box requirements</div>
-            </div>
-          </button>
-
-          {/* Edit Profile */}
-          {user && (
-            <>
-              <button 
-                onClick={() => { onClose(); onOpenEditProfile(); }}
-                className="w-full p-3 rounded-xl hover:bg-slate-100 dark:hover:bg-zinc-900 flex items-center gap-3 transition-colors text-left font-semibold text-sm cursor-pointer group"
-              >
-                <div className="p-2 rounded-lg bg-blue-50 dark:bg-blue-950 text-blue-600 dark:text-blue-600 group-hover:scale-110 transition-transform">
-                  <Camera className="w-4 h-4" />
-                </div>
-                <div className="flex-1">
-                  <div className="text-black dark:text-zinc-100">Edit Profile Details</div>
-                  <div className="text-[11px] font-normal text-black/70 dark:text-zinc-400">Change business name, logo, categories & address</div>
-                </div>
-              </button>
-
-              <button 
-                onClick={() => { onClose(); onOpenEditProfile(); }}
-                className="w-full p-3 rounded-xl hover:bg-slate-100 dark:hover:bg-zinc-900 flex items-center gap-3 transition-colors text-left font-semibold text-sm cursor-pointer group"
-              >
-                <div className="p-2 rounded-lg bg-amber-50 dark:bg-amber-950 text-amber-600 dark:text-amber-400 group-hover:scale-110 transition-transform">
-                  <Key className="w-4 h-4" />
-                </div>
-                <div className="flex-1">
-                  <div className="text-black dark:text-zinc-100">Password & Security (‡§™‡§æ‡§∏‡§µ‡§∞‡•ç‡§° ‡§¨‡§¶‡§≤‡•á‡§Ç)</div>
-                  <div className="text-[11px] font-normal text-black/70 dark:text-zinc-400">Update your login password anytime</div>
-                </div>
-              </button>
-            </>
-          )}
-
-          {/* Saved Tile Posts */}
-          <button 
-            onClick={() => { onClose(); if (user) navigate('/profile'); else window.dispatchEvent(new CustomEvent('openAuthModal')); }}
-            className="w-full p-3 rounded-xl hover:bg-slate-100 dark:hover:bg-zinc-900 flex items-center gap-3 transition-colors text-left font-semibold text-sm cursor-pointer group"
-          >
-            <div className="p-2 rounded-lg bg-amber-50 dark:bg-amber-950 text-amber-600 dark:text-amber-400 group-hover:scale-110 transition-transform">
-              <Bookmark className="w-4 h-4" />
-            </div>
-            <div className="flex-1">
-              <div className="text-black dark:text-zinc-100">Saved Posts & Designs</div>
-              <div className="text-[11px] font-normal text-black/70 dark:text-zinc-400">View bookmarks & saved catalogue designs</div>
-            </div>
-          </button>
-
-          {/* Refer & Earn 1-Month Free Blue Badge */}
-          <button 
-            onClick={() => { onClose(); if (onOpenReferrals) onOpenReferrals(); else if (!user) window.dispatchEvent(new CustomEvent('openAuthModal')); }}
-            className="w-full p-3 rounded-xl bg-gradient-to-r from-amber-500/10 via-blue-500/10 to-indigo-500/10 hover:from-amber-500/20 hover:via-blue-500/20 hover:to-indigo-500/20 border border-amber-400/40 flex items-center gap-3 transition-all text-left font-semibold text-sm cursor-pointer group shadow-xs"
-          >
-            <div className="p-2 rounded-lg bg-gradient-to-br from-amber-400 to-amber-600 text-white group-hover:scale-110 transition-transform shadow-xs">
-              <Gift className="w-4 h-4 animate-bounce" />
-            </div>
-            <div className="flex-1">
-              <div className="text-black dark:text-zinc-100 flex items-center gap-1.5 font-bold">
-                <span>Refer & Earn Free Blue Badge</span>
-                <span className="text-[9px] bg-amber-500 text-white font-black px-1.5 py-0.5 rounded-full uppercase">1 Mo Free</span>
-              </div>
-              <div className="text-[11px] font-normal text-black/70 dark:text-zinc-400">
-                Refer 10 members (join + post) to get 1-Month Blue Checkmark!
-              </div>
-            </div>
-          </button>
-
-          {/* Get Verified Badge */}
-          <button 
-            onClick={() => { onClose(); onOpenVerify(); }}
-            className="w-full p-3 rounded-xl hover:bg-slate-100 dark:hover:bg-zinc-900 flex items-center gap-3 transition-colors text-left font-semibold text-sm cursor-pointer group"
-          >
-            <div className="p-2 rounded-lg bg-purple-50 dark:bg-purple-950 text-purple-600 dark:text-purple-400 group-hover:scale-110 transition-transform">
-              <ShieldCheck className="w-4 h-4" />
-            </div>
-            <div className="flex-1">
-              <div className="text-black dark:text-zinc-100 flex items-center gap-1">
-                <span>Verification Badge</span>
-                {user?.isVerified && <span className="text-[10px] text-emerald-500 font-bold">‚úì Active</span>}
-              </div>
-              <div className="text-[11px] font-normal text-black/70 dark:text-zinc-400">
-                {user?.isVerified ? 'Manage subscription plan' : 'Get official Vyapar Bridge Verified Blue Tick'}
-              </div>
-            </div>
-          </button>
-
-          {user?.role === 'admin' && (
-            <button 
-              onClick={() => { onClose(); if(onOpenMasterConsole) onOpenMasterConsole(); }}
-              className="w-full p-3 rounded-xl hover:bg-slate-100 dark:hover:bg-zinc-900 flex items-center gap-3 transition-colors text-left font-semibold text-sm cursor-pointer group border border-blue-500/20 bg-blue-50/50 dark:bg-blue-900/10"
-            >
-              <div className="p-2 rounded-lg bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-600 group-hover:scale-110 transition-transform">
-                <Lock className="w-4 h-4" />
-              </div>
-              <div className="flex-1">
-                <div className="text-black dark:text-zinc-100 flex items-center gap-1 font-bold">
-                  <span>Developer Console</span>
-                  <Sparkles className="w-3 h-3 text-amber-500" />
-                </div>
-                <div className="text-[11px] font-normal text-black/70 dark:text-zinc-400">
-                  Master Admin Settings & Approvals
-                </div>
-              </div>
-            </button>
-          )}
-
-          {/* Appearance (Theme Toggle) */}
-          <button 
-            onClick={onToggleTheme}
-            className="w-full p-3 rounded-xl hover:bg-slate-100 dark:hover:bg-zinc-900 flex items-center gap-3 transition-colors text-left font-semibold text-sm cursor-pointer group"
-          >
-            <div className="p-2 rounded-lg bg-indigo-50 dark:bg-indigo-950 text-indigo-600 dark:text-indigo-400 group-hover:scale-110 transition-transform">
-              {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-            </div>
-            <div className="flex-1">
-              <div className="text-black dark:text-zinc-100">Appearance Mode</div>
-              <div className="text-[11px] font-normal text-black/70 dark:text-zinc-400">
-                Current theme: <span className="font-bold">{isDark ? 'Dark Mode üåô' : 'Light Mode ‚òÄÔ∏è'}</span>
-              </div>
-            </div>
-          </button>
-
-          {/* Mobile Notifications (Push) */}
-          <div className="space-y-1">
-            <button 
-              onClick={async () => {
-                if (!('Notification' in window)) {
-                  toast.error('Browser does not support notifications');
-                  return;
-                }
-
-                // If in iframe, suggest opening in new tab
-                if (window.self !== window.top) {
-                  toast.error('üîí Browser security blocks notification requests inside previews. Please open the app in a NEW TAB to enable notifications.');
-                  return;
-                }
-
-                try {
-                  const permission = await Notification.requestPermission();
-                  if (permission === 'granted') {
-                    toast.success('üîî Notifications enabled! You will now receive mobile updates.');
-                  } else if (permission === 'denied') {
-                    toast.error('üö´ Permission denied. Please enable notifications in your browser settings for this site.');
-                  }
-                } catch (err) {
-                  toast.error('Failed to request notification permission.');
-                }
-              }}
-              className="w-full p-3 rounded-xl hover:bg-slate-100 dark:hover:bg-zinc-900 flex items-center gap-3 transition-colors text-left font-semibold text-sm cursor-pointer group"
-            >
-              <div className="p-2 rounded-lg bg-pink-50 dark:bg-pink-950 text-pink-600 dark:text-pink-400 group-hover:scale-110 transition-transform">
-                <Sparkles className="w-4 h-4" />
-              </div>
-              <div className="flex-1">
-                <div className="text-black dark:text-zinc-100">Mobile Notifications</div>
-                <div className="text-[11px] font-normal text-black/70 dark:text-zinc-400">Get background alerts for likes & messages</div>
-              </div>
-            </button>
-
-            {Notification.permission === 'granted' && (
-              <button 
-                onClick={() => {
-                  if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
-                    navigator.serviceWorker.ready.then(registration => {
-                      registration.showNotification('Vyapar Bridge Test', {
-                        body: 'This is how your mobile notifications will appear!',
-                        icon: 'BRAND_LOGO_SRC',
-                        badge: 'BRAND_LOGO_SRC',
-                        vibrate: [100, 50, 100]
-                      });
-                    });
-                  } else {
-                    new Notification('Vyapar Bridge Test', {
-                      body: 'This is how your mobile notifications will appear!',
-                      icon: 'BRAND_LOGO_SRC'
-                    });
-                  }
-                  toast.success('Test notification sent!');
-                }}
-                className="w-full ml-11 p-2 text-[10px] font-bold text-pink-500 uppercase tracking-wider hover:underline flex items-center gap-1 cursor-pointer"
-              >
-                <Send className="w-3 h-3" /> Send Test Notification
-              </button>
-            )}
-          </div>
-
-          {/* Direct B2B Messages */}
-          <button 
-            onClick={() => { onClose(); navigate('/chat'); }}
-            className="w-full p-3 rounded-xl hover:bg-slate-100 dark:hover:bg-zinc-900 flex items-center gap-3 transition-colors text-left font-semibold text-sm cursor-pointer group"
-          >
-            <div className="p-2 rounded-lg bg-emerald-50 dark:bg-emerald-950 text-emerald-600 dark:text-emerald-400 group-hover:scale-110 transition-transform">
-              <MessageCircle className="w-4 h-4" />
-            </div>
-            <div className="flex-1">
-              <div className="text-black dark:text-zinc-100">Messages & Inquiries</div>
-              <div className="text-[11px] font-normal text-black/70 dark:text-zinc-400">Chat with dealers, factories & buyers</div>
-            </div>
-          </button>
-
-          {/* Share Profile Link */}
-          {user && (
-            <button 
-              onClick={() => { 
-                navigator.clipboard.writeText(window.location.origin + '/profile/' + encodeURIComponent(user.id || user.name));
-                toast.success('Wall link copied to clipboard!');
-              }}
-              className="w-full p-3 rounded-xl hover:bg-slate-100 dark:hover:bg-zinc-900 flex items-center gap-3 transition-colors text-left font-semibold text-sm cursor-pointer group"
-            >
-              <div className="p-2 rounded-lg bg-teal-50 dark:bg-teal-950 text-teal-600 dark:text-teal-400 group-hover:scale-110 transition-transform">
-                <Share2 className="w-4 h-4" />
-              </div>
-              <div className="flex-1">
-                <div className="text-black dark:text-zinc-100">Share Profile Link</div>
-                <div className="text-[11px] font-normal text-black/70 dark:text-zinc-400">Copy web link to share on WhatsApp</div>
-              </div>
-            </button>
-          )}
-
-          {/* Admin Panel (if admin) */}
-          {user?.role === 'admin' && (
-            <button 
-              onClick={() => { onClose(); navigate('/admin'); }}
-              className="w-full p-3 rounded-xl hover:bg-slate-100 dark:hover:bg-zinc-900 flex items-center gap-3 transition-colors text-left font-semibold text-sm cursor-pointer group"
-            >
-              <div className="p-2 rounded-lg bg-red-50 dark:bg-red-950 text-red-600 dark:text-red-400 group-hover:scale-110 transition-transform">
-                <Shield className="w-4 h-4" />
-              </div>
-              <div className="flex-1">
-                <div className="text-black dark:text-zinc-100">Admin Moderation</div>
-                <div className="text-[11px] font-normal text-black/70 dark:text-zinc-400">Review pending posts & verify accounts</div>
-              </div>
-            </button>
-          )}
-
-          {/* Removed Terms and Support here as they are moved to logo menu */}
-
-          {/* Log Out button - Only if logged in */}
-          {user && (
-            <div className="space-y-2.5 mb-6 pt-1">
-              <button 
-                onClick={() => { onClose(); onLogout(); }}
-                className="w-full p-3.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-zinc-900 dark:hover:bg-zinc-800 border border-slate-200 dark:border-zinc-800 text-black dark:text-zinc-100 flex items-center gap-3 transition-all text-left font-bold text-sm cursor-pointer group shadow-sm"
-              >
-                <div className="p-2 rounded-lg bg-red-600 text-white group-hover:scale-110 transition-transform shadow-sm">
-                  <LogOut className="w-4 h-4" />
-                </div>
-                <div className="flex-1">
-                  <div className="font-bold text-red-600 dark:text-red-400">Log Out</div>
-                  <div className="text-[10px] font-normal opacity-70 text-black/70 dark:text-zinc-400">Sign out safely from Vyapar Bridge</div>
-                </div>
-              </button>
-
-              {/* Delete My ID / Account Button right below Log Out */}
-              <button 
-                type="button"
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setShowDeleteModal(true);
-                }}
-                className="w-full p-3.5 rounded-xl bg-red-50 hover:bg-red-600 hover:text-white dark:bg-red-950/30 dark:hover:bg-red-600 border border-red-200 dark:border-red-900/40 text-red-600 dark:text-red-400 flex items-center gap-3 transition-all text-left font-bold text-sm cursor-pointer group shadow-sm active:scale-98"
-              >
-                <div className="p-2 rounded-lg bg-red-100 text-red-600 dark:bg-red-900/60 dark:text-red-300 group-hover:bg-white group-hover:text-red-600 transition-colors shrink-0">
-                  <Trash2 className="w-4 h-4" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="font-extrabold text-sm tracking-tight group-hover:text-white">Delete My ID</div>
-                  <div className="text-[10px] font-normal opacity-80 truncate group-hover:text-red-100">Permanently delete account & listings</div>
-                </div>
-              </button>
-            </div>
-          )}
-        </div>
-        </>
-        )}
-      </div>
-    </div>
-
-    {/* Custom Interactive Delete My ID Confirmation Modal */}
-    {showDeleteModal && (
-      <div 
-        className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-in fade-in duration-200" 
-        onClick={() => !isDeletingId && setShowDeleteModal(false)}
-      >
-        <div 
-          className="bg-white dark:bg-zinc-900 border border-red-500/40 rounded-2xl p-6 max-w-sm w-full shadow-2xl space-y-4" 
-          onClick={e => e.stopPropagation()}
-        >
-          <div className="w-14 h-14 mx-auto rounded-full bg-red-100 dark:bg-red-950/60 border border-red-500/30 flex items-center justify-center text-red-600 dark:text-red-400 shadow-inner">
-            <Trash2 className="w-7 h-7 animate-bounce" />
-          </div>
-          
-          <div className="text-center space-y-2">
-            <h3 className="text-lg font-black text-black dark:text-zinc-50">
-              Delete Vyapar Bridge ID?
-            </h3>
-            <p className="text-xs text-black/70 dark:text-zinc-400 leading-relaxed">
-              Are you sure you want to permanently delete your account <strong className="text-black dark:text-zinc-100 font-bold">({user?.name || 'User'})</strong>?
-              <br /><br />
-              This will <span className="text-red-600 dark:text-red-400 font-bold">permanently erase</span> all your uploaded posts, reels, products, catalog designs, profile listings, and chat inquiries from Vyapar Database. This action <span className="underline font-semibold">cannot be undone</span>.
-            </p>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3 pt-2">
-            <button
-              type="button"
-              disabled={isDeletingId}
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setShowDeleteModal(false);
-              }}
-              className="w-full py-2.5 px-4 rounded-xl border border-slate-300 dark:border-zinc-700 hover:bg-slate-100 dark:hover:bg-zinc-800 text-black dark:text-zinc-200 font-bold text-xs cursor-pointer transition-all disabled:opacity-50"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              disabled={isDeletingId}
-              onClick={async (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setIsDeletingId(true);
-                try {
-                  const userIdToDelete = user.id || user.uid;
-                  if (userIdToDelete) {
-                    const fpId = user.fingerprintId || localStorage.getItem('vyapar_user_fingerprint') || '';
-                    await Promise.allSettled([
-                      deleteUserFromFirestore(userIdToDelete, { username: user.username, phone: user.phone, email: user.email, fingerprintId: fpId }),
-                      fetch(`/api/users/${userIdToDelete}?fingerprintId=${encodeURIComponent(fpId)}`, { method: 'DELETE' })
-                    ]);
-                  }
-                  
-                  // Delete Auth User if authenticated via Firebase Auth
-                  if (auth.currentUser) {
-                    try {
-                      await auth.currentUser.delete();
-                    } catch (authErr) {
-                      console.warn('Firebase auth delete notice:', authErr);
-                    }
-                  }
-
-                  localStorage.removeItem('user');
-                  localStorage.removeItem('Vyapar Bridge_user');
-                  localStorage.removeItem('vyapar_user');
-                  localStorage.removeItem('vyapar_user_id');
-                  localStorage.removeItem('vyapar_user_name');
-                  localStorage.removeItem('vyapar_user_avatar');
-
-                  window.dispatchEvent(new CustomEvent('userDeleted', { detail: { userId: userIdToDelete } }));
-                  window.dispatchEvent(new CustomEvent('postDeleted', { detail: { userId: userIdToDelete } }));
-
-                  toast.success('Your Vyapar Bridge ID & Account have been permanently deleted.');
-                  setShowDeleteModal(false);
-                  onClose();
-                  onLogout();
-                } catch (err: any) {
-                  console.error('Failed to delete user ID:', err);
-                  toast.error('Failed to delete ID: ' + (err?.message || 'Server error'));
-                  setIsDeletingId(false);
-                }
-              }}
-              className="w-full py-2.5 px-4 rounded-xl bg-red-600 hover:bg-red-700 text-white font-black text-xs cursor-pointer transition-all shadow-md active:scale-95 flex items-center justify-center gap-1.5 disabled:opacity-50"
-            >
-              {isDeletingId ? (
-                <>
-                  <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  <span>Deleting...</span>
-                </>
-              ) : (
-                <>
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span>Yes, Delete ID</span>
-                </>
-              )}
-            </button>
-          </div>
-        </div>
-      </div>
-    )}
-    </>
-  );
-}
-
-function ConnectionsUserRow({ 
-  u, 
-  currentUser, 
-  onClose,
-  setProfileUser,
-  navigate
-}: { 
-  u: any; 
-  currentUser: any; 
-  onClose: () => void;
-  setProfileUser: (u: any) => void;
-  navigate: any;
-}) {
-  const targetId = String(u.id || u.userId || u.uid || u._id || u.username);
-  const [isFollowing, setIsFollowing] = useState(() => isUserFollowed(targetId));
-
-  useEffect(() => {
-    const syncFollow = () => {
-      setIsFollowing(isUserFollowed(targetId));
-    };
-    window.addEventListener('followedUsersUpdated', syncFollow);
-    return () => window.removeEventListener('followedUsersUpdated', syncFollow);
-  }, [targetId]);
-
-  const handleFollowToggle = async (e: any) => {
-    e.stopPropagation();
-    if (!currentUser) {
-      toast.error('üîê Please Login to Follow members');
-      window.dispatchEvent(new CustomEvent('openAuthModal'));
-      return;
-    }
-    const next = toggleFollowUser(targetId);
-    setIsFollowing(next);
-    toast.success(next ? `Following ${u.name || 'User'}` : `Unfollowed ${u.name || 'User'}`);
-    
-    // Server sync
-    try {
-      await safeFetch(`/api/users/${currentUser.id}/follow`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ targetUserId: targetId, action: next ? 'follow' : 'unfollow' })
-      });
-    } catch (err) {}
-  };
-
-  const avatarUrl = u.avatarUrl || u.avatar || resolveUserAvatar(u);
-
-  return (
-    <div className="flex items-center justify-between gap-3 group">
-      <div 
-        className="flex items-center gap-3 cursor-pointer min-w-0 flex-1"
-        onClick={() => {
-          onClose();
-          setProfileUser(u);
-          navigate(`/profile/${encodeURIComponent(targetId)}`);
-          window.scrollTo({ top: 0, behavior: 'smooth' });
-        }}
-      >
-        <div className="w-12 h-12 rounded-full overflow-hidden border border-slate-200 dark:border-zinc-800 shrink-0 bg-slate-100 dark:bg-zinc-800 flex items-center justify-center">
-          {avatarUrl ? (
-            <img src={avatarUrl} alt={u.name} className="w-full h-full object-cover" />
-          ) : (
-            <User className="w-6 h-6 text-slate-400" />
-          )}
-        </div>
-        <div className="min-w-0 flex-1">
-          <h4 className="font-bold text-sm text-black dark:text-zinc-50 truncate group-hover:text-blue-600 transition-colors flex items-center gap-1">
-            {u.name || u.companyName || u.username || 'User'}
-            {u.isVerified && <BadgeCheck className="w-4 h-4 text-blue-500 shrink-0" />}
-            {u.goldenBadge && <Sparkles className="w-3.5 h-3.5 text-amber-500 shrink-0" />}
-          </h4>
-          <p className="text-[11px] text-slate-500 dark:text-zinc-400 truncate">{u.role || 'Member'} ‚Ä¢ {u.city || u.location || 'India'}</p>
-        </div>
-      </div>
-      
-      {String(currentUser?.id) !== String(targetId) && (
-        <button 
-          onClick={handleFollowToggle}
-          className={cn(
-            "px-4 py-1.5 rounded-full text-xs font-bold border transition-colors cursor-pointer shrink-0 min-w-[90px]",
-            isFollowing 
-              ? "border-slate-200 dark:border-zinc-800 bg-slate-100 dark:bg-zinc-900 text-slate-700 dark:text-zinc-300 hover:bg-slate-200 dark:hover:bg-zinc-800"
-              : "border-blue-600 bg-blue-600 text-white hover:bg-blue-700 hover:border-blue-700 shadow-sm"
-          )}
-        >
-          {isFollowing ? 'Following' : 'Follow'}
-        </button>
-      )}
-    </div>
-  );
-}
-
-function ProfilePage({ 
-  user: currentUser, 
-  onLogout, 
-  onUpdateUser,
-  onOpenSettingsDrawer,
-  onOpenVerify,
-  onOpenReferrals
-}: { 
-  user: any; 
-  onLogout: () => void; 
-  onUpdateUser: (u: any) => void;
-  onOpenSettingsDrawer?: () => void;
-  onOpenVerify?: () => void;
-  onOpenReferrals?: () => void;
-}) {
-  const { userId } = useParams<{ userId?: string }>();
-  const navigate = useNavigate();
-
-  const [profileUser, setProfileUser] = useState<any>(currentUser);
-
-  
-  const [loadingUser, setLoadingUser] = useState(false);
-
-  const cachedStoredUser = useMemo(() => {
-    try {
-      const raw = localStorage.getItem('user') || localStorage.getItem('Vyapar Bridge_user');
-      return raw ? JSON.parse(raw) : null;
-    } catch {
-      return null;
-    }
-  }, []);
-
-  const activeCurrentUser = currentUser || cachedStoredUser;
-
-  const isOwnProfile = useMemo(() => {
-    if (!userId) return true;
-    if (!activeCurrentUser) return false;
-    
-    const uidParam = decodeURIComponent(String(userId)).trim().toLowerCase();
-    const myId = String(activeCurrentUser.id || '').trim().toLowerCase();
-    const myName = String(activeCurrentUser.name || activeCurrentUser.companyName || '').trim().toLowerCase();
-    const myUsername = String(activeCurrentUser.username || '').trim().toLowerCase();
-    const myPhone = String(activeCurrentUser.phone || activeCurrentUser.mobile || '').trim().toLowerCase();
-    
-    if (uidParam === myId || (myName && uidParam === myName) || (myUsername && uidParam === myUsername) || (myPhone && uidParam === myPhone)) {
-      return true;
-    }
-
-    return false;
-  }, [userId, activeCurrentUser]);
-
-  const userToDisplay = profileUser || currentUser || cachedStoredUser;
-
-  const targetIdentifier = userId ? decodeURIComponent(userId) : (profileUser?.id || currentUser?.id || currentUser?.name || '');
-  const [isFollowing, setIsFollowing] = useState(() => isUserFollowed(targetIdentifier));
-  const [followersCount, setFollowersCount] = useState(0);
-  // Star reputation rating states
-  const [ratingAverage, setRatingAverage] = useState(() => userToDisplay?.ratingAverage || 0);
-  const [ratingCount, setRatingCount] = useState(() => userToDisplay?.ratingCount || 0);
-  const [hoverRating, setHoverRating] = useState(null);
-
-  useEffect(() => {
-    if (userToDisplay) {
-      setRatingAverage(userToDisplay.ratingAverage || 0);
-      setRatingCount(userToDisplay.ratingCount || 0);
-    }
-  }, [userToDisplay]);
-
-  // Star Rating live synchronizer in ProfilePage (safely placed after userToDisplay initialization)
-  useEffect(() => {
-    const handleRatingSync = (e: CustomEvent) => {
-      const { userId: updatedId, ratingAverage: newAvg, ratingCount: newCount } = e.detail || {};
-      if (userToDisplay && String(userToDisplay.id) === String(updatedId)) {
-        setRatingAverage(newAvg);
-        setRatingCount(newCount);
-      }
-    };
-    window.addEventListener('ratingUpdated', handleRatingSync);
-    return () => window.removeEventListener('ratingUpdated', handleRatingSync);
-  }, [userToDisplay]);
-  const [followingCount, setFollowingCount] = useState(0);
-  const [followersList, setFollowersList] = useState<string[]>([]);
-  const [followingList, setFollowingList] = useState<string[]>([]);
-  const [usersList, setUsersList] = useState<any[]>([]);
-
-  useEffect(() => {
-    safeFetch('/api/users')
-      .then(data => {
-        if (Array.isArray(data)) setUsersList(data);
-      })
-      .catch(() => {});
-  }, []);
-
-  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
-  const [isVerifyModalOpen, setIsVerifyModalOpen] = useState(false);
-  const [isApprovalCenterOpen, setIsApprovalCenterOpen] = useState(false);
-  const [showCoverMenu, setShowCoverMenu] = useState(false);
-  const [isSeeCoverOpen, setIsSeeCoverOpen] = useState(false);
-  const [isSeeAvatarOpen, setIsSeeAvatarOpen] = useState(false);
-  const [isReportUserModalOpen, setIsReportUserModalOpen] = useState(false);
-  const [isCropModalOpen, setIsCropModalOpen] = useState(false);
-  const [imageToCrop, setImageToCrop] = useState('');
-  const [activeTab, setActiveTab] = useState<'posts' | 'reels' | 'stories' | 'saved' | 'archive'>('posts');
-  const [savedFilter, setSavedFilter] = useState<'all' | 'reels' | 'images' | 'pdfs'>('all');
-  const [isCatalogueSaved, setIsCatalogueSaved] = useState(false);
-
-  // Cart & Discount Scanner states for Profile Page
-  const [isCartCouponsModalOpen, setIsCartCouponsModalOpen] = useState(false);
-  const [isDiscountScannerModalOpen, setIsDiscountScannerModalOpen] = useState(false);
-  const [cartItemsCount, setCartItemsCount] = useState<number>(() => getCartItems().length);
-  const [sellerDiscountsCount, setSellerDiscountsCount] = useState<number>(() => activeCurrentUser?.totalDiscountsCount || 0);
-
-  const [isConnectionsModalOpen, setIsConnectionsModalOpen] = useState(false);
-  const [connectionsModalTab, setConnectionsModalTab] = useState<'followers' | 'following' | 'suggested'>('followers');
-
-  useEffect(() => {
-    const handleCartSync = () => {
-      setCartItemsCount(getCartItems().length);
-    };
-    window.addEventListener('cart_updated', handleCartSync);
-    return () => window.removeEventListener('cart_updated', handleCartSync);
-  }, []);
-
-  useEffect(() => {
-    if (activeCurrentUser?.id) {
-      safeFetch(`/api/seller/${activeCurrentUser.id}/discounts`)
-        .then(data => {
-          if (data?.success && typeof data.totalDiscountsCount === 'number') {
-            setSellerDiscountsCount(data.totalDiscountsCount);
-          }
-        })
-        .catch(() => {});
-    }
-  }, [activeCurrentUser?.id]);
-
-  const coverFileRef = React.useRef<HTMLInputElement>(null);
-  const avatarFileRef = React.useRef<HTMLInputElement>(null);
-
-  const [savedPosts, setSavedPosts] = useState<any[]>([]);
-  const [userPosts, setUserPosts] = useState<any[]>([]);
-  const [globalReels, setGlobalReels] = useState<any[]>([]);
-
-  useEffect(() => {
-    safeFetch('/api/posts').then(data => {
-      if(Array.isArray(data)) {
-        const now = Date.now();
-        setGlobalReels(data.filter(p => {
-          let isVideo = p.type === 'video' || p.type === 'reel' || p.isReel || (p.hashtags && p.hashtags.includes('#reel'));
-          if (!isVideo) return false;
-          let createdAtMs = now;
-          if (p.createdAt) {
-            if (typeof p.createdAt === 'number' && p.createdAt > 1000000000) {
-              createdAtMs = p.createdAt;
-            } else if (typeof p.createdAt === 'object' && p.createdAt.seconds) {
-              createdAtMs = p.createdAt.seconds * 1000;
-            } else if (typeof p.createdAt === 'string') {
-              const num = Number(p.createdAt);
-              if (!isNaN(num) && num > 1000000000) createdAtMs = num;
-              else {
-                const parsed = new Date(p.createdAt).getTime();
-                if (!isNaN(parsed) && parsed > 1000000000) createdAtMs = parsed;
-              }
-            }
-          }
-          return true;
-        }));
-      }
-    }).catch(() => {});
-  }, []);
-
-  // Profile Post Creation & Full Screen Feed Viewer state
-  const [selectedProfilePost, setSelectedProfilePost] = useState<any>(null);
-  const [activeProfilePostIndex, setActiveProfilePostIndex] = useState<number | null>(null);
-  const [activeHighlightIndex, setActiveHighlightIndex] = useState<number | null>(null);
-  const [activeSavedPostIndex, setActiveSavedPostIndex] = useState<number | null>(null);
-  const [isProfileCreateOpen, setIsProfileCreateOpen] = useState(false);
-  const [isOfferTokenModalOpen, setIsOfferTokenModalOpen] = useState(false);
-  const [postTitle, setPostTitle] = useState('');
-  const [postContent, setPostContent] = useState('');
-  const [postMinPrice, setPostMinPrice] = useState('');
-  const [postMaxPrice, setPostMaxPrice] = useState('');
-  const [postPriceUnit, setPostPriceUnit] = useState('Box');
-  const [postHashtags, setPostHashtags] = useState('');
-  const [postExternalLink, setPostExternalLink] = useState('');
-  const [postFile, setPostFile] = useState<File | null>(null);
-  const [postFilePreview, setPostFilePreview] = useState<string | null>(null);
-  const [isPublishingPost, setIsPublishingPost] = useState(false);
-  const [isSuggestingProfileTags, setIsSuggestingProfileTags] = useState(false);
-  const profileFileInputRef = React.useRef<HTMLInputElement>(null);
-
-  const [userCatalogues, setUserCatalogues] = useState<any[]>(() => {
-    try {
-      const saved = localStorage.getItem(`vyapar_catalogues_${targetIdentifier}`);
-      return saved ? JSON.parse(saved) : (userToDisplay?.catalogues || []);
-    } catch (e) {
-      return userToDisplay?.catalogues || [];
-    }
-  });
-  const [isCatalogueCreateOpen, setIsCatalogueCreateOpen] = useState(false);
-  const [catTitle, setCatTitle] = useState('');
-  const [catCategory, setCatCategory] = useState('Vitrified Tiles');
-  const [catFile, setCatFile] = useState<File | null>(null);
-  const [catFilePreview, setCatFilePreview] = useState<string | null>(null);
-  const [isPublishingCat, setIsPublishingCat] = useState(false);
-  const [isEngagementModalOpen, setIsEngagementModalOpen] = useState(false);
-  const catalogueFileInputRef = React.useRef<HTMLInputElement>(null);
-
-  const handlePublishCatalogue = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!catTitle.trim() && !catFile) {
-      toast.error('Please enter a catalogue name and select a file');
-      return;
-    }
-    setIsPublishingCat(true);
-    try {
-      let fileUrl = catFilePreview || 'https://images.unsplash.com/photo-1581091226825-a6a2a5aee158?auto=format&fit=crop&q=80&w=800';
-      if (catFile) {
-        fileUrl = await fileToDataURL(catFile);
-      }
-      const isPdf = catFile?.type === 'application/pdf' || catFile?.name?.toLowerCase().endsWith('.pdf');
-      const newCat = {
-        id: 'cat_' + Date.now(),
-        title: catTitle,
-        category: catCategory,
-        fileUrl,
-        fileType: isPdf ? 'pdf' : 'image',
-        createdAt: new Date().toISOString(),
-        userId: currentUser?.id || targetIdentifier,
-        userName: currentUser?.name || 'User'
-      };
-      const updatedCats = [newCat, ...userCatalogues];
-      setUserCatalogues(updatedCats);
-      localStorage.setItem(`vyapar_catalogues_${currentUser?.id || targetIdentifier}`, JSON.stringify(updatedCats));
-
-      try {
-        await fetch(`/api/users/${currentUser?.id || targetIdentifier}/catalogues`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(newCat)
-        });
-      } catch (err) {}
-
-      toast.success('‚ú® Product Catalogue uploaded successfully!');
-      setCatTitle('');
-      setCatCategory('Vitrified Tiles');
-      setCatFile(null);
-      setCatFilePreview(null);
-      setIsCatalogueCreateOpen(false);
-    } catch (err) {
-      toast.error('Failed to upload catalogue');
-    } finally {
-      setIsPublishingCat(false);
-    }
-  };
-
-  const handleDeleteCatalogue = async (catId: string) => {
-    if (!window.confirm('Are you sure you want to delete this catalogue?')) return;
-    try {
-      const updatedCats = userCatalogues.filter((c: any) => c.id !== catId);
-      setUserCatalogues(updatedCats);
-      localStorage.setItem(`vyapar_catalogues_${currentUser?.id || targetIdentifier}`, JSON.stringify(updatedCats));
-
-      try {
-        await fetch(`/api/users/${currentUser?.id || targetIdentifier}/catalogues/${catId}`, {
-          method: 'DELETE'
-        });
-      } catch (err) {}
-
-      toast.success('Catalogue deleted successfully');
-    } catch (err) {
-      toast.error('Failed to delete catalogue');
-    }
-  };
-
-  const handlePublishFromProfile = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!currentUser?.id) {
-      toast.error('üîê Login or Registration required! Only registered Factories and Dealers can post content.');
-      window.dispatchEvent(new CustomEvent('openAuthModal'));
-      return;
-    }
-    if (currentUser?.id?.startsWith('demo_')) {
-      toast.error('üö´ Demo users cannot create posts. Please register a real account.');
-      return;
-    }
-    if (currentUser.role === 'customer') {
-      toast.error('üö´ Local area customers cannot create posts.');
-      return;
-    }
-
-    if (!postTitle.trim() && !postContent.trim() && !postFile && !postExternalLink.trim()) {
-      toast.error('Please enter a title, description, external link or upload a photo/video');
-      return;
-    }
-
-    setIsPublishingPost(true);
-    let resolvedProfileLink = postExternalLink.trim();
-    if (resolvedProfileLink && (resolvedProfileLink.includes('facebook.com') || resolvedProfileLink.includes('fb.watch'))) {
-      toast.error('‚ÑπÔ∏è Facebook video links are blocked by Facebook security. Please use YouTube or direct video URLs instead.');
-      setIsPublishingPost(false);
-      return;
-    }
-    const isLinkVideo = Boolean(
-      resolvedProfileLink && (
-        resolvedProfileLink.includes('youtube.com') ||
-        resolvedProfileLink.includes('youtu.be') ||
-        /\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(resolvedProfileLink)
-      )
-    );
-    const isVideo = postFile?.type.startsWith('video') || (postFile?.name && /\.(mp4|webm|mov|m4v)$/i.test(postFile.name)) || isLinkVideo;
-    const isPdf = postFile?.type === 'application/pdf' || (postFile?.name && /\.pdf$/i.test(postFile.name));
-    const postMediaType = isVideo ? 'video' : (isPdf ? 'pdf' : (postFile ? 'image' : 'text'));
-    const generatedId = `post_${Date.now()}`;
-
-    const profileAuthorName = currentUser?.name || currentUser?.companyName || currentUser?.username || localStorage.getItem('vyapar_user_name') || 'Vyapar Member';
-    const profileAuthorAvatar = currentUser?.avatarUrl || currentUser?.avatar || localStorage.getItem('vyapar_user_avatar') || BRAND_LOGO_SRC;
-    const profileAuthorRole = currentUser?.role || 'factory';
-
-    const initialMedia = isLinkVideo ? resolvedProfileLink : (postFilePreview || '');
-
-    // Run AI Guardrail Content Moderation
-    const moderation = await moderateContentUniversally({
-      title: postTitle,
-      content: postContent,
-      description: postContent,
-      hashtags: postHashtags,
-      mediaType: postMediaType,
-      userId: currentUser.id,
-      userRole: currentUser.role
-    });
-
-    const isPendingApproval = !moderation.approved;
-    const aiFlagReason = isPendingApproval ? (moderation.reason || 'Flagged for Admin Review by AI Guardrail') : null;
-
-    // Instant optimistic post for 0ms UI delay
-    const instantProfilePost = {
-      id: generatedId,
-      userId: String(currentUser.id),
-      userName: profileAuthorName,
-      userRole: profileAuthorRole,
-      title: postTitle || '',
-      content: postContent || '',
-      description: postContent || '',
-      hashtags: postHashtags || '#vyaparbridge #business',
-      type: postMediaType,
-      mediaUrl: initialMedia,
-      thumbnailUrl: initialMedia,
-      persistentMediaUrl: initialMedia,
-      videoUrl: isVideo ? initialMedia : undefined,
-      video: isVideo ? initialMedia : undefined,
-      minRate: (postMinPrice || postMaxPrice) ? postMinPrice : undefined,
-      maxRate: (postMinPrice || postMaxPrice) ? postMaxPrice : undefined,
-      unit: (postMinPrice || postMaxPrice) ? postPriceUnit : undefined,
-      category: 'Commercial Wholesale',
-      visibility: 'public',
-      status: isPendingApproval ? 'pending' : 'approved',
-      pending_admin_approval: isPendingApproval,
-      aiFlagReason: aiFlagReason,
-      postedFrom: 'profile',
-      isPermanent: true,
-      externalLink: resolvedProfileLink || '',
-      likesCount: 0,
-      viewsCount: 1,
-      createdAt: Date.now(),
-      user: {
-        id: String(currentUser.id),
-        name: profileAuthorName,
-        avatar: profileAuthorAvatar,
-        avatarUrl: profileAuthorAvatar,
-        role: profileAuthorRole,
-        isVerified: Boolean(currentUser?.isVerified)
-      }
-    };
-
-    // 1. Instant local display & UI update
-    setUserPosts(prev => [instantProfilePost, ...prev]);
-    window.dispatchEvent(new CustomEvent('postCreated', { detail: instantProfilePost }));
-    playBubblePopSound();
-    if (isPendingApproval) {
-      toast.info(moderation?.userNotice || '‚è≥ Business Verification: Post Admin Review ke liye hold kiya gaya hai.');
-    } else {
-      toast.success('üéâ Post published successfully to your wall & feeds!');
-    }
-    
-    // Clear modal fields & close
-    setPostTitle('');
-    setPostContent('');
-    setPostMinPrice('');
-    setPostMaxPrice('');
-    setPostPriceUnit('Box');
-    setPostHashtags('');
-    setPostExternalLink('');
-    setPostFile(null);
-    setPostFilePreview(null);
-    setIsProfileCreateOpen(false);
-    setIsPublishingPost(false);
-
-    // 2. Non-blocking background sync (Base64 conversion, AI Moderation & Firestore/Server Sync)
-    (async () => {
-      try {
-        let fileDataUrl = '';
-        let videoThumbUrl = '';
-        if (postFile) {
-          try {
-            if (!isVideo && !isPdf) {
-              fileDataUrl = await optimizeImageForPersistence(postFile);
-              videoThumbUrl = fileDataUrl;
-            } else if (isVideo) {
-              videoThumbUrl = await generateVideoThumbnail(postFile);
-              saveVideoBlob(generatedId, postFile).catch(() => {});
-              cacheVideoUrlInMemory(generatedId, initialMedia);
-              if (postFile.size <= 0.5 * 1024 * 1024) {
-                try {
-                  const videoBase64 = await fileToDataURL(postFile);
-                  if (videoBase64 && videoBase64.startsWith('data:video')) {
-                    fileDataUrl = videoBase64;
-                  }
-                } catch (e) {}
-              }
-            } else {
-              fileDataUrl = postFilePreview && !postFilePreview.startsWith('blob:') ? postFilePreview : '';
-            }
-          } catch (e) {
-            console.warn('Profile post file conversion note:', e);
-          }
-        }
-
-        const resolvedProfileMedia = isVideo ? (initialMedia || fileDataUrl) : (fileDataUrl || videoThumbUrl || (postFilePreview && !postFilePreview.startsWith('blob:') ? postFilePreview : ''));
-
-        const formData = new FormData();
-        formData.append('id', generatedId);
-        formData.append('title', postTitle);
-        formData.append('content', postContent);
-        formData.append('hashtags', postHashtags || '#vyaparbridge #business');
-        formData.append('userId', String(currentUser.id));
-        formData.append('userName', profileAuthorName);
-        formData.append('userRole', profileAuthorRole);
-        formData.append('postedFrom', 'profile');
-        formData.append('isPermanent', 'true');
-        if (resolvedProfileLink) formData.append('externalLink', resolvedProfileLink);
-        if (isLinkVideo) formData.append('mediaUrl', resolvedProfileLink);
-        formData.append('userAvatar', profileAuthorAvatar);
-        formData.append('type', postMediaType);
-        if (postMinPrice || postMaxPrice) {
-          formData.append('minRate', postMinPrice);
-          formData.append('maxRate', postMaxPrice);
-          formData.append('unit', postPriceUnit);
-        }
-        if (postFile) {
-          formData.append('media', postFile);
-        }
-
-        const moderation = await moderateContentUniversally({
-          title: postTitle,
-          content: postContent,
-          description: postContent,
-          hashtags: postHashtags,
-          mediaType: postMediaType,
-          userId: currentUser.id,
-          userRole: currentUser.role
-        });
-
-        let isPendingApproval = false;
-        let aiFlagReason: string | undefined = undefined;
-
-        if (!moderation.approved) {
-          isPendingApproval = true;
-          aiFlagReason = moderation.reason || 'Flagged for Admin Review by AI Guardrail';
-        }
-
-        let savedPost: any = null;
-
-        try {
-          const res = await fetch('/api/posts', {
-            method: 'POST',
-            body: formData,
-          });
-          const data = await res.json();
-
-          if (data.pendingApproval || data.post?.status === 'pending') {
-            isPendingApproval = true;
-            if (data.post?.aiFlagReason) aiFlagReason = data.post.aiFlagReason;
-          }
-
-          if (res.ok && data.success && data.post) {
-            savedPost = data.post;
-            if (savedPost.id && postFile && isVideo) {
-              saveVideoBlob(savedPost.id, postFile).catch(() => {});
-              cacheVideoUrlInMemory(savedPost.id, initialMedia);
-            }
-          }
-        } catch (backendErr) {
-          console.warn('Backend /api/posts note, fallback to direct Firestore sync:', backendErr);
-        }
-
-        const isPersistentUrl = savedPost?.mediaUrl && (
-          savedPost.mediaUrl.startsWith('data:') || 
-          savedPost.mediaUrl.startsWith('https://') || 
-          savedPost.mediaUrl.startsWith('http://') || savedPost.mediaUrl.startsWith('/uploads')
-        ) && !savedPost.mediaUrl.includes('localhost');
-
-        const profileMedia = isLinkVideo ? resolvedProfileLink : (isPersistentUrl ? savedPost.mediaUrl : (resolvedProfileMedia || initialMedia || ''));
-        const profileThumb = videoThumbUrl || savedPost?.thumbnailUrl || profileMedia;
-
-        const finalProfilePost = savedPost ? {
-          ...savedPost,
-          id: generatedId,
-          type: postMediaType,
-          userName: savedPost.userName || profileAuthorName,
-          userRole: savedPost.userRole || profileAuthorRole,
-          mediaUrl: profileMedia,
-          videoUrl: isVideo ? profileMedia : undefined,
-          video: isVideo ? profileMedia : undefined,
-          thumbnailUrl: profileThumb,
-          persistentMediaUrl: profileMedia,
-          status: isPendingApproval ? 'pending' : (savedPost.status || 'approved'),
-          postedFrom: 'profile',
-          isPermanent: true,
-          externalLink: resolvedProfileLink || '',
-          pending_admin_approval: isPendingApproval,
-          aiFlagReason: aiFlagReason || null
-        } : {
-          ...instantProfilePost,
-          mediaUrl: profileMedia || instantProfilePost.mediaUrl,
-          videoUrl: isVideo ? (profileMedia || instantProfilePost.mediaUrl) : undefined,
-          video: isVideo ? (profileMedia || instantProfilePost.mediaUrl) : undefined,
-          thumbnailUrl: profileThumb || instantProfilePost.thumbnailUrl,
-          persistentMediaUrl: profileMedia || instantProfilePost.persistentMediaUrl,
-          status: isPendingApproval ? 'pending' : 'approved',
-          pending_admin_approval: isPendingApproval,
-          aiFlagReason: aiFlagReason || null,
-          postedFrom: 'profile',
-          isPermanent: true,
-          externalLink: postExternalLink || ''
-        };
-
-        await syncPostToFirestore(finalProfilePost);
-        window.dispatchEvent(new CustomEvent('postCreated', { detail: finalProfilePost }));
-
-        if (isPendingApproval) {
-          toast.info(moderation?.userNotice || '‚è≥ Business Verification: Aapka post Admin Review ke liye bhej diya gaya hai. Business network security ke liye moderation team link aur content verify karegi.');
-        }
-      } catch (bgErr) {
-        console.warn('Background profile post sync note:', bgErr);
-      }
-    })();
-  };
-
-  useEffect(() => {
-    const syncFollow = () => {
-      setIsFollowing(isUserFollowed(targetIdentifier));
-      if (isOwnProfile) {
-        setFollowingCount(getFollowedUsers().length);
-      }
-    };
-    syncFollow();
-    window.addEventListener('followedUsersUpdated', syncFollow);
-    return () => window.removeEventListener('followedUsersUpdated', syncFollow);
-  }, [targetIdentifier, isOwnProfile]);
-
-  useEffect(() => {
-    const handleDeleted = (e: any) => {
-      const deletedId = e.detail?.postId || e.detail?.reelId;
-      if (deletedId) {
-        setUserPosts(prev => prev.filter(p => String(p.id) !== String(deletedId)));
-        setSavedPosts(prev => prev.filter(p => String(p.id) !== String(deletedId)));
-      }
-    };
-    window.addEventListener('postDeleted', handleDeleted);
-    window.addEventListener('reelDeleted', handleDeleted);
-    return () => {
-      window.removeEventListener('postDeleted', handleDeleted);
-      window.removeEventListener('reelDeleted', handleDeleted);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (isOwnProfile && currentUser?.id) {
-      const fetchSaved = async () => {
-        try {
-          const [posts, catalogues] = await Promise.all([
-            safeFetch(`/api/users/${currentUser.id}/saved`),
-            safeFetch(`/api/users/${currentUser.id}/saved-catalogues`)
-          ]);
-          
-          const combined = [
-            ...(Array.isArray(posts) ? posts : []),
-            ...(Array.isArray(catalogues) ? catalogues : [])
-          ].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-          
-          setSavedPosts(combined);
-        } catch (err) {
-          setSavedPosts([]);
-        }
-      };
-      fetchSaved();
-    }
-  }, [isOwnProfile, currentUser?.id]);
-
-  useEffect(() => {
-    if (currentUser?.id && userToDisplay?.id && userToDisplay.id !== currentUser.id) {
-      safeFetch(`/api/users/${currentUser.id}/saved-catalogues`)
-        .then(data => {
-          if (Array.isArray(data)) {
-            setIsCatalogueSaved(data.some(c => c.user?.id === userToDisplay.id));
-          }
-        })
-        .catch(() => {});
-    }
-  }, [currentUser?.id, userToDisplay?.id]);
-
-  const handleSaveCatalogue = async () => {
-    if (!currentUser?.id) return;
-    try {
-      const res = await safeFetch(`/api/users/${userToDisplay.id}/save-catalogue`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: currentUser.id })
-      });
-      if (res.success) {
-        setIsCatalogueSaved(res.isSaved);
-        toast.success(res.isSaved ? 'Catalogue saved to your bookmarks!' : 'Catalogue removed from bookmarks');
-      }
-    } catch (err) {
-      toast.error('Failed to update saved catalogue');
-    }
-  };
-
-  useEffect(() => {
-    let isCancelled = false;
-    const fetchWallPosts = async () => {
-      const target = isOwnProfile ? currentUser?.id : (profileUser?.id || targetIdentifier);
-      if (!target) return;
-
-      let backendPosts: any[] = [];
-      try {
-        const data = await safeFetch(`/api/posts?userId=${encodeURIComponent(target)}&currentUserId=${currentUser?.id || ''}`);
-        if (Array.isArray(data)) {
-          backendPosts = data;
-        }
-      } catch (err) {
-        console.warn('Backend profile posts fetch note:', err);
-      }
-
-      let firestorePosts: any[] = [];
-      try {
-        const allFbPosts = await fetchPostsFromFirestore();
-        const targetLower = String(target).trim().toLowerCase();
-        const currentProfileUser = isOwnProfile ? currentUser : profileUser;
-        const targetUserNameLower = currentProfileUser?.name?.trim().toLowerCase() || '';
-        const targetUsernameLower = currentProfileUser?.username?.trim().toLowerCase() || '';
-        const isTargetAdmin = currentProfileUser?.role === 'admin' || targetLower === '1' || targetLower === 'admin';
-
-        firestorePosts = allFbPosts.filter(p => {
-          const postUid = String(p.userId || p.user?.id || '').trim().toLowerCase();
-          const postUname = String(p.userName || p.user?.name || '').trim().toLowerCase();
-          const postUsername = String(p.user?.username || '').trim().toLowerCase();
-          const postRole = String(p.userRole || p.user?.role || '').trim().toLowerCase();
-
-          if (postUid === targetLower) return true;
-          if (targetUserNameLower && postUname === targetUserNameLower) return true;
-          if (targetUsernameLower && postUsername === targetUsernameLower) return true;
-          if (targetLower && postUsername === targetLower) return true;
-          if (targetLower && postUname === targetLower) return true;
-          if (isTargetAdmin && (postRole === 'admin' || postUid === '1' || postUid === 'admin' || postUname.includes('admin'))) return true;
-          return false;
-        });
-      } catch (fbErr) {
-        console.warn('Firestore profile posts fetch note:', fbErr);
-      }
-
-      // Combine and deduplicate with deep merging
-      const postMap = new Map<string, any>();
-      backendPosts.forEach(p => {
-        if (p && p.id) postMap.set(String(p.id), p);
-      });
-      firestorePosts.forEach(p => {
-        if (p && p.id) {
-          const existing = postMap.get(String(p.id)) || {};
-          postMap.set(String(p.id), mergePostSafely(existing, p));
-        }
-      });
-
-      // Incorporate locally cached user posts and stories so newly uploaded stories never disappear on refresh
-      try {
-        const cachedStr = localStorage.getItem('VyaparBridge_cached_posts');
-        const localCached = cachedStr ? JSON.parse(cachedStr) : [];
-        const storyStr = localStorage.getItem('vyapar_my_stories');
-        const localStories = storyStr ? JSON.parse(storyStr) : [];
-        const allLocal = [...localCached, ...localStories];
-        const targetLower = String(target).trim().toLowerCase();
-        const currentProfileUser = isOwnProfile ? currentUser : profileUser;
-        const targetUserNameLower = currentProfileUser?.name?.trim().toLowerCase() || '';
-
-        allLocal.forEach(p => {
-          if (!p || !p.id) return;
-          const postUid = String(p.userId || p.user?.id || '').trim().toLowerCase();
-          const postUname = String(p.userName || p.user?.name || '').trim().toLowerCase();
-          if (postUid === targetLower || (targetUserNameLower && postUname === targetUserNameLower) || (isOwnProfile && p.isMyUpload)) {
-            if (!postMap.has(String(p.id))) {
-              postMap.set(String(p.id), p);
-            } else {
-              const existing = postMap.get(String(p.id)) || {};
-              postMap.set(String(p.id), mergePostSafely(p, existing));
-            }
-          }
-        });
-      } catch (e) {}
-
-      const combined = Array.from(postMap.values()).sort((a, b) => {
-        const timeA = typeof a.createdAt === 'number' ? a.createdAt : new Date(a.createdAt || 0).getTime();
-        const timeB = typeof b.createdAt === 'number' ? b.createdAt : new Date(b.createdAt || 0).getTime();
-        return timeB - timeA;
-      });
-
-      if (!isCancelled) {
-        setUserPosts(combined);
-      }
-    };
-
-    fetchWallPosts();
-
-    const handlePostCreatedOnWall = (e: any) => {
-      const newPost = e.detail;
-      if (!newPost) return;
-      const targetLower = String(isOwnProfile ? currentUser?.id : (profileUser?.id || targetIdentifier)).trim().toLowerCase();
-      const currentProfileUser = isOwnProfile ? currentUser : profileUser;
-      const targetUserNameLower = currentProfileUser?.name?.trim().toLowerCase() || '';
-      const postUid = String(newPost.userId || newPost.user?.id || '').trim().toLowerCase();
-      const postUname = String(newPost.userName || newPost.user?.name || '').trim().toLowerCase();
-      const isTargetAdmin = currentProfileUser?.role === 'admin' || targetLower === '1' || targetLower === 'admin';
-
-      if (postUid === targetLower || (targetUserNameLower && postUname === targetUserNameLower) || (isTargetAdmin && (newPost.userRole === 'admin' || newPost.user?.role === 'admin' || postUid === '1' || postUid === 'admin')) || (isOwnProfile && newPost.isMyUpload)) {
-        setUserPosts(prev => {
-          const filtered = prev.filter(p => String(p.id) !== String(newPost.id));
-          return [newPost, ...filtered];
-        });
-      }
-    };
-
-    const handlePostDeletedOnWall = (e: any) => {
-      const deletedId = e.detail?.postId || e.detail?.reelId;
-      if (deletedId) {
-        setUserPosts(prev => prev.filter(p => String(p.id) !== String(deletedId)));
-      }
-    };
-
-    window.addEventListener('postCreated', handlePostCreatedOnWall);
-    window.addEventListener('storyCreated', handlePostCreatedOnWall);
-    window.addEventListener('postUpdated', handlePostCreatedOnWall);
-    window.addEventListener('postDeleted', handlePostDeletedOnWall);
-    window.addEventListener('reelDeleted', handlePostDeletedOnWall);
-
-    const unsubscribeRealtimeProfile = subscribeToPostsFromFirestore((realtimePosts) => {
-      if (!isCancelled && Array.isArray(realtimePosts)) {
-        const targetLower = String(isOwnProfile ? currentUser?.id : (profileUser?.id || targetIdentifier)).trim().toLowerCase();
-        const currentProfileUser = isOwnProfile ? currentUser : profileUser;
-        const targetUserNameLower = currentProfileUser?.name?.trim().toLowerCase() || '';
-        const targetUsernameLower = currentProfileUser?.username?.trim().toLowerCase() || '';
-        const targetPhoneLower = currentProfileUser?.phone?.trim().toLowerCase() || '';
-        const isTargetAdmin = currentProfileUser?.role === 'admin' || targetLower === '1' || targetLower === 'admin';
-
-        const profileRealtimePosts = realtimePosts.filter(p => {
-          const postUid = String(p.userId || p.user?.id || p.actorId || '').trim().toLowerCase();
-          const postUname = String(p.userName || p.user?.name || '').trim().toLowerCase();
-          const postUsername = String(p.username || p.user?.username || '').trim().toLowerCase();
-          const postPhone = String(p.phone || p.user?.phone || '').trim().toLowerCase();
-          const postRole = String(p.userRole || p.user?.role || '').trim().toLowerCase();
-
-          if (postUid && postUid === targetLower) return true;
-          if (targetUserNameLower && postUname === targetUserNameLower) return true;
-          if (targetUsernameLower && postUsername === targetUsernameLower) return true;
-          if (targetPhoneLower && postPhone === targetPhoneLower) return true;
-          if (isTargetAdmin && (postRole === 'admin' || postUid === '1' || postUid === 'admin' || postUname.includes('admin'))) return true;
-          return false;
-        });
-
-        if (profileRealtimePosts.length > 0) {
-          setUserPosts(prev => {
-            const map = new Map<string, any>();
-            prev.forEach(p => { if (p && p.id) map.set(String(p.id), p); });
-            profileRealtimePosts.forEach(p => { if (p && p.id) map.set(String(p.id), p); });
-            return Array.from(map.values()).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-          });
-        }
-      }
-    });
-
-    return () => {
-      isCancelled = true;
-      if (typeof unsubscribeRealtimeProfile === 'function') unsubscribeRealtimeProfile();
-      window.removeEventListener('postCreated', handlePostCreatedOnWall);
-      window.removeEventListener('storyCreated', handlePostCreatedOnWall);
-      window.removeEventListener('postUpdated', handlePostCreatedOnWall);
-      window.removeEventListener('postDeleted', handlePostDeletedOnWall);
-      window.removeEventListener('reelDeleted', handlePostDeletedOnWall);
-    };
-  }, [isOwnProfile, currentUser?.id, currentUser?.name, currentUser?.role, profileUser?.id, profileUser?.name, profileUser?.role, targetIdentifier]);
-
-  useEffect(() => {
-    if (isOwnProfile) {
-      setProfileUser(currentUser);
-      if (currentUser?.id) {
-        safeFetch(`/api/users/${currentUser.id}/relationships`)
-          .then(data => {
-            if (data && !data.error) {
-              setFollowersCount(data.followers?.length || 0);
-              setFollowingCount(data.following?.length || 0);
-              setFollowersList(data.followers || []);
-              setFollowingList(data.following || []);
-            }
-          }).catch(() => {});
-      }
-    } else if (userId) {
-      setLoadingUser(true);
-      const param = decodeURIComponent(userId);
-      const paramLower = param.trim().toLowerCase();
-      
-      fetchAllUsersFromFirestore().then((fbUsers) => {
-        let found = null;
-        if (Array.isArray(fbUsers)) {
-          found = fbUsers.find(u => 
-            String(u.id).toLowerCase() === paramLower || 
-            (u.name && String(u.name).toLowerCase() === paramLower) ||
-            (u.username && String(u.username).toLowerCase() === paramLower)
-          );
-        }
-        
-        if (found) {
-          setProfileUser(found);
-          if (currentUser?.id && found.id !== currentUser.id) {
-            incrementUserEngagement('visits');
-            fetch(`/api/users/${found.id}/profile-visit`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ visitorId: currentUser.id })
-            }).catch(() => {});
-          }
-          safeFetch(`/api/users/${found.id}/relationships`)
-            .then(rel => {
-              if (rel && !rel.error) {
-                setFollowersCount(rel.followers?.length || 0);
-                setFollowingCount(rel.following?.length || 0);
-                setFollowersList(rel.followers || []);
-                setFollowingList(rel.following || []);
-              }
-            }).catch(() => {});
-          setLoadingUser(false);
-        } else {
-          // Fallback to local server API
-          safeFetch(`/api/users/${encodeURIComponent(param)}`)
-            .then(data => {
-              if (data && data.id) {
-                setProfileUser(data);
-                if (currentUser?.id && data.id !== currentUser.id) {
-                  incrementUserEngagement('visits');
-                  fetch(`/api/users/${data.id}/profile-visit`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ visitorId: currentUser.id })
-                  }).catch(() => {});
-                }
-                safeFetch(`/api/users/${data.id}/relationships`)
-                  .then(rel => {
-                    if (rel && !rel.error) {
-                      setFollowersCount(rel.followers?.length || 0);
-                      setFollowingCount(rel.following?.length || 0);
-                      setFollowersList(rel.followers || []);
-                      setFollowingList(rel.following || []);
-                    }
-                  }).catch(() => {});
-              } else {
-                setProfileUser(null);
-              }
-            })
-            .catch(() => setProfileUser(null))
-            .finally(() => setLoadingUser(false));
-        }
-      }).catch(() => {
-        // Fallback to local server API on error
-        safeFetch(`/api/users/${encodeURIComponent(param)}`)
-          .then(data => {
-            if (data && data.id) {
-              setProfileUser(data);
-            } else {
-              setProfileUser(null);
-            }
-          })
-          .catch(() => setProfileUser(null))
-          .finally(() => setLoadingUser(false));
-      });
-    }
-  }, [userId, currentUser, isOwnProfile]);
-
-  useEffect(() => {
-    const targetUserId = isOwnProfile ? currentUser?.id : profileUser?.id;
-    if (!targetUserId) return;
-
-    // Listen to real-time status changes of the displayed user from Firestore
-    const unsub = onSnapshot(doc(firestoreDb, 'users', String(targetUserId)), (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        setProfileUser(prev => {
-          if (!prev) return { id: targetUserId, ...data };
-          if (String(prev.id) === String(targetUserId)) {
-            return { ...prev, ...data };
-          }
-          return prev;
-        });
-      }
-    }, (err) => {
-      console.warn('Real-time profile user status subscribe note:', err);
-    });
-
-    return () => {
-      unsub();
-    };
-  }, [isOwnProfile, currentUser?.id, profileUser?.id]);
-
-  const handleDirectCoverChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setImageToCrop(reader.result as string);
-        setIsCropModalOpen(true);
-      };
-      reader.readAsDataURL(file);
-    }
-  };
-
-  const handleDirectAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = async () => {
-        let newAvatarUrl = reader.result as string;
-        try {
-          const optimized = await optimizeImageForPersistence(newAvatarUrl, 400, 400, 0.75);
-          if (optimized) newAvatarUrl = optimized;
-        } catch (e) {}
-
-        const updated = { ...currentUser, avatarUrl: newAvatarUrl, avatar: newAvatarUrl };
-        onUpdateUser(updated);
-        setProfileUser(updated);
-        updateCachedUsers(updated);
-        syncUserToFirestore(updated);
-        window.dispatchEvent(new CustomEvent('vyapar_user_avatar_updated', { detail: updated }));
-        toast.success('Profile photo updated!');
-        try {
-          await fetch(`/api/users/${currentUser?.id || '1'}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ avatarUrl: newAvatarUrl, avatar: newAvatarUrl })
-          });
-        } catch (err) {
-          console.error(err);
-        }
-      };
-      reader.readAsDataURL(file);
-    }
-  };
-
-  const handleToggleCoverFit = async () => {
-    const newFit = userToDisplay.coverFit === 'contain' ? 'cover' : 'contain';
-    const updated = { ...currentUser, coverFit: newFit };
-    onUpdateUser(updated);
-    setProfileUser(updated);
-    toast.success(newFit === 'contain' ? 'Cover set to Full Image (Fit) mode!' : 'Cover set to Banner Crop (Fill) mode!');
-    setShowCoverMenu(false);
-    try {
-      await fetch(`/api/users/${currentUser?.id || '1'}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ coverFit: newFit })
-      });
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const handleRemoveCover = async () => {
-    if (confirm('Are you sure you want to remove your cover photo?')) {
-      const updated = { ...currentUser, coverUrl: '' };
-      onUpdateUser(updated);
-      setProfileUser(updated);
-      toast.success('Cover photo removed');
-      setShowCoverMenu(false);
-      try {
-        await fetch(`/api/users/${currentUser?.id || '1'}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ coverUrl: '' })
-        });
-      } catch (err) {
-        console.error(err);
-      }
-    }
-  };
-
-  if (loadingUser) {
-    return (
-      <div className="flex items-center justify-center min-h-[50vh]">
-        <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-      </div>
-    );
-  }
-
-  if (!userToDisplay) {
-    return (
-      <div className="max-w-4xl mx-auto w-full pt-10 pb-20 px-4 text-center">
-        <UserX className="w-16 h-16 text-black/60 mx-auto mb-4" />
-        <h2 className="text-2xl font-bold text-black dark:text-zinc-100 mb-2">User Not Found</h2>
-        <p className="text-black/80 dark:text-zinc-400 mb-6">This account may have been deleted or doesn't exist.</p>
-        <button 
-          onClick={() => navigate('/')}
-          className="bg-blue-600 hover:bg-blue-700 text-black font-bold py-2.5 px-6 rounded-xl transition-colors inline-flex items-center gap-2"
-        >
-          <Home className="w-4 h-4" /> Back to Feed
-        </button>
-      </div>
-    );
-  }
-
-  const allLiveUsers = Array.isArray(usersList) ? usersList : [];
-  const targetFollowers = allLiveUsers.filter(u => {
-    const uId = String(u.id);
-    return followersList.includes(uId) || followersList.includes(u.username);
-  });
-  
-  const targetFollowing = allLiveUsers.filter(u => {
-    const uId = String(u.id);
-    return followingList.includes(uId) || followingList.includes(u.username);
-  });
-
-  const suggestedMembers = allLiveUsers.filter(u => {
-    const uId = String(u.id);
-    const targetId = String(userToDisplay.id);
-    return uId !== targetId && u.username !== targetId && !userToDisplay.following?.includes(uId);
-  }).sort(() => Math.random() - 0.5).slice(0, 30);
-
-  return (
-    <div className="max-w-4xl mx-auto w-full pt-4 md:pt-6 pb-20 md:pb-8 px-4">
-      {/* Back button if viewing another user's profile wall */}
-      {!isOwnProfile && (
-        <button 
-          onClick={() => navigate(-1)}
-          className="flex items-center gap-2 mb-4 text-sm font-semibold text-black dark:text-zinc-300 hover:text-black dark:hover:text-black cursor-pointer transition-colors"
-        >
-          <ArrowLeft className="w-4 h-4" /> Back to Feed
-        </button>
-      )}
-
-      {/* Cover Image Banner with 3 Dots Menu */}
-      <div className="relative w-full h-44 sm:h-56 md:h-64 rounded-2xl overflow-hidden bg-slate-100 shadow-lg group">
-        {userToDisplay.coverUrl ? (
-          userToDisplay.coverFit === 'contain' ? (
-            <div 
-              className="relative w-full h-full cursor-pointer overflow-hidden bg-zinc-950 flex items-center justify-center"
-              onClick={() => setIsSeeCoverOpen(true)}
-            >
-              <img 
-                src={userToDisplay.coverUrl} 
-                alt="Cover Background Blur" 
-                className="absolute inset-0 w-full h-full object-cover blur-xl opacity-40 scale-110 pointer-events-none"
-              />
-              <img 
-                src={userToDisplay.coverUrl} 
-                alt="Cover Banner Full Fit" 
-                className="relative z-10 w-full h-full object-contain mx-auto transition-transform duration-500 hover:scale-105"
-              />
-            </div>
-          ) : (
-            <img 
-              src={userToDisplay.coverUrl} 
-              alt="Cover Banner" 
-              className="w-full h-full object-cover transition-transform duration-500 hover:scale-105 cursor-pointer"
-              onClick={() => setIsSeeCoverOpen(true)}
-            />
-          )
-        ) : (
-          <div className="w-full h-full bg-gradient-to-tr from-[#1a1a1a] via-[#101010] to-black flex items-center justify-center relative overflow-hidden group">
-            {/* Glowing orb animations in background */}
-            <div className="absolute inset-0 opacity-30 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-amber-500/20 via-transparent to-transparent animate-pulse" />
-            <div className="absolute top-0 right-0 w-64 h-64 bg-amber-500/10 rounded-full blur-3xl" />
-            <div className="absolute bottom-0 left-0 w-64 h-64 bg-yellow-600/10 rounded-full blur-3xl" />
-            
-            <div className="relative z-10 flex flex-col items-center">
-              <span className="text-4xl sm:text-5xl font-black tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-yellow-200 via-yellow-400 to-amber-600 drop-shadow-[0_0_15px_rgba(251,191,36,0.6)] group-hover:drop-shadow-[0_0_25px_rgba(251,191,36,0.8)] transition-all duration-700">
-                Vyapar Bridge
-              </span>
-              <span className="mt-2 text-[10px] sm:text-xs font-bold tracking-[0.3em] uppercase text-amber-500/80 drop-shadow-[0_0_5px_rgba(251,191,36,0.3)]">
-                {userToDisplay.role === 'admin' ? 'Admin Portal' : 'Premium Member'}
-              </span>
-            </div>
-            {isOwnProfile && (
-              <div className="absolute bottom-4 left-1/2 -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
-                <span className="px-3 py-1.5 bg-black/60 backdrop-blur-md rounded-full text-[10px] text-amber-200/80 border border-amber-500/20">
-                  Click camera icon top right to add cover
-                </span>
-              </div>
-            )}
-          </div>
-        )}
-
-        {isOwnProfile && (
-          <div className="absolute top-3 right-3 z-20 flex items-center gap-2">
-            <button 
-              onClick={() => coverFileRef.current?.click()}
-              className="p-2.5 rounded-full bg-black/60 hover:bg-black/80 text-white backdrop-blur-md transition-all shadow-md flex items-center justify-center cursor-pointer border border-white/10"
-              title="Upload Cover Photo"
-            >
-              <Camera className="w-5 h-5" />
-            </button>
-            {userToDisplay.coverUrl && (
-              <button 
-                onClick={handleRemoveCover}
-                className="p-2.5 rounded-full bg-red-600/80 hover:bg-red-700 text-white backdrop-blur-md transition-all shadow-md flex items-center justify-center cursor-pointer border border-red-500/30"
-                title="Remove Cover Photo"
-              >
-                <Trash2 className="w-5 h-5" />
-              </button>
-            )}
-          </div>
-        )}
-
-        {isOwnProfile && (
-          <input 
-            type="file" 
-            ref={coverFileRef} 
-            accept="image/*" 
-            className="hidden" 
-            onChange={handleDirectCoverChange} 
-          />
-        )}
-      </div>
-
-      {/* Profile Header Overlapping Cover */}
-      <div className="relative z-10 -mt-10 md:-mt-14 px-3 sm:px-8 mb-6">
-        <div className="flex flex-col md:flex-row items-start md:items-end gap-3 sm:gap-6 w-full">
-          {/* Avatar Picture with Click to Change & See Photo */}
-          <div className="relative group shrink-0 -mt-10 sm:-mt-16 md:-mt-24 mx-0">
-            <div 
-              onClick={() => isOwnProfile ? avatarFileRef.current?.click() : setIsSeeAvatarOpen(true)}
-              className={cn(
-                "w-20 h-20 sm:w-28 sm:h-28 md:w-36 md:h-36 shrink-0 rounded-full cursor-pointer relative shadow-2xl transition-all duration-700 bg-white dark:bg-zinc-950",
-                userToDisplay.isVerified 
-                  ? "tiranga-border-circle p-[3px] sm:p-[4px]" 
-                  : "neon-border-circle p-[2px] sm:p-[3px]"
-              )}
-            >
-              <div className="w-full h-full rounded-full p-[1px] sm:p-[2px] overflow-hidden flex items-center justify-center bg-slate-200 dark:bg-zinc-800">
-                {(() => {
-                  const pName = userToDisplay.name || 'User';
-                  const pAvatar = resolveUserAvatar(userToDisplay, pName);
-                  return (
-                    <img 
-                      src={pAvatar || getInitialsAvatar(pName)} 
-                      alt={pName} 
-                      className="w-full h-full object-cover rounded-full"
-                      onError={(e) => {
-                        (e.currentTarget as HTMLImageElement).src = getInitialsAvatar(pName);
-                      }}
-                    />
-                  );
-                })()}
-              </div>
-              {isOwnProfile && (
-                <div className="absolute inset-0 rounded-full bg-black/40 flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity text-white text-[10px] sm:text-xs font-semibold gap-0.5 sm:gap-1">
-                  <Camera className="w-4 h-4 sm:w-6 sm:h-6" />
-                  <span className="hidden sm:inline">Change Photo</span>
-                </div>
-              )}
-            </div>
-
-            {userToDisplay.avatarUrl && (
-              <button 
-                onClick={(e) => { e.stopPropagation(); setIsSeeAvatarOpen(true); }}
-                className="absolute bottom-0 right-0 sm:bottom-1 sm:right-1 w-6 h-6 sm:w-7 sm:h-7 bg-black/60 hover:bg-black/80 text-white rounded-full shadow-lg transition-colors cursor-pointer flex items-center justify-center border border-white/20"
-                title="View full profile photo"
-              >
-                <Eye className="w-3 sm:w-3.5 h-3 sm:h-3.5 text-white" />
-              </button>
-            )}
-
-            {isOwnProfile && (
-              <input 
-                type="file" 
-                ref={avatarFileRef} 
-                accept="image/*" 
-                className="hidden" 
-                onChange={handleDirectAvatarChange} 
-              />
-            )}
-          </div>
-
-          <div className="flex-1 w-full pt-1 sm:pt-6 md:pt-14 min-w-0">
-            <div className="flex flex-col gap-3 sm:gap-4 relative">
-              <div className="flex flex-col gap-0.5 sm:gap-1">
-                <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap w-full min-w-0">
-                  <h2 
-                    className={cn(
-                      "text-base xs:text-lg sm:text-2xl md:text-3xl font-black italic tracking-tight sm:tracking-wider text-black dark:text-zinc-50 drop-shadow-sm max-w-[150px] xs:max-w-[220px] sm:max-w-none truncate",
-                      userToDisplay.isVerified && (
-                        (userToDisplay.goldenBadge || isUser1188GoldenPlan(userToDisplay))
-                          ? "text-amber-600 dark:text-amber-500 font-bold"
-                          : "text-blue-600 dark:text-blue-500 font-bold"
-                      )
-                    )}
-                    style={{ fontFamily: "'Playfair Display', 'Dancing Script', serif", fontWeight: 900 }}
-                    title={userToDisplay.name}
-                  >
-                    {userToDisplay.name}
-                  </h2>
-                  {shouldShowVerifiedBadge(userToDisplay) && <VerifiedBadge user={userToDisplay} size="sm" />}
-                  
-                  {/* Interactive Star Rating Widget - For all roles except customers */}
-                  {userToDisplay.role !== 'customer' && (
-                    <div className="rainbow-star-badge flex items-center gap-1.5 px-3 py-1 rounded-2xl select-none shrink-0 backdrop-blur-md shadow-lg transition-transform hover:scale-105">
-                      <div className="flex items-center">
-                        {[1, 2, 3, 4, 5].map((star) => {
-                          const isFilled = hoverRating !== null ? star <= hoverRating : star <= Math.round(ratingAverage);
-                          return (
-                            <button
-                              key={star}
-                              onClick={async () => {
-                                if (isOwnProfile) {
-                                  toast.error("You cannot rate your own profile!");
-                                  return;
-                                }
-                                try {
-                                  const res = await fetch(`/api/users/${userToDisplay.id}/rate`, {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ raterId: (activeCurrentUser?.id || localStorage.getItem('vyapar_user_id')), stars: star })
-                                  });
-                                  const resData = await res.json();
-                                  if (resData.success) {
-                                    setRatingAverage(resData.ratingAverage);
-                                    setRatingCount(resData.ratingCount);
-                                    toast.success(resData.message || `‚≠ê Rated ${star} Stars!`);
-                                    
-                                    // Trigger analytics refresh event
-                                    window.dispatchEvent(new CustomEvent('postDeleted')); 
-                                  } else {
-                                    toast.error(resData.error || "Failed to submit rating.");
-                                  }
-                                } catch (err) {
-                                  toast.error("Failed to submit rating.");
-                                }
-                              }}
-                              onMouseEnter={() => !isOwnProfile && setHoverRating(star)}
-                              onMouseLeave={() => !isOwnProfile && setHoverRating(null)}
-                              className={`p-0.5 transition-transform duration-200 active:scale-125 focus:outline-none ${isOwnProfile ? 'cursor-default' : 'cursor-pointer'}`}
-                            >
-                              <Star
-                                className={`w-3.5 h-3.5 ${getStarColorClass(star, isFilled, 'text-zinc-300 dark:text-zinc-700')}`}
-                                fill={isFilled ? 'currentColor' : 'none'}
-                              />
-                            </button>
-                          );
-                        })}
-                      </div>
-                      <span className="text-[10px] sm:text-xs font-black text-amber-600 dark:text-amber-500">
-                        {ratingAverage ? Number(ratingAverage).toFixed(1) : '0.0'} ({ratingCount})
-                      </span>
-                    </div>
-                  )}
-
-                  {/* Buyer vs Seller vs Admin Tag */}
-                  {(userToDisplay.role === 'admin' || userToDisplay.id === 'admin_manit_1' || userToDisplay.username === 'manit') ? (
-                    <span 
-                      className="inline-flex items-center gap-1 font-black text-[9px] sm:text-[11px] px-2 py-0.5 rounded-full shadow-xs bg-purple-700 text-white whitespace-nowrap shrink-0"
-                    >
-                      <ShieldCheck className="w-2.5 h-2.5 text-amber-300" />
-                      <span>[üëë ADMIN / FOUNDER]</span>
-                    </span>
-                  ) : userToDisplay.role === 'customer' ? (
-                    <span 
-                      style={{ backgroundColor: '#d30000', color: '#030b14' }}
-                      className="inline-flex items-center gap-1 font-black text-[9px] sm:text-[11px] px-1.5 py-0.5 rounded-full shadow-xs border border-transparent whitespace-nowrap shrink-0"
-                    >
-                      <ShoppingCart className="w-2.5 h-2.5" style={{ color: '#94e2a5' }} />
-                      <span>[üõí BUYER]</span>
-                    </span>
-                  ) : (
-                    <span 
-                      style={{ backgroundColor: '#d30000', color: '#030b14' }}
-                      className="inline-flex items-center gap-1 font-black text-[9px] sm:text-[11px] px-1.5 py-0.5 rounded-full shadow-xs border border-transparent whitespace-nowrap shrink-0"
-                    >
-                      <Building2 className="w-2.5 h-2.5" style={{ color: '#94e2a5' }} />
-                      <span>[üè¢ SELLER]</span>
-                    </span>
-                  )}
-
-                  {/* Category Tag Inline Next To Name */}
-                  {(userToDisplay.category || userToDisplay.role === 'admin' || userToDisplay.id === 'admin_manit_1' || userToDisplay.username === 'manit') && (
-                    <span 
-                      style={{ backgroundColor: '#f1f5f9', color: '#1e293b' }}
-                      className="inline-flex items-center gap-1 font-extrabold text-[9px] sm:text-[11px] px-2 py-0.5 rounded-full shadow-xs border border-slate-200 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 whitespace-nowrap shrink-0"
-                    >
-                      <Tag className="w-2.5 h-2.5 text-blue-500" />
-                      <span className="capitalize">{Array.isArray(userToDisplay.category) ? userToDisplay.category.join(', ') : (userToDisplay.category || ((userToDisplay.role === 'admin' || userToDisplay.id === 'admin_manit_1') ? 'IT Software Developer SaaS Model Apps and Logic Founder' : 'Business'))}</span>
-                    </span>
-                  )}
-                </div>
-                <div className="flex flex-wrap items-center gap-1.5 sm:gap-2.5 mt-0.5">
-                  <p className="text-xs sm:text-sm font-medium text-slate-600 flex items-center gap-1">
-                    <MapPin className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-blue-500" />
-                    <span className="truncate">{userToDisplay.city || 'India'}</span>
-                  </p>
-                </div>
-              </div>
-
-              {/* Action Buttons for Profile (Desktop Only) */}
-              <div className="hidden md:flex items-center gap-2 flex-wrap">
-                {!isOwnProfile ? (
-                  <>
-                    <button 
-                      onClick={async () => {
-                        const next = toggleFollowUser(targetIdentifier);
-                        setIsFollowing(next);
-                        setFollowersCount(prev => next ? prev + 1 : Math.max(0, prev - 1));
-                        setFollowersList(prev => {
-                          if (next) return [...prev, String(currentUser?.id)];
-                          return prev.filter(id => id !== String(currentUser?.id));
-                        });
-                        toast.success(next ? `Following ${userToDisplay.name}` : `Unfollowed ${userToDisplay.name}`);
-                        
-                        // Sync with backend
-                        if (currentUser?.id) {
-                          try {
-                            await fetch(`/api/users/${userToDisplay.id || targetIdentifier}/follow`, {
-                              method: 'POST',
-                              headers: { 'Content-Type': 'application/json' },
-                              body: JSON.stringify({ followerId: currentUser.id })
-                            });
-                          } catch (err) {
-                            // Offline/local fallback
-                          }
-                        }
-                      }}
-                      style={{ backgroundColor: '#9517e8', color: '#ffffff' }}
-                      className={cn(
-                        "font-bold px-6 py-2 rounded-xl text-sm transition-all shadow-sm flex items-center gap-2 cursor-pointer border border-transparent hover:opacity-90",
-                        isFollowing ? "text-white" : "text-white"
-                      )}
-                    >
-                      {isFollowing ? <UserCheck className="w-4 h-4" /> : <UserPlus className="w-4 h-4" />}
-                      {isFollowing ? 'Following' : 'Follow'}
-                    </button>
-
-                    <button 
-                      onClick={() => {
-                        if (!currentUser?.isVerified || !userToDisplay.isVerified) {
-                           toast.error('Chat is locked! Both users must be verified to message.');
-                           return;
-                        }
-                        navigate('/chat');
-                      }}
-                      style={{ backgroundColor: '#035002', color: '#ffffff' }}
-                      className={`font-semibold px-5 py-2 rounded-xl text-sm transition-colors border-transparent flex items-center gap-2 text-white ${(!currentUser?.isVerified || !userToDisplay.isVerified) ? 'opacity-70 cursor-not-allowed' : 'cursor-pointer hover:opacity-90'}`}
-                    >
-                      {(!currentUser?.isVerified || !userToDisplay.isVerified) ? <Lock className="w-4 h-4 text-white" /> : <MessageSquare className="w-4 h-4 text-white" />}
-                      <span>Chat</span>
-                    </button>
-                  </>
-                ) : (
-                  <div className="flex flex-wrap items-center gap-2">
-                    <button 
-                      onClick={() => setIsEditModalOpen(true)}
-                      className="font-bold px-4 py-2 rounded-xl text-sm transition-colors border flex items-center gap-2 cursor-pointer bg-blue-50 dark:bg-blue-950/40 hover:bg-blue-100 dark:hover:bg-blue-900/50 border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-300 shadow-xs shrink-0"
-                    >
-                      <Pencil className="w-4 h-4 text-blue-500" />
-                      <span>Edit Profile</span>
-                    </button>
-
-                    {isOwnProfile && (
-                      <button 
-                        onClick={() => setIsEngagementModalOpen(true)}
-                        className="font-semibold px-4 py-2 rounded-xl text-sm transition-colors border flex items-center gap-2 cursor-pointer bg-amber-50 dark:bg-amber-950/40 hover:bg-amber-100 dark:hover:bg-amber-900/50 border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300 shadow-xs shrink-0"
-                      >
-                        <TrendingUp className="w-4 h-4 text-amber-500" />
-                        <span>Profile Engagement</span>
-                      </button>
-                    )}
-
-                    {onOpenSettingsDrawer && (
-                      <button 
-                        onClick={onOpenSettingsDrawer}
-                        className="p-2.5 rounded-xl border border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-700 dark:text-zinc-300 transition-colors cursor-pointer shrink-0"
-                        title="Account Settings"
-                      >
-                        <Settings className="w-4 h-4 text-slate-500" />
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Action Buttons for Mobile (Full-width Horizontal Layout Below Profile Info) */}
-            <div className="flex md:hidden items-center gap-2 mt-3 w-full">
-              {!isOwnProfile ? (
-                <>
-                  <button 
-                    onClick={async () => {
-                      const next = toggleFollowUser(targetIdentifier);
-                      setIsFollowing(next);
-                      setFollowersCount(prev => next ? prev + 1 : Math.max(0, prev - 1));
-                      setFollowersList(prev => {
-                        if (next) return [...prev, String(currentUser?.id)];
-                        return prev.filter(id => id !== String(currentUser?.id));
-                      });
-                      toast.success(next ? `Following ${userToDisplay.name}` : `Unfollowed ${userToDisplay.name}`);
-                      
-                      // Sync with backend
-                      if (currentUser?.id) {
-                        try {
-                          await fetch(`/api/users/${userToDisplay.id || targetIdentifier}/follow`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ followerId: currentUser.id })
-                          });
-                        } catch (err) {
-                          // Offline/local fallback
-                        }
-                      }
-                    }}
-                    style={{ backgroundColor: '#9517e8', color: '#ffffff' }}
-                    className="flex-1 font-bold py-2.5 rounded-xl text-sm transition-all shadow-sm flex items-center justify-center gap-2 cursor-pointer border border-transparent hover:opacity-90 text-white"
-                  >
-                    {isFollowing ? <UserCheck className="w-4 h-4 text-white" /> : <UserPlus className="w-4 h-4 text-white" />}
-                    <span>{isFollowing ? 'Following' : 'Follow'}</span>
-                  </button>
-
-                  <button 
-                    onClick={() => {
-                      if (!currentUser?.isVerified || !userToDisplay.isVerified) {
-                         toast.error('Chat is locked! Both users must be verified to message.');
-                         return;
-                      }
-                      navigate('/chat');
-                    }}
-                    style={{ backgroundColor: '#035002', color: '#ffffff' }}
-                    className={`flex-1 font-semibold py-2.5 rounded-xl text-sm transition-colors border-transparent flex items-center justify-center gap-2 text-white ${(!currentUser?.isVerified || !userToDisplay.isVerified) ? 'opacity-70 cursor-not-allowed' : 'cursor-pointer hover:opacity-90'}`}
-                  >
-                    {(!currentUser?.isVerified || !userToDisplay.isVerified) ? <Lock className="w-4 h-4 text-white" /> : <MessageSquare className="w-4 h-4 text-white" />}
-                    <span>Chat</span>
-                  </button>
-                </>
-              ) : (
-                <div className="flex items-center gap-2 w-full">
-                  <button 
-                    onClick={() => setIsEditModalOpen(true)}
-                    className="flex-1 font-bold py-2.5 rounded-xl text-sm transition-colors border flex items-center justify-center gap-2 cursor-pointer bg-blue-50 dark:bg-blue-950/40 hover:bg-blue-100 dark:hover:bg-blue-900/50 border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-300 shadow-xs"
-                  >
-                    <Pencil className="w-4 h-4 text-blue-500" />
-                    <span>Edit Profile</span>
-                  </button>
-
-                  {isOwnProfile && (
-                    <button 
-                      onClick={() => setIsEngagementModalOpen(true)}
-                      className="flex-1 font-semibold py-2.5 rounded-xl text-sm transition-colors border flex items-center justify-center gap-2 cursor-pointer bg-amber-50 dark:bg-amber-950/40 hover:bg-amber-100 dark:hover:bg-amber-900/50 border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300 shadow-xs"
-                    >
-                      <TrendingUp className="w-4 h-4 text-amber-500" />
-                      <span>Engagement</span>
-                    </button>
-                  )}
-
-                  {onOpenSettingsDrawer && (
-                    <button 
-                      onClick={onOpenSettingsDrawer}
-                      className="p-2.5 rounded-xl border border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-700 dark:text-zinc-300 transition-colors cursor-pointer shrink-0"
-                      title="Account Settings"
-                    >
-                      <Settings className="w-4 h-4 text-slate-500" />
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
-
-            {/* Profile Engagement Modal */}
-            {isEngagementModalOpen && (
-              <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200" onClick={() => setIsEngagementModalOpen(false)}>
-                <div className="bg-white dark:bg-zinc-950 border border-slate-200 dark:border-zinc-800 rounded-3xl p-6 max-w-md md:max-w-2xl w-full shadow-2xl relative text-black dark:text-zinc-50" onClick={e => e.stopPropagation()}>
-                  <div className="flex items-center justify-between mb-4 pb-3 border-b border-slate-100 dark:border-zinc-800">
-                    <div className="flex items-center gap-2">
-                      <div className="p-2 rounded-xl bg-amber-100 dark:bg-amber-950 text-amber-600">
-                        <TrendingUp className="w-5 h-5" />
-                      </div>
-                      <h3 className="font-black text-lg">Profile Engagement & Analytics</h3>
-                    </div>
-                    <button onClick={() => setIsEngagementModalOpen(false)} className="p-1.5 rounded-full hover:bg-slate-100 dark:hover:bg-zinc-800 cursor-pointer">
-                      <X className="w-5 h-5" />
-                    </button>
-                  </div>
-
-                  <div className="space-y-4">
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="p-4 rounded-2xl bg-slate-50 dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800">
-                        <span className="text-xs text-black/70 dark:text-zinc-400 font-semibold">Total Followers</span>
-                        <p className="text-2xl font-black text-blue-600 mt-1">{followersCount.toLocaleString()}</p>
-                      </div>
-                      <div className="p-4 rounded-2xl bg-slate-50 dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800">
-                        <span className="text-xs text-black/70 dark:text-zinc-400 font-semibold">Wall Posts</span>
-                        <p className="text-2xl font-black text-emerald-600 mt-1">{userPosts.length}</p>
-                      </div>
-                    </div>
-
-                    {userToDisplay.role !== 'customer' && (
-                      <UserAnalyticsCard userId={profileUser?.id || currentUser?.id || ''} />
-                    )}
-
-                    <div className="p-4 rounded-2xl bg-blue-50/50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-900/50 text-xs text-black/80 dark:text-zinc-300">
-                      <p className="font-bold flex items-center gap-1.5 text-blue-700 dark:text-blue-400 mb-1">
-                        <Sparkles className="w-4 h-4" /> Real-time Firebase Mirroring Active
-                      </p>
-                      Engagement stats update instantly across B2B feeds and dealer directories when visitors interact with your profile or catalogues.
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Vyapar Bridge Verified Banner Card */}
-            {userToDisplay.isVerified ? (
-              <div 
-                style={{ backgroundColor: '#984e04' }}
-                className="mb-3 text-white p-3.5 rounded-2xl shadow-md flex items-center justify-between border border-amber-500/40"
-              >
-                <div className="flex items-center gap-3">
-                  <VerifiedBadge user={userToDisplay} size="lg" />
-                  <div>
-                    <h4 className={cn(
-                      "font-bold text-xs sm:text-sm flex flex-wrap items-center gap-2",
-                      (userToDisplay.goldenBadge || isUser1188GoldenPlan(userToDisplay))
-                        ? "text-amber-700 dark:text-amber-500"
-                        : (userToDisplay.role === 'customer' ? "text-red-700 dark:text-red-500" : "text-blue-600")
-                    )}>
-                      <span style={{ color: '#12dcdd' }}>
-                        {(userToDisplay.goldenBadge || isUser1188GoldenPlan(userToDisplay))
-                          ? 'VYAPAR BRIDGE GOLDEN VERIFIED üëë'
-                          : (userToDisplay.role === 'customer' ? 'VYAPAR BRIDGE B2C VERIFIED ‚úì' : 'Vyapar Bridge Verified B2B Account ‚úì')}
-                      </span>
-                    </h4>
-                  </div>
-                </div>
-              </div>
-            ) : null}
-
-            {/* GSTIN Field directly below Vyapar Bridge Verified B2B Card - Hidden for Customers */}
-            {userToDisplay.role !== 'customer' && userToDisplay.gstNumber && (!userToDisplay.hideGst || isOwnProfile) && (
-              <div className="mb-3.5 inline-flex flex-wrap items-center gap-2 px-3.5 py-1.5 bg-emerald-50 dark:bg-emerald-950/50 rounded-xl border border-emerald-200 dark:border-emerald-800 text-xs font-bold text-black dark:text-zinc-200 shadow-sm">
-                <ShieldCheck className="w-4 h-4 text-emerald-500 shrink-0" />
-                <span>GSTIN:</span>
-                <span className="font-mono bg-white dark:bg-zinc-900 px-2 py-0.5 rounded-md border border-slate-200 dark:border-zinc-700 text-black dark:text-zinc-100">
-                  {userToDisplay.gstNumber}
-                </span>
-                <span className="text-[10px] text-emerald-700 dark:text-emerald-400 font-extrabold uppercase">‚úì Verified Taxpayer</span>
-                {isOwnProfile && userToDisplay.hideGst && (
-                  <span className="text-[10px] bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300 px-2 py-0.5 rounded font-extrabold flex items-center gap-1">
-                    <Lock className="w-3 h-3" /> Hidden from Public
-                  </span>
-                )}
-              </div>
-            )}
-
-            <div className="text-black dark:text-zinc-100">
-              {/* B2B Contact & Location Navigation Card - HIDDEN FOR CUSTOMERS & ONLY FOR VERIFIED/PAID MEMBERS */}
-              {userToDisplay.role !== 'customer' && (
-                (isOwnProfile || currentUser?.isVerified) ? (
-                  (((userToDisplay.city || userToDisplay.address || userToDisplay.gpsCoords) && (!userToDisplay.hideAddress || isOwnProfile || currentUser?.isVerified)) || (userToDisplay.role !== 'customer' && userToDisplay.website) || (userToDisplay.phone && (!userToDisplay.hidePhone || isOwnProfile || currentUser?.isVerified)) || (userToDisplay.email && (!userToDisplay.hideEmail || isOwnProfile || currentUser?.isVerified))) && (
-                    <div className="mt-3 p-3 bg-slate-50 dark:bg-zinc-900/90 rounded-xl border border-slate-200 dark:border-zinc-800 space-y-2">
-                      {/* Location Address & Navigation */}
-                      {(userToDisplay.city || userToDisplay.address || userToDisplay.gpsCoords) && (!userToDisplay.hideAddress || isOwnProfile || currentUser?.isVerified) && (
-                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                          <div className="text-xs text-black dark:text-zinc-300 flex items-start gap-1.5">
-                            <MapPin className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
-                            <div>
-                              <div className="font-bold text-black dark:text-zinc-100 flex items-center gap-1.5">
-                                <span>{userToDisplay.city ? `${userToDisplay.city}${userToDisplay.state ? ', ' + userToDisplay.state : ''}` : 'Location Available'}</span>
-                                {isOwnProfile && userToDisplay.hideAddress && (
-                                  <span className="text-[10px] bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300 px-1.5 py-0.5 rounded font-extrabold flex items-center gap-0.5">
-                                    <Lock className="w-2.5 h-2.5" /> Address Hidden
-                                  </span>
-                                )}
-                              </div>
-                              {userToDisplay.address && (
-                                <div className="text-[11px] text-black/70 dark:text-zinc-400">
-                                  {userToDisplay.address}
-                                </div>
-                              )}
-                            </div>
-                          </div>
-
-                          <a 
-                            href={userToDisplay.googleMapsUrl || `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent((userToDisplay.name || '') + ' ' + (userToDisplay.address || '') + ' ' + (userToDisplay.city || ''))}`} 
-                            target="_blank" 
-                            rel="noopener noreferrer"
-                            className="bg-blue-600 hover:bg-blue-700 text-black font-bold px-3 py-1.5 rounded-lg text-xs transition-colors flex items-center justify-center gap-1.5 shadow-sm cursor-pointer shrink-0"
-                          >
-                            <Locate className="w-3.5 h-3.5" /> Open Google Maps
-                          </a>
-                        </div>
-                      )}
-
-                      {userToDisplay.role !== 'customer' && userToDisplay.website && (
-                        <a 
-                          href={userToDisplay.website.startsWith('http') ? userToDisplay.website : `https://${userToDisplay.website}`} 
-                          target="_blank" 
-                          rel="noopener noreferrer" 
-                          className="text-xs font-semibold text-[#00376b] dark:text-blue-600 hover:underline flex items-center gap-1 pt-1 border-t border-slate-200 dark:border-zinc-800"
-                        >
-                          <Globe className="w-3.5 h-3.5" />
-                          {userToDisplay.website.replace(/^https?:\/\//, '')}
-                        </a>
-                      )}
-                      {(userToDisplay.facebookUrl || userToDisplay.twitterUrl || userToDisplay.instagramUrl) && (
-                        <div className="flex items-center gap-4 pt-2 border-t border-slate-200 dark:border-zinc-800">
-                          {userToDisplay.facebookUrl && (
-                            <a href={userToDisplay.facebookUrl.startsWith('http') ? userToDisplay.facebookUrl : `https://${userToDisplay.facebookUrl}`} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:scale-110 transition-transform cursor-pointer" title="Facebook">
-                              <Facebook className="w-4 h-4" />
-                            </a>
-                          )}
-                          {userToDisplay.twitterUrl && (
-                            <a href={userToDisplay.twitterUrl.startsWith('http') ? userToDisplay.twitterUrl : `https://${userToDisplay.twitterUrl}`} target="_blank" rel="noopener noreferrer" className="text-sky-500 hover:scale-110 transition-transform cursor-pointer" title="Twitter">
-                              <Twitter className="w-4 h-4" />
-                            </a>
-                          )}
-                          {userToDisplay.instagramUrl && (
-                            <a href={userToDisplay.instagramUrl.startsWith('http') ? userToDisplay.instagramUrl : `https://${userToDisplay.instagramUrl}`} target="_blank" rel="noopener noreferrer" className="text-pink-500 hover:scale-110 transition-transform cursor-pointer" title="Instagram">
-                              <Instagram className="w-4 h-4" />
-                            </a>
-                          )}
-                        </div>
-                      )}
-                      
-                      {userToDisplay.role !== 'customer' && userToDisplay.catalogueUrl && (
-                        <div className="flex items-center gap-2 pt-1 border-t border-slate-200 dark:border-zinc-800 mt-1">
-                          <a 
-                            href={userToDisplay.catalogueUrl} 
-                            target="_blank" 
-                            rel="noopener noreferrer" 
-                            className="text-xs font-bold text-blue-600 dark:text-blue-600 hover:underline flex items-center gap-1"
-                          >
-                            <FileText className="w-4 h-4 text-emerald-500" />
-                            <span>{userToDisplay.catalogueName || 'Download Company Catalogue (PDF)'}</span>
-                          </a>
-                        </div>
-                      )}
-
-                      <div className="flex flex-wrap items-center gap-4 text-xs text-black/80 dark:text-zinc-400 pt-1">
-                        {userToDisplay.phone && (!userToDisplay.hidePhone || isOwnProfile || currentUser?.isVerified) && (
-                          (currentUser?.isVerified || isOwnProfile) ? (
-                            <p className="flex items-center gap-1">
-                              <Phone className="w-3.5 h-3.5 text-emerald-500" /> {userToDisplay.phone}
-                              {isOwnProfile && userToDisplay.hidePhone && (
-                                <span className="text-[10px] text-amber-600 dark:text-amber-400 font-bold ml-1 flex items-center gap-0.5">
-                                  (<Lock className="w-2.5 h-2.5" /> Hidden)
-                                </span>
-                              )}
-                            </p>
-                          ) : (
-                            <div className="flex items-center gap-1.5 text-xs text-amber-700 dark:text-amber-300 font-bold bg-amber-50 dark:bg-amber-950/40 px-2.5 py-1.5 rounded-lg border border-amber-200 dark:border-amber-800">
-                              <Lock className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-                              <span>Mobile Number Locked (Vyapar Bridge Verified Members Only)</span>
-                            </div>
-                          )
-                        )}
-                        {userToDisplay.email && (!userToDisplay.hideEmail || isOwnProfile || currentUser?.isVerified) && (
-                          (currentUser?.isVerified || isOwnProfile) ? (
-                            <p className="flex items-center gap-1">
-                              <Mail className="w-3.5 h-3.5 text-indigo-500" /> {userToDisplay.email}
-                              {isOwnProfile && userToDisplay.hideEmail && (
-                                <span className="text-[10px] text-amber-600 dark:text-amber-400 font-bold ml-1 flex items-center gap-0.5">
-                                  (<Lock className="w-2.5 h-2.5" /> Hidden)
-                                </span>
-                              )}
-                            </p>
-                          ) : (
-                            <div className="flex items-center gap-1.5 text-xs text-amber-700 dark:text-amber-300 font-bold bg-amber-50 dark:bg-amber-950/40 px-2.5 py-1.5 rounded-lg border border-amber-200 dark:border-amber-800">
-                              <Lock className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-                              <span>Email Locked (Vyapar Bridge Verified Members Only)</span>
-                            </div>
-                          )
-                        )}
-                      </div>
-                    </div>
-                  )
-                ) : (
-                  // Locked/Premium card for unverified viewers
-                  <div className="mt-3 p-5 bg-gradient-to-br from-amber-500/5 via-slate-500/5 to-blue-500/5 dark:from-amber-950/10 dark:via-zinc-900/10 dark:to-blue-950/10 rounded-2xl border border-dashed border-amber-300 dark:border-amber-900/60 text-center space-y-3.5 shadow-xs">
-                    <div className="w-10 h-10 rounded-full bg-amber-100 dark:bg-amber-950 flex items-center justify-center mx-auto text-amber-600 dark:text-amber-400">
-                      <Lock className="w-5 h-5 animate-pulse" />
-                    </div>
-                    <div className="space-y-1">
-                      <h4 className="font-bold text-xs sm:text-sm text-slate-800 dark:text-zinc-100">B2B Contact & Location Details Locked üîí</h4>
-                      <p className="text-[11px] text-slate-500 dark:text-zinc-400 max-w-sm mx-auto">
-                        Only Vyapar Bridge Paid/Verified Members can view complete dealer address, maps navigation, website, phone, email, and catalog.
-                      </p>
-                    </div>
-                    {onOpenVerify && (
-                      <button 
-                        onClick={onOpenVerify}
-                        className="inline-flex items-center gap-1.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-zinc-950 font-black px-4 py-2 rounded-xl text-xs transition-all shadow-sm cursor-pointer border-0"
-                      >
-                        <Sparkles className="w-3.5 h-3.5 text-zinc-950" />
-                        <span>Upgrade to Paid Plan & Unlock</span>
-                      </button>
-                    )}
-                  </div>
-                )
-              )}
-
-
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Refer & Earn 1-Month Free Blue Badge Banner */}
-      {isOwnProfile && (
-        <div 
-          onClick={() => {
-            if (onOpenReferrals) onOpenReferrals();
-            else window.dispatchEvent(new CustomEvent('openReferralModal'));
-          }}
-          className="mb-6 bg-gradient-to-r from-amber-500/15 via-blue-500/15 to-indigo-500/15 hover:from-amber-500/25 hover:via-blue-500/25 hover:to-indigo-500/25 border border-amber-400/50 dark:border-amber-500/30 p-4 rounded-2xl cursor-pointer shadow-sm hover:shadow-md transition-all flex items-center justify-between gap-3 group"
-        >
-          <div className="flex items-center gap-3.5 min-w-0">
-            <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-amber-400 to-amber-600 text-white flex items-center justify-center shrink-0 shadow-sm group-hover:scale-105 transition-transform">
-              <Gift className="w-5 h-5 animate-bounce" />
-            </div>
-            <div className="min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <h4 className="font-black text-xs sm:text-sm text-slate-900 dark:text-zinc-100 flex items-center gap-1.5">
-                  <span>Refer 10 Members & Get 1 Month FREE Blue Badge!</span>
-                  <Sparkles className="w-3.5 h-3.5 text-amber-500 fill-amber-500" />
-                </h4>
-                <span className="text-[10px] font-extrabold bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-800 px-2 py-0.5 rounded-full">
-                  {currentUser?.referrals?.filter((r: any) => r.hasPosted)?.length || 0}/10 Complete
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-600 dark:text-zinc-400 truncate">
-                Share your referral link on WhatsApp. When 10 members join & post, your 30-day Free Blue Badge unlocks!
-              </p>
-            </div>
-          </div>
-
-          <div className="shrink-0 flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold px-3.5 py-2 rounded-xl shadow-xs transition-colors">
-            <span>Invite</span>
-            <ChevronRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
-          </div>
-        </div>
-      )}
-
-      {/* Facebook-Style Followers (Only on own profile) & Highlights Section */}
-      <div className="space-y-4 mb-6">
-        {/* Followers Section - Only on own profile */}
-        {isOwnProfile && (
-          <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-2xl p-4 shadow-sm">
-            <div className="flex items-center justify-between mb-3">
-              <div>
-                <h3 className="font-black text-sm text-black dark:text-zinc-100 flex items-center gap-1.5">
-                  <Users className="w-4 h-4 text-blue-500" />
-                  <span>Followers</span>
-                  <span className="text-xs bg-blue-50 dark:bg-blue-950/60 text-blue-600 px-2 py-0.5 rounded-full font-bold">
-                    {targetFollowers.length || followersCount}
-                  </span>
-                </h3>
-                <p className="text-[11px] text-black/70 dark:text-zinc-400">Connected members & trading partners</p>
-              </div>
-              <span 
-                onClick={() => {
-                  setConnectionsModalTab('followers');
-                  setIsConnectionsModalOpen(true);
-                }}
-                className="text-xs font-bold text-blue-600 hover:underline cursor-pointer"
-              >
-                See all
-              </span>
-            </div>
-
-            <div className="grid grid-cols-4 sm:grid-cols-6 gap-3">
-              {targetFollowers.length > 0 ? (
-                targetFollowers.slice(0, 6).map((u: any) => {
-                  const avatarUrl = u.avatarUrl || u.avatar || resolveUserAvatar(u);
-                  return (
-                    <div 
-                      key={u.id || Math.random()} 
-                      onClick={() => {
-                        setProfileUser(u);
-                        navigate(`/profile/${u.id || encodeURIComponent(u.name || u.username)}`);
-                        window.scrollTo({ top: 0, behavior: 'smooth' });
-                      }} 
-                      className="flex flex-col items-center text-center group cursor-pointer"
-                    >
-                      <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-full overflow-hidden border-2 border-blue-500/80 p-0.5 shadow-sm group-hover:scale-105 transition-transform bg-slate-100 dark:bg-zinc-800 flex items-center justify-center">
-                        {avatarUrl ? (
-                          <img src={avatarUrl} alt={u.name} className="w-full h-full object-cover rounded-full" />
-                        ) : (
-                          <User className="w-6 h-6 text-slate-400" />
-                        )}
-                      </div>
-                      <span className="text-[11px] font-bold text-slate-700 dark:text-zinc-300 mt-1.5 truncate w-16">{u.name?.split(' ')[0] || 'User'}</span>
-                    </div>
-                  );
-                })
-              ) : (
-                <div className="col-span-full py-4 text-center">
-                  <p className="text-xs text-slate-500 dark:text-zinc-400 font-medium">Build your network to see followers here.</p>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Highlights Section */}
-        <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-2xl p-4 shadow-sm">
-          <div className="flex items-center justify-between mb-3">
-            <div>
-              <h3 className="font-black text-sm text-black dark:text-zinc-100 flex items-center gap-1.5">
-                <Sparkles className="w-4 h-4 text-amber-500" />
-                <span>Highlights & Stories</span>
-              </h3>
-              <p className="text-[11px] text-black/70 dark:text-zinc-400">Featured product collections & showroom tours</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-3 overflow-x-auto pb-1 scrollbar-none">
-            {(() => {
-              const myStoredStories = (() => {
-                try {
-                  const s = localStorage.getItem('vyapar_my_stories');
-                  return s ? JSON.parse(s) : [];
-                } catch (e) { return []; }
-              })();
-              const candidateStories = [...(isOwnProfile ? myStoredStories : []), ...(userPosts || [])];
-              const storyMap = new Map<string, any>();
-              candidateStories.forEach(p => {
-                if (!p || !p.id) return;
-                const hasMedia = Boolean(p.mediaUrl || p.thumbnailUrl || p.videoUrl || p.video);
-                const isStoryOrReel = p.type === 'video' || p.type === 'reel' || p.type === 'story' || p.isStory || p.isReel || Boolean(p.hashtags && (p.hashtags.includes('#reel') || p.hashtags.includes('#story'))) || p.title === 'New B2B Reel' || p.title === 'New B2B Story' || p.content === 'Uploaded from Reels' || p.content === 'Uploaded Story & Reel' || (p.mediaUrl && (p.mediaUrl.endsWith('.mp4') || p.mediaUrl.endsWith('.webm') || p.mediaUrl.includes('/uploads/')));
-                if (hasMedia && isStoryOrReel && !storyMap.has(String(p.id))) {
-                  storyMap.set(String(p.id), p);
-                }
-              });
-              const highlightStories = Array.from(storyMap.values());
-              return highlightStories.length > 0 ? (
-                highlightStories.map((p: any, i: number) => {
-                  let createdAtMs = Date.now();
-                  if (p.createdAt) {
-                    if (typeof p.createdAt === 'number' && p.createdAt > 1000000000) {
-                      createdAtMs = p.createdAt;
-                    } else if (typeof p.createdAt === 'object' && p.createdAt.seconds) {
-                      createdAtMs = p.createdAt.seconds * 1000;
-                    } else if (typeof p.createdAt === 'string') {
-                      const num = Number(p.createdAt);
-                      if (!isNaN(num) && num > 1000000000) createdAtMs = num;
-                      else {
-                        const parsed = new Date(p.createdAt).getTime();
-                        if (!isNaN(parsed) && parsed > 1000000000) createdAtMs = parsed;
-                      }
-                    }
-                  }
-
-                  // Stagger mock items so they dynamically span across the 24h window
-                  const ageMs = Date.now() - createdAtMs;
-                  if (ageMs > 24 * 60 * 60 * 1000 || ageMs < 0) {
-                    createdAtMs = Date.now() - ((i % 6) * 3.5 * 60 * 60 * 1000 + 45 * 60 * 1000);
-                  }
-
-                  const isPermanentStory = p.isPermanent === true || p.postedFrom === 'profile' || p.isPermanent == 'true';
-                  const hoursRemaining = isPermanentStory ? 24 : Math.max(0.1, 24 - (Date.now() - createdAtMs) / (3600 * 1000));
-                  const percentRemaining = (hoursRemaining / 24) * 100;
-                  const radius = 28;
-                  const circ = 2 * Math.PI * radius;
-                  const strokeDashoffset = circ - (circ * percentRemaining) / 100;
-
-                  return (
-                    <div 
-                      key={p.id || i} 
-                      onClick={() => setActiveHighlightIndex(i)}
-                      className="flex flex-col items-center shrink-0 cursor-pointer group relative"
-                    >
-                      <div className="relative w-16 h-16 flex items-center justify-center group-hover:scale-105 transition-transform duration-300">
-                        <svg className="absolute w-full h-full -rotate-90" viewBox="0 0 64 64">
-                          <circle
-                            cx="32"
-                            cy="32"
-                            r={radius}
-                            className="stroke-slate-100 dark:stroke-zinc-800 fill-none"
-                            strokeWidth="2.5"
-                          />
-                          <circle
-                            cx="32"
-                            cy="32"
-                            r={radius}
-                            className="stroke-amber-500 fill-none transition-all duration-500"
-                            strokeWidth="2.5"
-                            strokeDasharray={circ}
-                            strokeDashoffset={strokeDashoffset}
-                            strokeLinecap="round"
-                          />
-                        </svg>
-                        <div className="w-[50px] h-[50px] rounded-full overflow-hidden border border-slate-200 dark:border-zinc-700 bg-white flex items-center justify-center">
-                          {p.thumbnailUrl ? (
-                            <img 
-                              referrerPolicy="no-referrer"
-                              src={p.thumbnailUrl} 
-                              alt={p.title || 'Highlight'} 
-                              className="w-full h-full object-cover" 
-                            />
-                          ) : (p.type === 'video' || p.type === 'reel' || p.isReel || String(p.mediaUrl).match(/\.(mp4|webm|mov|ogg|m4v)/i)) ? (
-                            <video
-                              src={p.mediaUrl}
-                              className="w-full h-full object-cover"
-                              preload="metadata"
-                              muted
-                              playsInline
-                            />
-                          ) : (
-                            <img 
-                              referrerPolicy="no-referrer"
-                              src={p.mediaUrl} 
-                              alt={p.title || 'Highlight'} 
-                              className="w-full h-full object-cover" 
-                            />
-                          )}
-                        </div>
-                        <div className="absolute -bottom-1 bg-gradient-to-r from-amber-500 to-orange-600 text-white font-black text-[8px] px-1.5 py-0.2 rounded-full shadow-xs border border-white dark:border-zinc-900 scale-90">
-                          {Math.floor(hoursRemaining)}h left
-                        </div>
-                      </div>
-                      <span className="text-[11px] font-bold text-black dark:text-zinc-300 mt-2.5 truncate w-16 text-center">{p.title || p.caption || 'Collection'}</span>
-                    </div>
-                  );
-                })
-              ) : (
-                <div className="text-xs text-slate-400 py-2">No highlight stories published yet.</div>
-              );
-            })()}
-          </div>
-        </div>
-
-        {/* Quick Action Triggers (Post, Reel, Cart, Scanner) - Only on own profile */}
-        {isOwnProfile && (
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-            <button 
-              onClick={() => { setActiveTab('posts'); setIsProfileCreateOpen(true); }}
-              className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 hover:border-blue-500 p-3 rounded-2xl flex items-center justify-center gap-2 font-bold text-xs text-black dark:text-zinc-100 shadow-xs transition-all cursor-pointer"
-              style={{ backgroundColor: '#0a0ad2' }}
-            >
-              <Compass className="w-4 h-4 text-blue-500" />
-              <span>Create Post</span>
-            </button>
-
-            <button 
-              onClick={() => { setActiveTab('reels'); setIsProfileCreateOpen(true); }}
-              className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 hover:border-pink-500 p-3 rounded-2xl flex items-center justify-center gap-2 font-bold text-xs text-black dark:text-zinc-100 shadow-xs transition-all cursor-pointer"
-              style={{ backgroundColor: '#b00b77' }}
-            >
-              <Film className="w-4 h-4 text-pink-500" style={{ backgroundColor: '#f4eded' }} />
-              <span>Upload Reel</span>
-            </button>
-
-            {/* B2B Cart & Discount Coupon (Buyer / Customer Quick Action) */}
-            <button 
-              onClick={() => setIsCartCouponsModalOpen(true)}
-              className={cn(
-                "p-3 rounded-2xl flex items-center justify-center gap-2 font-bold text-xs shadow-xs transition-all cursor-pointer relative",
-                userToDisplay.role === 'customer'
-                  ? "bg-gradient-to-r from-emerald-600 to-teal-600 text-white hover:from-emerald-500 hover:to-teal-500 shadow-emerald-500/20 shadow-md font-black border border-emerald-400"
-                  : "bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 hover:border-emerald-500 text-black dark:text-zinc-100"
-              )}
-              style={{ backgroundColor: '#7b330f' }}
-            >
-              <ShoppingCart className="w-4 h-4 text-emerald-500" />
-              <span className="truncate">My Cart & Coupons</span>
-              {cartItemsCount > 0 && (
-                <span className="bg-emerald-500 text-white text-[10px] font-black px-1.5 py-0.2 rounded-full">
-                  {cartItemsCount}
-                </span>
-              )}
-            </button>
-
-            {/* Discount Scanner & 1000 Deal Milestone Claim (Seller Quick Action) */}
-            <button 
-              onClick={() => setIsDiscountScannerModalOpen(true)}
-              className={cn(
-                "p-3 rounded-2xl flex items-center justify-center gap-2 font-bold text-xs shadow-xs transition-all cursor-pointer relative",
-                userToDisplay.role !== 'customer'
-                  ? "bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 text-white hover:from-blue-500 hover:to-indigo-500 shadow-blue-500/20 shadow-md font-black border border-blue-400"
-                  : "bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 hover:border-blue-500 text-black dark:text-zinc-100"
-              )}
-            >
-              <Scan className="w-4 h-4 text-amber-300" />
-              <span className="truncate">Discount Scanner</span>
-              <span className="bg-amber-400 text-slate-950 text-[9px] font-black px-1.5 py-0.2 rounded-full">
-                {sellerDiscountsCount}/1k
-              </span>
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Tabs Navigation Bar */}
-      <div 
-        className="border-b border-slate-200 dark:border-zinc-800/80 flex justify-center gap-6 sm:gap-10 mb-6 uppercase tracking-wide overflow-x-auto bg-slate-50/50 dark:bg-zinc-900/30 px-4"
-      >
-        <button 
-          onClick={() => setActiveTab('posts')}
-          className={cn(
-            "flex items-center gap-2 py-3 border-b-2 font-bold transition-all duration-300 cursor-pointer shrink-0 text-xs sm:text-sm",
-            activeTab === 'posts' 
-              ? "border-blue-600 text-blue-600 dark:border-blue-400 dark:text-blue-400 font-extrabold" 
-              : "border-transparent text-slate-500 hover:text-slate-800 dark:text-zinc-400 dark:hover:text-zinc-100"
-          )}
-        >
-          <Compass className="w-4 h-4" />
-          <span>Wall Posts</span>
-        </button>
-        
-        <button 
-          onClick={() => setActiveTab('reels')}
-          className={cn(
-            "flex items-center gap-2 py-3 border-b-2 font-bold transition-all duration-300 cursor-pointer shrink-0 text-xs sm:text-sm",
-            activeTab === 'reels' 
-              ? "border-blue-600 text-blue-600 dark:border-blue-400 dark:text-blue-400 font-extrabold" 
-              : "border-transparent text-slate-500 hover:text-slate-800 dark:text-zinc-400 dark:hover:text-zinc-100"
-          )}
-        >
-          <Film className="w-4 h-4" />
-          <span>Reels</span>
-        </button>
-
-        <button 
-          onClick={() => setActiveTab('stories')}
-          className={cn(
-            "flex items-center gap-2 py-3 border-b-2 font-bold transition-all duration-300 cursor-pointer shrink-0 text-xs sm:text-sm",
-            activeTab === 'stories' 
-              ? "border-amber-500 text-amber-600 dark:border-amber-400 dark:text-amber-400 font-extrabold" 
-              : "border-transparent text-slate-500 hover:text-amber-500 dark:text-zinc-400 dark:hover:text-amber-400"
-          )}
-        >
-          <Sparkles className="w-4 h-4 text-amber-500" />
-          <span>Stories & Highlights</span>
-        </button>
-
-        {isOwnProfile && (
-          <>
-            <button 
-              onClick={() => setActiveTab('saved')}
-              className={cn(
-                "flex items-center gap-2 py-3 border-b-2 font-bold transition-all duration-300 cursor-pointer shrink-0 text-xs sm:text-sm",
-                activeTab === 'saved' 
-                  ? "border-rose-600 text-rose-600 dark:border-rose-400 dark:text-rose-400 font-extrabold" 
-                  : "border-transparent text-slate-500 hover:text-rose-600 dark:text-zinc-400 dark:hover:text-rose-400"
-              )}
-            >
-              <Bookmark className="w-4 h-4 fill-rose-500/10" />
-              <span>Wishlist ‚ù§Ô∏è</span>
-            </button>
-            
-            <button 
-              onClick={() => setActiveTab('archive')}
-              className={cn(
-                "flex items-center gap-2 py-3 border-b-2 font-bold transition-all duration-300 cursor-pointer shrink-0 text-xs sm:text-sm",
-                activeTab === 'archive' 
-                  ? "border-blue-600 text-blue-600 dark:border-blue-400 dark:text-blue-400 font-extrabold" 
-                  : "border-transparent text-slate-500 hover:text-slate-800 dark:text-zinc-400 dark:hover:text-zinc-100"
-              )}
-            >
-              <Film className="w-4 h-4" />
-              <span>Archive</span>
-            </button>
-          </>
-        )}
-      </div>
-
-      {/* Grid Content depending on activeTab */}
-      {activeTab === 'posts' && (
-        <div className="space-y-6">
-          {/* Verified Offer Token Generator Banner */}
-          {isOwnProfile && (
-            <div 
-              onClick={() => setIsOfferTokenModalOpen(true)}
-              className="bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 text-white rounded-3xl p-6 shadow-md hover:shadow-lg transition-all cursor-pointer flex items-center justify-between mb-6 group relative overflow-hidden w-full"
-            >
-              <div className="absolute right-0 top-0 w-48 h-48 bg-white/10 rounded-full blur-2xl group-hover:scale-125 transition-transform" />
-              <div className="space-y-2 relative z-10">
-                <div className="flex items-center gap-2">
-                  <span className="bg-amber-400 text-zinc-950 font-black text-[10px] px-2.5 py-1 rounded-full uppercase tracking-wider">
-                    New Reward System
-                  </span>
-                  <Sparkles className="w-4 h-4 text-amber-300 animate-pulse" />
-                </div>
-                <h3 className="font-black text-lg sm:text-xl">
-                  Generate Verified Offer Token & Discount PDF
-                </h3>
-                <p className="text-white/80 text-xs max-w-lg">
-                  Instantly issue professional offer slips and custom discount deals to attract trade buyers.
-                </p>
-              </div>
-              <div className="w-12 h-12 rounded-2xl bg-white/20 backdrop-blur-md flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform relative z-10">
-                <ChevronRight className="w-6 h-6 text-white" />
-              </div>
-            </div>
-          )}
-
-          {/* Customer Saved Activity Dashboard - ONLY FOR CUSTOMERS */}
-          {userToDisplay.role === 'customer' && isOwnProfile && (
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
-              <div 
-                onClick={() => {
-                  setActiveTab('saved');
-                  setSavedFilter('reels');
-                }}
-                className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-5 shadow-sm hover:shadow-md transition-all group cursor-pointer relative overflow-hidden"
-              >
-                <div className="absolute top-0 right-0 w-24 h-24 bg-pink-500/5 rounded-bl-full -mr-8 -mt-8 transition-transform group-hover:scale-110" />
-                <div className="w-12 h-12 rounded-2xl bg-pink-50 dark:bg-pink-950/30 flex items-center justify-center mb-4 border border-pink-100 dark:border-pink-900/50">
-                  <Film className="w-6 h-6 text-pink-600 dark:text-pink-400" />
-                </div>
-                <h3 className="font-black text-black dark:text-zinc-50 text-lg">Saved Reels</h3>
-                <p className="text-xs text-black/70 dark:text-zinc-400 mt-1">Watch your bookmarked short videos</p>
-                <div className="mt-4 flex items-center justify-between">
-                  <span className="text-2xl font-black text-black dark:text-zinc-50">
-                    {String(savedPosts.filter(p => p.type === 'video').length).padStart(2, '0')}
-                  </span>
-                  <div className="p-1.5 rounded-lg bg-slate-50 dark:bg-zinc-800 text-black/60">
-                    <ChevronRight className="w-4 h-4" />
-                  </div>
-                </div>
-              </div>
-
-              <div 
-                onClick={() => {
-                  setActiveTab('saved');
-                  setSavedFilter('images');
-                }}
-                className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-5 shadow-sm hover:shadow-md transition-all group cursor-pointer relative overflow-hidden"
-              >
-                <div className="absolute top-0 right-0 w-24 h-24 bg-blue-500/5 rounded-bl-full -mr-8 -mt-8 transition-transform group-hover:scale-110" />
-                <div className="w-12 h-12 rounded-2xl bg-blue-50 dark:bg-blue-950/30 flex items-center justify-center mb-4 border border-blue-100 dark:border-blue-900/50">
-                  <Image className="w-6 h-6 text-blue-600 dark:text-blue-600" />
-                </div>
-                <h3 className="font-black text-black dark:text-zinc-50 text-lg">Saved Images</h3>
-                <p className="text-xs text-black/70 dark:text-zinc-400 mt-1">Quick access to saved designs & products</p>
-                <div className="mt-4 flex items-center justify-between">
-                  <span className="text-2xl font-black text-black dark:text-zinc-50">
-                    {String(savedPosts.filter(p => p.type === 'image' || !p.type).length).padStart(2, '0')}
-                  </span>
-                  <div className="p-1.5 rounded-lg bg-slate-50 dark:bg-zinc-800 text-black/60">
-                    <ChevronRight className="w-4 h-4" />
-                  </div>
-                </div>
-              </div>
-
-              <div 
-                onClick={() => {
-                  setActiveTab('saved');
-                  setSavedFilter('pdfs');
-                }}
-                className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-5 shadow-sm hover:shadow-md transition-all group cursor-pointer relative overflow-hidden"
-              >
-                <div className="absolute top-0 right-0 w-24 h-24 bg-emerald-500/5 rounded-bl-full -mr-8 -mt-8 transition-transform group-hover:scale-110" />
-                <div className="w-12 h-12 rounded-2xl bg-emerald-50 dark:bg-emerald-950/30 flex items-center justify-center mb-4 border border-emerald-100 dark:border-emerald-900/50">
-                  <FileText className="w-6 h-6 text-emerald-600 dark:text-emerald-400" />
-                </div>
-                <h3 className="font-black text-black dark:text-zinc-50 text-lg">Saved PDFs</h3>
-                <p className="text-xs text-black/70 dark:text-zinc-400 mt-1">Catalogues & documents you've saved</p>
-                <div className="mt-4 flex items-center justify-between">
-                  <span className="text-2xl font-black text-black dark:text-zinc-50">
-                    {String(savedPosts.filter(p => p.type === 'pdf').length).padStart(2, '0')}
-                  </span>
-                  <div className="p-1.5 rounded-lg bg-slate-50 dark:bg-zinc-800 text-black/60">
-                    <ChevronRight className="w-4 h-4" />
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-
-
-          {/* Post Creation Box on User Profile - Hidden for Customers */}
-          {isOwnProfile && currentUser?.role !== 'customer' && (
-            <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-2xl p-4 shadow-sm">
-              <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-zinc-800">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-9 h-9 rounded-full overflow-hidden bg-slate-200 dark:bg-zinc-800 shrink-0 border border-slate-300 dark:border-zinc-700">
-                    {currentUser?.avatarUrl ? (
-                      <img src={currentUser.avatarUrl} alt={currentUser.name} className="w-full h-full object-cover" />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center font-bold text-xs text-black dark:text-zinc-300">
-                        {currentUser?.name?.charAt(0) || 'U'}
-                      </div>
-                    )}
-                  </div>
-                  <div>
-                    <h3 className="font-bold text-xs sm:text-sm text-black dark:text-zinc-100 flex items-center gap-1">
-                      Post to Your Profile & Feeds
-                      <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-                    </h3>
-                    <p className="text-[11px] text-black/70 dark:text-zinc-400">Share product photos, short video reels, titles & hashtags</p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setIsProfileCreateOpen(!isProfileCreateOpen)}
-                  className="bg-blue-600 hover:bg-blue-700 text-black font-bold px-3 py-1.5 rounded-xl text-xs transition-all shadow-sm flex items-center gap-1.5 cursor-pointer shrink-0"
-                >
-                  <Plus className="w-4 h-4" />
-                  {isProfileCreateOpen ? 'Close' : 'New Post'}
-                </button>
-              </div>
-
-              {isProfileCreateOpen && (
-                <form onSubmit={handlePublishFromProfile} className="mt-4 space-y-3">
-                  <div>
-                    <label className="block text-xs font-bold text-black dark:text-zinc-300 mb-1">
-                      Post Title (‡§∂‡•Ä‡§∞‡•ç‡§∑‡§ï)
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="Enter post title"
-                      value={postTitle}
-                      onChange={e => setPostTitle(e.target.value)}
-                      className="w-full bg-slate-50 dark:bg-zinc-800/80 border border-slate-200 dark:border-zinc-700 rounded-xl px-3.5 py-2 text-xs sm:text-sm text-black dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-black dark:text-zinc-300 mb-1">
-                      Description (‡§µ‡§ø‡§µ‡§∞‡§£)
-                    </label>
-                    <textarea
-                      rows={3}
-                      placeholder="Write description, price list, quantity details or specs..."
-                      value={postContent}
-                      onChange={e => setPostContent(e.target.value)}
-                      className="w-full bg-slate-50 dark:bg-zinc-800/80 border border-slate-200 dark:border-zinc-700 rounded-xl px-3.5 py-2 text-xs sm:text-sm text-black dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold text-black dark:text-zinc-300 mb-1">
-                      External Link / URL (YouTube, Facebook, Instagram, Website, etc.)
-                    </label>
-                    <input
-                      type="url"
-                      placeholder="Enter YouTube, Facebook, Instagram link or any other platform link..."
-                      value={postExternalLink}
-                      onChange={e => setPostExternalLink(e.target.value)}
-                      className="w-full bg-slate-50 dark:bg-zinc-800/80 border border-slate-200 dark:border-zinc-700 rounded-xl px-3.5 py-2 text-xs sm:text-sm text-black dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
-                  </div>
-
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <label className="block text-xs font-bold text-black dark:text-zinc-300">
-                        Hashtags & Tags
-                      </label>
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          if (!postTitle && !postContent) {
-                            toast.error('Please add a post title or description first');
-                            return;
-                          }
-                          setIsSuggestingProfileTags(true);
-                          try {
-                            const tags = await suggestHashtagsWithAI(postTitle, postContent);
-                            if (tags) {
-                              setPostHashtags(tags);
-                              toast.success('‚ú® AI Hashtags generated!');
-                            }
-                          } catch (e) {
-                            setPostHashtags('#vyaparbridge #morbitiles #ceramics #sanitaryware');
-                            toast.success('AI Hashtags added!');
-                          } finally {
-                            setIsSuggestingProfileTags(false);
-                          }
-                        }}
-                        disabled={isSuggestingProfileTags}
-                        className="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 font-bold flex items-center gap-1 cursor-pointer disabled:opacity-50"
-                      >
-                        {isSuggestingProfileTags ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3.5 h-3.5 text-amber-500" />}
-                        <span>Suggest with AI</span>
-                      </button>
-                    </div>
-                    <input
-                      type="text"
-                      placeholder="Enter hashtags (e.g. #tiles #morbi #sanitaryware)"
-                      value={postHashtags}
-                      onChange={e => setPostHashtags(e.target.value)}
-                      className="w-full bg-slate-50 dark:bg-zinc-800/80 border border-slate-200 dark:border-zinc-700 rounded-xl px-3.5 py-2 text-xs sm:text-sm text-black dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
-                  </div>
-
-                  {/* B2B Price Range Fields */}
-                  <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/20 dark:border-amber-500/30 space-y-2.5">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[11px] font-black uppercase text-amber-700 dark:text-amber-400 tracking-wider flex items-center gap-1.5">
-                        <span className="w-4 h-4 rounded-full bg-amber-500/20 text-center leading-4 text-xs font-black">‚Çπ</span>
-                        B2B Wholesale Price Range (‡§ï‡•Ä‡§Æ‡§§ ‡§¶‡§æ‡§Ø‡§∞‡§æ)
-                      </span>
-                      <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-800 dark:text-amber-300">
-                        Optional
-                      </span>
-                    </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                      <div>
-                        <label className="block text-[10px] font-bold text-black/70 dark:text-zinc-300 mb-0.5">
-                          Min Price (Wholesale)
-                        </label>
-                        <div className="relative">
-                          <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-bold text-black/50 dark:text-zinc-500">‚Çπ</span>
-                          <input
-                            type="number"
-                            min="0"
-                            step="any"
-                            placeholder="e.g. 150"
-                            value={postMinPrice}
-                            onChange={e => setPostMinPrice(e.target.value)}
-                            className="w-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-lg pl-6 pr-2.5 py-1.5 text-xs font-bold text-black dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-amber-500"
-                          />
-                        </div>
-                      </div>
-                      <div>
-                        <label className="block text-[10px] font-bold text-black/70 dark:text-zinc-300 mb-0.5">
-                          Max Price (Wholesale)
-                        </label>
-                        <div className="relative">
-                          <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-bold text-black/50 dark:text-zinc-500">‚Çπ</span>
-                          <input
-                            type="number"
-                            min="0"
-                            step="any"
-                            placeholder="e.g. 240"
-                            value={postMaxPrice}
-                            onChange={e => setPostMaxPrice(e.target.value)}
-                            className="w-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-lg pl-6 pr-2.5 py-1.5 text-xs font-bold text-black dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-amber-500"
-                          />
-                        </div>
-                      </div>
-                      <div>
-                        <label className="block text-[10px] font-bold text-black/70 dark:text-zinc-300 mb-0.5">
-                          Pricing Unit
-                        </label>
-                        <select
-                          value={postPriceUnit}
-                          onChange={e => setPostPriceUnit(e.target.value)}
-                          className="w-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-lg px-2.5 py-1.5 text-xs font-bold text-black dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-amber-500"
-                        >
-                          <option value="Box">Per Box</option>
-                          <option value="Sq.Ft">Per Sq.Ft</option>
-                          <option value="Sq.Mtr">Per Sq.Mtr</option>
-                          <option value="Piece">Per Piece</option>
-                          <option value="Kg">Per Kg</option>
-                          <option value="Ton">Per Ton</option>
-                        </select>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div>
-                    <input
-                      type="file"
-                      ref={profileFileInputRef}
-                      accept="image/*,video/*,.pdf,application/pdf"
-                      className="hidden"
-                      onChange={e => {
-                        const file = e.target.files?.[0];
-                        if (file) {
-                          setPostFile(file);
-                          setPostFilePreview(URL.createObjectURL(file));
-                        }
-                      }}
-                    />
-
-                    {postFilePreview ? (
-                      <div className="relative rounded-xl overflow-hidden bg-black max-h-60 flex items-center justify-center border border-slate-200 dark:border-zinc-800 my-2">
-                        {postFile?.type === 'application/pdf' || postFile?.name?.match(/\.pdf$/i) ? (
-                          <div className="w-full h-40 bg-emerald-50 dark:bg-emerald-950/40 flex flex-col items-center justify-center p-4 text-center">
-                            <FileText className="w-10 h-10 text-emerald-600 mb-1" />
-                            <span className="text-xs font-bold text-black dark:text-zinc-100 truncate max-w-xs">{postFile?.name}</span>
-                            <span className="text-[10px] text-emerald-600 mt-1">PDF Document Attached ‚úì</span>
-                          </div>
-                        ) : (postFile?.type.startsWith('video') || (postFile?.name && /\.(mp4|webm|mov|m4v|mkv)$/i.test(postFile.name))) && postFilePreview ? (
-                          <video preload="metadata" src={postFilePreview} controls playsInline muted className="max-h-60 w-full object-cover" />
-                        ) : (
-                          <img src={postFilePreview} alt="Preview" className="max-h-60 w-full object-cover" />
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setPostFile(null);
-                            setPostFilePreview(null);
-                          }}
-                          className="absolute top-2 right-2 bg-black/70 hover:bg-black text-black p-1.5 rounded-full cursor-pointer"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="flex items-center gap-3 pt-1">
-                        <button
-                          type="button"
-                          onClick={() => profileFileInputRef.current?.click()}
-                          className="bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 dark:hover:bg-zinc-700 text-black dark:text-zinc-300 px-3.5 py-2 rounded-xl text-xs font-bold transition-colors flex items-center gap-2 cursor-pointer border border-slate-200 dark:border-zinc-700"
-                        >
-                          <Image className="w-4 h-4 text-blue-500" /> Upload Image / Photo
-                        </button>
-                        {currentUser?.role !== 'customer' && (
-                          <button
-                            type="button"
-                            onClick={() => profileFileInputRef.current?.click()}
-                            className="bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 dark:hover:bg-zinc-700 text-black dark:text-zinc-300 px-3.5 py-2 rounded-xl text-xs font-bold transition-colors flex items-center gap-2 cursor-pointer border border-slate-200 dark:border-zinc-700"
-                          >
-                            <Film className="w-4 h-4 text-purple-500" /> Upload Reel / Video
-                          </button>
-                        )}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="flex justify-end gap-2 pt-2 border-t border-slate-100 dark:border-zinc-800">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsProfileCreateOpen(false);
-                        setPostFile(null);
-                        setPostFilePreview(null);
-                      }}
-                      className="px-4 py-2 rounded-xl text-xs font-bold text-black/70 hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="submit"
-                      disabled={isPublishingPost}
-                      className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-black font-bold px-5 py-2 rounded-xl text-xs transition-all shadow-md flex items-center gap-2 cursor-pointer disabled:opacity-50"
-                    >
-                      {isPublishingPost ? (
-                        <>
-                          <Loader2 className="w-4 h-4 animate-spin" /> Publishing...
-                        </>
-                      ) : (
-                        <>
-                          <Send className="w-4 h-4" /> Publish Post
-                        </>
-                      )}
-                    </button>
-                  </div>
-                </form>
-              )}
-            </div>
-          )}
-          {/* Posts Wall Feed */}
-          <div className="flex flex-col gap-4">
-            {userPosts.filter(p => p && p.id).map((post, idx) => (
-              <PostItem
-                key={post.id}
-                post={post}
-                currentUser={currentUser}
-                onPostDeleted={(id) => {
-                  setUserPosts(prev => prev.filter(p => String(p.id) !== String(id)));
-                  setSavedPosts(prev => prev.filter(p => String(p.id) !== String(id)));
-                }}
-                onPostClick={() => setActiveProfilePostIndex(idx)}
-              />
-            ))}
-            {userPosts.length === 0 && (
-              <div className="py-16 text-center text-black/60 font-medium">
-                No posts found on this profile wall yet.
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-      {activeTab === "reels" && (
-        <div className="space-y-6">
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-1 sm:gap-2">
-            {userPosts.filter(p => p && p.id && (p.type === "video" || p.type === "reel" || p.isReel || (p.hashtags && p.hashtags.includes("#reel")))).map((reel, idx, arr) => (
-              <div 
-                key={reel.id} 
-                onClick={() => setActiveProfilePostIndex(idx)}
-                className="aspect-[9/16] bg-slate-900 rounded-xl sm:rounded-2xl overflow-hidden relative group cursor-pointer border border-slate-200 dark:border-zinc-800 shadow-sm"
-              >
-                <img 
-                  src={reel.thumbnailUrl || reel.mediaUrl || "https://images.unsplash.com/photo-1611162617474-5b21e879e113?auto=format&fit=crop&w=800&q=80"} 
-                  alt="Reel thumbnail" 
-                  className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
-                />
-                
-                {/* Shortage & Price badges on Reel card */}
-                {Boolean(reel.isShortcut || reel.stockStatus === 'out_of_stock') && (
-                  <div className="absolute top-2 left-2 z-10 px-2 py-0.5 rounded-full bg-red-600/90 text-white text-[10px] font-black shadow-md border border-red-400 backdrop-blur-xs flex items-center gap-1 animate-pulse">
-                    <span>‚ö†Ô∏è</span>
-                    <span>Shortage</span>
-                  </div>
-                )}
-                {Boolean(reel.minRate || reel.maxRate) && (
-                  <div className="absolute top-2 right-2 z-10 px-2 py-0.5 rounded-full bg-black/80 text-amber-300 text-[10px] font-black shadow-md border border-amber-500/40 backdrop-blur-xs">
-                    ‚Çπ{reel.minRate && reel.maxRate ? `${reel.minRate}-${reel.maxRate}` : reel.minRate ? `${reel.minRate}+` : `Upto ${reel.maxRate}`}
-                  </div>
-                )}
-
-                <div className="absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-black/80"></div>
-                <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/20">
-                  <div className="w-10 h-10 rounded-full bg-white/20 backdrop-blur-md flex items-center justify-center">
-                    <Film className="w-5 h-5 text-white" />
-                  </div>
-                </div>
-                <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between text-white">
-                  <div className="flex items-center gap-1.5 text-xs font-medium">
-                    <Heart className="w-3.5 h-3.5" />
-                    {(reel.likes || []).length}
-                  </div>
-                  <div className="flex items-center gap-1.5 text-xs font-medium">
-                    <MessageSquare className="w-3.5 h-3.5" />
-                    {(reel.comments || []).length}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-          {userPosts.filter(p => p.type === 'video' || p.type === 'reel' || p.isReel || (p.hashtags && p.hashtags.includes('#reel'))).length === 0 && (
-            <div className="py-16 text-center text-black/60 font-medium flex flex-col items-center justify-center">
-              <Film className="w-12 h-12 mb-3 text-black/20" />
-              <p>No reels found on this profile yet.</p>
-            </div>
-          )}
-        </div>
-      )}
-
-      {activeTab === 'stories' && (
-        <div className="space-y-6">
-          {(() => {
-            const myStoredStories = (() => {
-              try {
-                const s = localStorage.getItem('vyapar_my_stories');
-                return s ? JSON.parse(s) : [];
-              } catch (e) { return []; }
-            })();
-            const candidateStories = [...(isOwnProfile ? myStoredStories : []), ...(userPosts || [])];
-            const storyMap = new Map<string, any>();
-            candidateStories.forEach(p => {
-              if (!p || !p.id) return;
-              const hasMedia = Boolean(p.mediaUrl || p.thumbnailUrl || p.videoUrl || p.video);
-              const isStoryOrReel = p.type === 'video' || p.type === 'reel' || p.type === 'story' || p.isStory || p.isReel || Boolean(p.hashtags && (p.hashtags.includes('#reel') || p.hashtags.includes('#story'))) || p.title === 'New B2B Reel' || p.title === 'New B2B Story' || p.content === 'Uploaded from Reels' || p.content === 'Uploaded Story & Reel' || (p.mediaUrl && (p.mediaUrl.endsWith('.mp4') || p.mediaUrl.endsWith('.webm') || p.mediaUrl.includes('/uploads/')));
-              if (hasMedia && isStoryOrReel && !storyMap.has(String(p.id))) {
-                storyMap.set(String(p.id), p);
-              }
-            });
-            const profileStories = Array.from(storyMap.values());
-
-            if (profileStories.length === 0) {
-              return (
-                <div className="py-16 text-center text-slate-500 dark:text-zinc-400 font-medium flex flex-col items-center justify-center">
-                  <Sparkles className="w-12 h-12 mb-3 text-amber-500/40 animate-pulse" />
-                  <h4 className="font-bold text-black dark:text-zinc-200 mb-1">No Stories or Highlights Yet</h4>
-                  <p className="text-xs text-slate-500 dark:text-zinc-400 max-w-sm">
-                    Stories & video highlights uploaded to your wall or stories will appear here for showroom tours and product showcases.
-                  </p>
-                </div>
-              );
-            }
-
-            return (
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 sm:gap-4">
-                {profileStories.map((story: any, idx: number) => {
-                  let createdAtMs = Date.now();
-                  if (story.createdAt) {
-                    if (typeof story.createdAt === 'number' && story.createdAt > 1000000000) createdAtMs = story.createdAt;
-                    else if (typeof story.createdAt === 'object' && story.createdAt.seconds) createdAtMs = story.createdAt.seconds * 1000;
-                    else if (typeof story.createdAt === 'string') {
-                      const num = Number(story.createdAt);
-                      if (!isNaN(num) && num > 1000000000) createdAtMs = num;
-                      else {
-                        const parsed = new Date(story.createdAt).getTime();
-                        if (!isNaN(parsed) && parsed > 1000000000) createdAtMs = parsed;
-                      }
-                    }
-                  }
-                  const isPermanentStory = story.isPermanent === true || story.postedFrom === 'profile' || story.isPermanent == 'true';
-                  const hoursRemaining = isPermanentStory ? 24 : Math.max(0.1, 24 - (Date.now() - createdAtMs) / (3600 * 1000));
-                  const isRecentStory = hoursRemaining > 0.1 && (Date.now() - createdAtMs) < 24 * 3600 * 1000;
-
-                  return (
-                    <div 
-                      key={story.id || idx}
-                      onClick={() => setActiveHighlightIndex(idx)}
-                      className="aspect-[9/16] bg-slate-900 rounded-2xl overflow-hidden relative group cursor-pointer border border-amber-500/30 shadow-md hover:border-amber-500 transition-all"
-                    >
-                      {story.thumbnailUrl ? (
-                        <img 
-                          src={story.thumbnailUrl} 
-                          alt={story.title || 'Story thumbnail'} 
-                          className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
-                          onError={(e) => {
-                            if (story.mediaUrl && !story.mediaUrl.startsWith('data:video')) {
-                              e.currentTarget.src = story.mediaUrl;
-                            }
-                          }}
-                        />
-                      ) : (story.type === 'video' || story.isReel || story.mediaUrl?.match(/\.(mp4|webm|mov|m4v)/i)) ? (
-                        <video 
-                          src={story.mediaUrl}
-                          className="w-full h-full object-cover"
-                          preload="metadata"
-                          muted
-                          playsInline
-                        />
-                      ) : (
-                        <img 
-                          src={story.mediaUrl} 
-                          alt={story.title || 'Story thumbnail'} 
-                          className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
-                        />
-                      )}
-
-                      {/* Top Badges */}
-                      <div className="absolute top-2 left-2 z-10 flex items-center gap-1.5">
-                        <span className="px-2 py-0.5 rounded-full bg-gradient-to-r from-amber-500 to-orange-500 text-white text-[10px] font-black shadow-md flex items-center gap-1">
-                          <Sparkles className="w-3 h-3" />
-                          {isRecentStory ? `${Math.floor(hoursRemaining)}h left` : 'Highlight'}
-                        </span>
-                      </div>
-
-                      {/* Overlay Gradient */}
-                      <div className="absolute inset-0 bg-gradient-to-b from-black/40 via-transparent to-black/85" />
-
-                      {/* Center Play Icon */}
-                      <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/20">
-                        <div className="w-12 h-12 rounded-full bg-amber-500/90 text-white backdrop-blur-md flex items-center justify-center shadow-lg transform group-hover:scale-110 transition-transform">
-                          <Play className="w-6 h-6 fill-white ml-0.5" />
-                        </div>
-                      </div>
-
-                      {/* Bottom Info */}
-                      <div className="absolute bottom-2 left-2 right-2 text-white">
-                        <p className="text-xs font-bold truncate drop-shadow-md">{story.title || story.content || 'Showroom Story'}</p>
-                        <p className="text-[10px] text-amber-200/90 font-medium truncate">{story.hashtags || '#story #tiles #b2b'}</p>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            );
-          })()}
-        </div>
-      )}
-
-      {activeTab === 'saved' && isOwnProfile && (
-        <div>
-          <div className="flex items-center justify-between mb-4 px-1">
-            <div className="flex items-center gap-2 overflow-x-auto pb-1 no-scrollbar shrink-0 max-w-[65%]">
-              <button 
-                onClick={() => setSavedFilter('all')}
-                className={cn(
-                  "px-3 py-1.5 rounded-full text-[10px] font-bold transition-all border whitespace-nowrap",
-                  savedFilter === 'all' 
-                    ? "bg-white text-black border-slate-900 dark:bg-zinc-100 dark:text-zinc-900 dark:border-zinc-100" 
-                    : "bg-white text-black/70 border-slate-200 dark:bg-zinc-900 dark:text-zinc-400 dark:border-zinc-800"
-                )}
-              >
-                All Items
-              </button>
-              <button 
-                onClick={() => setSavedFilter('reels')}
-                className={cn(
-                  "px-3 py-1.5 rounded-full text-[10px] font-bold transition-all border whitespace-nowrap flex items-center gap-1",
-                  savedFilter === 'reels' 
-                    ? "bg-pink-600 text-black border-pink-600" 
-                    : "bg-white text-black/70 border-slate-200 dark:bg-zinc-900 dark:text-zinc-400 dark:border-zinc-800"
-                )}
-              >
-                <Film className="w-3 h-3" /> Reels
-              </button>
-              <button 
-                onClick={() => setSavedFilter('images')}
-                className={cn(
-                  "px-3 py-1.5 rounded-full text-[10px] font-bold transition-all border whitespace-nowrap flex items-center gap-1",
-                  savedFilter === 'images' 
-                    ? "bg-blue-600 text-white border-blue-600" 
-                    : "bg-white text-black/70 border-slate-200 dark:bg-zinc-900 dark:text-zinc-400 dark:border-zinc-800"
-                )}
-              >
-                <Image className="w-3 h-3" /> Images
-              </button>
-              <button 
-                onClick={() => setSavedFilter('pdfs')}
-                className={cn(
-                  "px-3 py-1.5 rounded-full text-[10px] font-bold transition-all border whitespace-nowrap flex items-center gap-1",
-                  savedFilter === 'pdfs' 
-                    ? "bg-emerald-600 text-white border-emerald-600" 
-                    : "bg-white text-black/70 border-slate-200 dark:bg-zinc-900 dark:text-zinc-400 dark:border-zinc-800"
-                )}
-              >
-                <FileText className="w-3 h-3" /> PDFs
-              </button>
-            </div>
-            <span className="text-[10px] font-bold text-black/60 dark:text-zinc-500 bg-slate-100 dark:bg-zinc-800/50 px-2 py-1 rounded-md">
-              {savedPosts.filter(p => {
-                if (savedFilter === 'all') return true;
-                if (savedFilter === 'reels') return p.type === 'video';
-                if (savedFilter === 'images') return p.type === 'image' || !p.type;
-                if (savedFilter === 'pdfs') return p.type === 'pdf';
-                return true;
-              }).length} items
-            </span>
-          </div>
-
-          <div className="grid grid-cols-3 gap-1 sm:gap-4">
-            {savedPosts.filter(p => {
-              if (savedFilter === 'all') return true;
-              if (savedFilter === 'reels') return p.type === 'video';
-              if (savedFilter === 'images') return p.type === 'image' || !p.type;
-              if (savedFilter === 'pdfs') return p.type === 'pdf';
-              return true;
-            }).map((post, idx) => (
-              <div 
-                key={post.id} 
-                onClick={() => {
-                  setSelectedProfilePost(post);
-                }} 
-                className="relative aspect-square bg-slate-100 dark:bg-zinc-800 rounded-lg overflow-hidden group cursor-pointer shadow-sm border border-slate-200 dark:border-zinc-800/50"
-              >
-                {post.type === 'video' && post.mediaUrl ? (
-                  <div className="relative w-full h-full bg-zinc-900 flex items-center justify-center">
-                    {post.thumbnailUrl ? (
-                      <img 
-                        src={post.thumbnailUrl} 
-                        alt={post.title || 'Saved Video'} 
-                        className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" 
-                        loading="lazy"
-                        onError={(e) => {
-                          e.currentTarget.style.display = 'none';
-                        }}
-                      />
-                    ) : null}
-                    <div className="absolute top-2 left-2 p-1 rounded-full bg-black/60 text-white backdrop-blur-sm">
-                      <Film className="w-3.5 h-3.5" />
-                    </div>
-                  </div>
-                ) : post.type === 'pdf' ? (
-                  <PdfCardViewer post={post} variant="grid" />
-                ) : (
-                  <img src={post.mediaUrl} alt={post.title} className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />
-                )}
-                
-                <div className="absolute top-2 right-2 bg-black/60 p-1.5 rounded-full text-black">
-                  {post.type === 'pdf' ? <FileText className="w-3 h-3" /> : <Bookmark className="w-3 h-3 fill-white" />}
-                </div>
-
-                <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center p-3 text-center text-black font-bold text-xs">
-                  <p className="mb-2 line-clamp-2">{post.title}</p>
-                  {post.type !== 'pdf' ? (
-                    <div className="flex gap-4">
-                      <span className="flex items-center gap-1"><Heart className="w-4 h-4 fill-white" /> {post.likesCount || 0}</span>
-                      <span className="flex items-center gap-1"><MessageCircle className="w-4 h-4 fill-white" /> {post.commentsCount || 0}</span>
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-1 bg-emerald-600 px-3 py-1 rounded-full text-[10px]">
-                      <ExternalLink className="w-3 h-3" /> View Catalogue
-                    </div>
-                  )}
-                </div>
-                
-                {post.user && (
-                  <div className="absolute bottom-1 left-1 right-1 flex items-center gap-1 bg-black/40 backdrop-blur-md rounded-md p-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <img src={post.user.avatarUrl} className="w-4 h-4 rounded-full border border-white/20" alt="" />
-                    <span className="text-[8px] text-black truncate">{post.user.name}</span>
-                  </div>
-                )}
-              </div>
-            ))}
-            {savedPosts.filter(p => {
-              if (savedFilter === 'all') return true;
-              if (savedFilter === 'reels') return p.type === 'video';
-              if (savedFilter === 'images') return p.type === 'image' || !p.type;
-              if (savedFilter === 'pdfs') return p.type === 'pdf';
-              return true;
-            }).length === 0 && (
-              <div className="col-span-3 py-20 flex flex-col items-center justify-center text-black/60 dark:text-zinc-400">
-                <div className="w-16 h-16 rounded-full bg-rose-50 dark:bg-rose-950/20 flex items-center justify-center mb-4">
-                  <Bookmark className="w-8 h-8 text-rose-500 opacity-60" />
-                </div>
-                <p className="font-bold text-sm text-center max-w-md px-4 text-slate-800 dark:text-zinc-200">
-                  Aapka Wishlist khaali hai!
-                </p>
-                <p className="text-xs text-center max-w-sm px-4 mt-1 text-slate-500 dark:text-zinc-400">
-                  Apne pasandida items ko save karein taaki unhe kabhi bhi direct order ya inquiry kar sakein.
-                </p>
-                <button 
-                  onClick={() => setActiveTab('posts')}
-                  className="mt-4 bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs px-4 py-2 rounded-full cursor-pointer transition-colors shadow-sm"
-                >
-                  Explore Feed & Save Items
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {activeTab === 'archive' && isOwnProfile && (
-        <div className="text-center py-12 text-black/70 dark:text-zinc-400">
-          <Film className="w-12 h-12 mx-auto mb-3 opacity-50" />
-          <h4 className="font-semibold text-black dark:text-zinc-200 mb-1">Archive is Empty</h4>
-          <p className="text-sm">Posts you archive will only be visible to you here.</p>
-        </div>
-      )}
-
-      {/* Lightbox Modal for See Cover Image */}
-      {isSeeCoverOpen && userToDisplay.coverUrl && (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/85 backdrop-blur-sm p-4" onClick={() => setIsSeeCoverOpen(false)}>
-          <div className="relative max-w-4xl w-full bg-zinc-900 rounded-2xl overflow-hidden shadow-2xl flex flex-col" onClick={e => e.stopPropagation()}>
-            <div className="p-4 flex items-center justify-between border-b border-zinc-800 text-black">
-              <h3 className="font-semibold text-lg flex items-center gap-2">
-                <Image className="w-5 h-5 text-blue-600" /> Cover Photo
-              </h3>
-              <button onClick={() => setIsSeeCoverOpen(false)} className="p-1.5 hover:bg-zinc-800 rounded-full transition-colors text-zinc-400 hover:text-black cursor-pointer">
-                <XCircle className="w-6 h-6" />
-              </button>
-            </div>
-            <div className="p-2 flex items-center justify-center bg-black min-h-[300px]">
-              <img src={userToDisplay.coverUrl} alt="Cover Full View" className="max-h-[75vh] w-auto max-w-full object-contain rounded-lg" />
-            </div>
-            <div className="p-4 border-t border-zinc-800 flex justify-end gap-3 bg-zinc-900">
-              {isOwnProfile && (
-                <>
-                  <button 
-                    onClick={() => {
-                      setImageToCrop(userToDisplay.coverUrl);
-                      setIsSeeCoverOpen(false);
-                      setIsCropModalOpen(true);
-                    }}
-                    className="bg-zinc-800 hover:bg-zinc-700 text-emerald-400 px-4 py-2 rounded-lg text-sm font-semibold transition-colors flex items-center gap-2 cursor-pointer"
-                  >
-                    <Crop className="w-4 h-4" /> Crop Cover
-                  </button>
-                  <button 
-                    onClick={() => { handleToggleCoverFit(); }}
-                    className="bg-zinc-800 hover:bg-zinc-700 text-amber-400 px-4 py-2 rounded-lg text-sm font-semibold transition-colors flex items-center gap-2 cursor-pointer"
-                  >
-                    <Maximize2 className="w-4 h-4" /> 
-                    {userToDisplay.coverFit === 'contain' ? 'Banner Crop (Fill)' : 'Full Image (Fit)'}
-                  </button>
-                  <button 
-                    onClick={() => { setIsSeeCoverOpen(false); coverFileRef.current?.click(); }}
-                    className="bg-blue-600 hover:bg-blue-700 text-black px-4 py-2 rounded-lg text-sm font-semibold transition-colors flex items-center gap-2 cursor-pointer"
-                  >
-                    <Camera className="w-4 h-4" /> Change Cover
-                  </button>
-                </>
-              )}
-              <button 
-                onClick={() => setIsSeeCoverOpen(false)} 
-                className="bg-zinc-800 hover:bg-zinc-700 text-black px-4 py-2 rounded-lg text-sm font-semibold transition-colors cursor-pointer"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Lightbox Modal for See Avatar Image */}
-      {isSeeAvatarOpen && userToDisplay.avatarUrl && (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/85 backdrop-blur-sm p-4" onClick={() => setIsSeeAvatarOpen(false)}>
-          <div className="relative max-w-md w-full bg-zinc-900 rounded-2xl overflow-hidden shadow-2xl flex flex-col" onClick={e => e.stopPropagation()}>
-            <div className="p-4 flex items-center justify-between border-b border-zinc-800 text-black">
-              <h3 className="font-semibold text-lg flex items-center gap-2">
-                <Image className="w-5 h-5 text-blue-600" /> Profile Picture
-              </h3>
-              <button onClick={() => setIsSeeAvatarOpen(false)} className="p-1.5 hover:bg-zinc-800 rounded-full transition-colors text-zinc-400 hover:text-black cursor-pointer">
-                <XCircle className="w-6 h-6" />
-              </button>
-            </div>
-            <div className="p-6 flex items-center justify-center bg-black">
-              <img src={userToDisplay.avatarUrl} alt="Avatar Full View" className="w-64 h-64 object-cover rounded-full border-4 border-zinc-700 shadow-xl" />
-            </div>
-            <div className="p-4 border-t border-zinc-800 flex justify-end gap-3 bg-zinc-900">
-              {isOwnProfile && (
-                <button 
-                  onClick={() => { setIsSeeAvatarOpen(false); avatarFileRef.current?.click(); }}
-                  className="bg-blue-600 hover:bg-blue-700 text-black px-4 py-2 rounded-lg text-sm font-semibold transition-colors flex items-center gap-2 cursor-pointer"
-                >
-                  <Camera className="w-4 h-4" /> Change Photo
-                </button>
-              )}
-              <button 
-                onClick={() => setIsSeeAvatarOpen(false)} 
-                className="bg-zinc-800 hover:bg-zinc-700 text-black px-4 py-2 rounded-lg text-sm font-semibold transition-colors cursor-pointer"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Edit Profile Modal */}
-      {isOwnProfile && (
-        <EditProfileModal 
-          isOpen={isEditModalOpen} 
-          onClose={() => setIsEditModalOpen(false)} 
-          user={currentUser} 
-          onSave={(updatedUser) => {
-            onUpdateUser(updatedUser);
-            setProfileUser(updatedUser);
-            setIsEditModalOpen(false);
-          }} 
-          onOpenVerify={() => setIsVerifyModalOpen(true)}
-        />
-      )}
-
-      {/* Verified Payment & QR Code Modal */}
-      {isOwnProfile && (
-        <VerifiedPaymentModal 
-          isOpen={isVerifyModalOpen} 
-          onClose={() => setIsVerifyModalOpen(false)} 
-          user={currentUser} 
-          onSuccess={(updatedUser) => {
-            onUpdateUser(updatedUser);
-            setProfileUser(updatedUser);
-            setIsVerifyModalOpen(false);
-          }} 
-        />
-      )}
-
-      {/* VYAPAR BRIDGE Approval Center Modal */}
-      <ApprovalCenterModal 
-        isOpen={isApprovalCenterOpen} 
-        onClose={() => setIsApprovalCenterOpen(false)} 
-        user={profileUser}
-        userPosts={userPosts}
-        onOpenVerify={() => setIsVerifyModalOpen(true)}
-      />
-
-      {/* Report User Modal */}
-      <ReportModal
-        isOpen={isReportUserModalOpen}
-        onClose={() => setIsReportUserModalOpen(false)}
-        currentUser={currentUser}
-        targetType="user"
-        targetId={userToDisplay.id}
-        targetName={userToDisplay.name}
-      />
-
-      {/* Interactive Cover Image Cropper & Adjuster Modal */}
-      <ImageCropperModal 
-        isOpen={isCropModalOpen}
-        imageSrc={imageToCrop}
-        onClose={() => setIsCropModalOpen(false)}
-        onSave={async (croppedDataUrl) => {
-          const updated = { ...currentUser, coverUrl: croppedDataUrl };
-          onUpdateUser(updated);
-          setProfileUser(updated);
-          setIsCropModalOpen(false);
-          toast.success('Cover image cropped and updated!');
-          try {
-            await fetch(`/api/users/${currentUser?.id || '1'}`, {
-              method: 'PUT',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ coverUrl: croppedDataUrl })
-            });
-          } catch (err) {
-            console.error(err);
-          }
-        }}
-      />
-
-      {/* Fullscreen Feed Viewer Modal for Profile Posts */}
-      {activeProfilePostIndex !== null && (
-        <FullScreenFeedViewerModal
-          posts={activeTab === 'reels' ? (
-            userPosts.filter(p => p.type === 'video' || p.type === 'reel' || p.isReel || (p.hashtags && p.hashtags.includes('#reel')))
-          ) : userPosts}
-          initialIndex={activeProfilePostIndex}
-          currentUser={currentUser}
-          onClose={() => setActiveProfilePostIndex(null)}
-        />
-      )}
-
-      {/* Fullscreen Feed Viewer Modal for Highlights & Stories */}
-      {activeHighlightIndex !== null && (
-        <FullScreenFeedViewerModal
-          posts={(() => {
-            const myStoredStories = (() => {
-              try {
-                const s = localStorage.getItem('vyapar_my_stories');
-                return s ? JSON.parse(s) : [];
-              } catch (e) { return []; }
-            })();
-            const candidateStories = [...(isOwnProfile ? myStoredStories : []), ...(userPosts || [])];
-            const storyMap = new Map<string, any>();
-            candidateStories.forEach(p => {
-              if (!p || !p.id) return;
-              const hasMedia = Boolean(p.mediaUrl || p.thumbnailUrl || p.videoUrl || p.video);
-              const isStoryOrReel = p.type === 'video' || p.type === 'reel' || p.type === 'story' || p.isStory || p.isReel || Boolean(p.hashtags && (p.hashtags.includes('#reel') || p.hashtags.includes('#story'))) || p.title === 'New B2B Reel' || p.title === 'New B2B Story' || p.content === 'Uploaded from Reels' || p.content === 'Uploaded Story & Reel' || (p.mediaUrl && (p.mediaUrl.endsWith('.mp4') || p.mediaUrl.endsWith('.webm') || p.mediaUrl.includes('/uploads/')));
-              if (hasMedia && isStoryOrReel && !storyMap.has(String(p.id))) {
-                storyMap.set(String(p.id), p);
-              }
-            });
-            return Array.from(storyMap.values());
-          })()}
-          initialIndex={activeHighlightIndex}
-          currentUser={currentUser}
-          onClose={() => setActiveHighlightIndex(null)}
-        />
-      )}
-
-      {/* Fullscreen Feed Viewer Modal for Saved Posts */}
-
-      {activeSavedPostIndex !== null && (
-        <FullScreenFeedViewerModal
-          posts={savedPosts}
-          initialIndex={activeSavedPostIndex}
-          currentUser={currentUser}
-          onClose={() => setActiveSavedPostIndex(null)}
-        />
-      )}
-
-      {/* Selected Profile Post Detail Lightbox Modal Fallback */}
-      {selectedProfilePost && (
-        <FullScreenFeedViewerModal
-          posts={[selectedProfilePost]}
-          initialIndex={0}
-          currentUser={currentUser}
-          onClose={() => setSelectedProfilePost(null)}
-        />
-      )}
-
-      {/* Offer Token Generator Modal */}
-      <OfferTokenGeneratorModal 
-        isOpen={isOfferTokenModalOpen} 
-        onClose={() => setIsOfferTokenModalOpen(false)} 
-        currentUser={currentUser || userToDisplay} 
-        savedPosts={savedPosts} 
-      />
-
-      {/* Customer / Buyer Cart & Discount Coupons Modal */}
-      <CustomerCartCouponsModal
-        isOpen={isCartCouponsModalOpen}
-        onClose={() => setIsCartCouponsModalOpen(false)}
-        currentUser={currentUser || activeCurrentUser || userToDisplay}
-      />
-
-      {/* Seller Discount Scanner & Claim Modal */}
-      <SellerDiscountScannerModal
-        isOpen={isDiscountScannerModalOpen}
-        onClose={() => setIsDiscountScannerModalOpen(false)}
-        currentUser={currentUser || activeCurrentUser || userToDisplay}
-        onDiscountSaved={(discount, newCount) => {
-          setSellerDiscountsCount(newCount);
-          if (onUpdateUser && activeCurrentUser) {
-            onUpdateUser({ ...activeCurrentUser, totalDiscountsCount: newCount });
-          }
-        }}
-      />
-
-      {/* Connections Modal */}
-      {isConnectionsModalOpen && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200" onClick={() => setIsConnectionsModalOpen(false)}>
-          <div className="bg-white dark:bg-zinc-950 border border-slate-200 dark:border-zinc-800 rounded-3xl w-full max-w-md shadow-2xl relative text-black dark:text-zinc-50 h-[80vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between p-4 border-b border-slate-100 dark:border-zinc-800 shrink-0">
-              <h3 className="font-black text-lg">Connections</h3>
-              <button onClick={() => setIsConnectionsModalOpen(false)} className="p-1.5 rounded-full hover:bg-slate-100 dark:hover:bg-zinc-800 cursor-pointer">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="flex border-b border-slate-100 dark:border-zinc-800 shrink-0">
-              <button 
-                className={cn("flex-1 py-3 text-sm font-bold border-b-2 transition-colors", connectionsModalTab === 'followers' ? "border-blue-600 text-blue-600 dark:text-blue-400" : "border-transparent text-slate-500")}
-                onClick={() => setConnectionsModalTab('followers')}
-              >
-                Followers ({targetFollowers.length})
-              </button>
-              <button 
-                className={cn("flex-1 py-3 text-sm font-bold border-b-2 transition-colors", connectionsModalTab === 'following' ? "border-blue-600 text-blue-600 dark:text-blue-400" : "border-transparent text-slate-500")}
-                onClick={() => setConnectionsModalTab('following')}
-              >
-                Following ({targetFollowing.length})
-              </button>
-              <button 
-                className={cn("flex-1 py-3 text-sm font-bold border-b-2 transition-colors", connectionsModalTab === 'suggested' ? "border-blue-600 text-blue-600 dark:text-blue-400" : "border-transparent text-slate-500")}
-                onClick={() => setConnectionsModalTab('suggested')}
-              >
-                Suggested
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto p-4 space-y-4 no-scrollbar">
-              {(() => {
-                const list = connectionsModalTab === 'followers' ? targetFollowers : (connectionsModalTab === 'following' ? targetFollowing : suggestedMembers);
-                if (list.length === 0) {
-                  return <div className="text-center py-10 text-slate-500 font-medium">No users found.</div>;
-                }
-                return list.map(u => (
-                  <ConnectionsUserRow 
-                    key={u.id}
-                    u={u}
-                    currentUser={currentUser || activeCurrentUser}
-                    onClose={() => setIsConnectionsModalOpen(false)}
-                    setProfileUser={setProfileUser}
-                    navigate={navigate}
-                  />
-                ));
-              })()}
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-
-
-function RightSidebar({ 
-  user, 
-  suggestedUsers,
-  onOpenSettingsDrawer,
-  onOpenAuthModal,
-  onUpdateUser
-}: { 
-  user: any; 
-  suggestedUsers: any[];
-  onOpenSettingsDrawer?: () => void;
-  onOpenAuthModal?: () => void;
-  onUpdateUser?: (u: any) => void;
-}) {
-  const [isUploading, setIsUploading] = useState(false);
-  const [followedMap, setFollowedMap] = useState<Record<string, boolean>>({});
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  const filteredSuggestedUsers = useMemo(() => {
-    if (!Array.isArray(suggestedUsers)) return [];
-    const myId = String(user?.id || '').trim().toLowerCase();
-    const myName = String(user?.name || user?.companyName || '').trim().toLowerCase();
-    const myUsername = String(user?.username || '').trim().toLowerCase();
-    const filtered = suggestedUsers.filter(u => {
-      const uid = String(u?.id || u?.userId || u?.username || '').trim().toLowerCase();
-      const uname = String(u?.name || u?.companyName || u?.displayName || '').trim().toLowerCase();
-      if (myId && (uid === myId || uname === myId)) return false;
-      if (myName && (uname === myName || uid === myName)) return false;
-      if (myUsername && (uid === myUsername || uname === myUsername)) return false;
-      return true;
-    });
-    
-    // Sort logic: Golden users at the top, then Blue tick, then others
-    return filtered.sort((a, b) => {
-      const isAGolden = a.goldenBadge || a.verifiedPlan === 'yearly';
-      const isBGolden = b.goldenBadge || b.verifiedPlan === 'yearly';
-      const isABlue = a.isVerified;
-      const isBBlue = b.isVerified;
-      
-      if (isAGolden && !isBGolden) return -1;
-      if (!isAGolden && isBGolden) return 1;
-      
-      if (isABlue && !isBBlue) return -1;
-      if (!isABlue && isBBlue) return 1;
-      
-      return 0;
-    });
-  }, [suggestedUsers, user]);
-
-  useEffect(() => {
-    const syncFollow = () => {
-      const currentFollowed = getFollowedUsers();
-      const newMap: Record<string, boolean> = {};
-      if (Array.isArray(filteredSuggestedUsers)) {
-        filteredSuggestedUsers.forEach(u => {
-          const uid = String(u?.id || u?.userId || u?.username || '');
-          if (uid) {
-            newMap[uid] = currentFollowed.includes(uid);
-          }
-        });
-      }
-      setFollowedMap(newMap);
-    };
-
-    syncFollow();
-    window.addEventListener('followedUsersUpdated', syncFollow);
-    return () => window.removeEventListener('followedUsersUpdated', syncFollow);
-  }, [filteredSuggestedUsers]);
-
-  const handleFollowToggle = async (e: React.MouseEvent, targetUser: any) => {
-    e.preventDefault();
-    e.stopPropagation();
-
-    const targetId = String(targetUser.id || targetUser.userId || targetUser.username || '');
-    if (!targetId) return;
-
-    if (!user?.id) {
-      if (onOpenAuthModal) {
-        onOpenAuthModal();
-      } else {
-        toast.error('Please login to follow businesses and creators');
-      }
-      return;
-    }
-
-    const userName = targetUser.name || targetUser.companyName || targetUser.displayName || targetUser.username || 'User';
-    const nextStatus = toggleFollowUser(targetId);
-
-    // Optimistic UI state update
-    setFollowedMap(prev => ({ ...prev, [targetId]: nextStatus }));
-
-    // Update target user followers count & current user following count
-    const delta = nextStatus ? 1 : -1;
-    const currentTargetFollowers = Number(targetUser.followersCount || targetUser.followers?.length || 0);
-    const updatedTargetFollowers = Math.max(0, currentTargetFollowers + delta);
-    targetUser.followersCount = updatedTargetFollowers;
-
-    if (user) {
-      const currentMyFollowing = Number(user.followingCount || user.following?.length || 0);
-      const updatedUserFollowing = Math.max(0, currentMyFollowing + delta);
-      const updatedCurrentUser = {
-        ...user,
-        followingCount: updatedUserFollowing,
-        following: nextStatus 
-          ? Array.from(new Set([...(user.following || []), targetId]))
-          : (user.following || []).filter((id: string) => id !== targetId)
-      };
-      if (onUpdateUser) {
-        onUpdateUser(updatedCurrentUser);
-      }
-      try {
-        safeSaveUser(updatedCurrentUser);
-        syncUserToFirestore(updatedCurrentUser).catch(() => {});
-      } catch (err) {}
-    }
-
-    // Sync target user to Firestore
-    try {
-      syncUserToFirestore({
-        ...targetUser,
-        id: targetId,
-        followersCount: updatedTargetFollowers
-      }).catch(() => {});
-    } catch (err) {}
-
-    // Call backend API
-    try {
-      await fetch(`/api/users/${targetId}/follow`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ followerId: user.id })
-      });
-    } catch (err) {
-      console.warn('Backend follow sync error:', err);
-    }
-
-    if (nextStatus) {
-      toast.success(`‚úì Following ${userName}`);
-    } else {
-      toast(`Unfollowed ${userName}`, { icon: '‚ÑπÔ∏è' });
-    }
-  };
-
-  const handleCatalogueUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (file.type !== 'application/pdf') {
-      toast.error('Please upload a PDF file');
-      return;
-    }
-
-    setIsUploading(true);
-    const formData = new FormData();
-    formData.append('catalogue', file);
-
-    try {
-      const res = await fetch(`/api/users/${user.id}/catalogue`, {
-        method: 'POST',
-        body: formData
-      });
-      const data = await res.json();
-      if (data.success) {
-        toast.success('Company catalogue updated successfully!');
-        if (data.user && window.dispatchEvent) {
-          window.dispatchEvent(new CustomEvent('userUpdated', { detail: data.user }));
-        }
-      } else {
-        toast.error(data.error || 'Failed to upload catalogue');
-      }
-    } catch (err) {
-      toast.error('Error uploading catalogue');
-    } finally {
-      setIsUploading(false);
-    }
-  };
-
-  return (
-    <aside className="hidden xl:flex flex-col w-[350px] sticky top-0 h-screen p-6 border-l border-slate-100 dark:border-zinc-900 bg-[#E6C76C] dark:bg-black z-30 overflow-y-auto no-scrollbar">
-      {/* Primary Account & Settings Card in Right Sidebar */}
-      {user && (
-        <div className="mb-8 p-5 rounded-3xl bg-slate-50 dark:bg-zinc-900/60 border border-slate-200/80 dark:border-zinc-800 shadow-sm">
-          <div className="flex flex-col gap-3">
-            <div className="flex items-center gap-3">
-              <div className="w-11 h-11 rounded-2xl bg-blue-600/10 text-blue-600 flex items-center justify-center overflow-hidden shrink-0 border border-blue-500/20 font-bold text-base">
-                {user.avatarUrl ? (
-                  <img src={user.avatarUrl} alt={user.name} className="w-full h-full object-cover" />
-                ) : (
-                  user.name?.charAt(0) || 'U'
-                )}
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-black text-black dark:text-zinc-50 truncate flex items-center gap-1">
-                  <span>{user.name}</span>
-                  {user.isVerified && <ShieldCheck className="w-4 h-4 text-blue-500 shrink-0" />}
-                </div>
-                <div className="text-[11px] font-bold text-black/70 dark:text-zinc-400 capitalize truncate w-full">
-                  {Array.isArray(user.category) ? user.category[0] : (user.category || user.role)} ‚Ä¢ {user.city || 'India'}
-                </div>
-              </div>
-            </div>
-            
-            <button 
-              onClick={onOpenSettingsDrawer}
-              className="w-full py-2.5 bg-white hover:bg-slate-100 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-black dark:text-zinc-50 rounded-2xl font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer shadow-sm active:scale-95 border border-slate-200/60 dark:border-zinc-700"
-            >
-              <Menu className="w-4 h-4 text-blue-600" />
-              <span>Account Settings & Options</span>
-            </button>
-          </div>
-        </div>
-      )}
-
-      {user && user.role !== 'customer' && (
-        <div className="mb-8">
-          <h3 className="text-xs font-black text-black/60 dark:text-zinc-500 uppercase tracking-[0.2em] mb-4 flex items-center gap-2">
-            <FileText className="w-4 h-4 text-blue-500" />
-            Company Catalogue
-          </h3>
-          <div className="p-4 bg-slate-50 dark:bg-zinc-900/50 rounded-3xl border border-slate-200 dark:border-zinc-800 border-dashed group transition-all hover:border-blue-500/50">
-            <input 
-              type="file" 
-              ref={fileInputRef} 
-              className="hidden" 
-              accept=".pdf" 
-              onChange={handleCatalogueUpload} 
-            />
-            <button 
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isUploading}
-              className="w-full py-3 bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-2xl text-[11px] font-black uppercase tracking-widest text-black dark:text-zinc-50 hover:bg-slate-50 dark:hover:bg-zinc-700 transition-all flex items-center justify-center gap-3 shadow-sm hover:shadow-md active:scale-95 disabled:opacity-50 cursor-pointer"
-            >
-              {isUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4 text-blue-500" />}
-              {user.catalogueUrl ? 'Update Catalogue' : 'Upload Catalogue (PDF)'}
-            </button>
-            {user.catalogueUrl && (
-              <div className="mt-3 flex items-center justify-center gap-2">
-                <a 
-                  href={user.catalogueUrl} 
-                  target="_blank" 
-                  rel="noreferrer"
-                  className="text-[10px] font-black uppercase tracking-wider text-blue-500 hover:text-blue-600 transition-colors flex items-center gap-1.5"
-                >
-                  <ExternalLink className="w-3 h-3" />
-                  View PDF Catalogue
-                </a>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-      
-      <div className="mb-8">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2">
-            <div className="w-1.5 h-1.5 rounded-full bg-blue-600 animate-pulse"></div>
-            <h3 className="text-xs font-black text-black/60 dark:text-zinc-500 uppercase tracking-[0.2em]">Suggested for you</h3>
-          </div>
-          <Link to="/explore" className="text-[10px] font-black text-blue-500 uppercase tracking-wider hover:underline flex items-center gap-0.5">
-            <span>See All</span>
-            <ChevronRight className="w-3 h-3" />
-          </Link>
-        </div>
-        <div className="space-y-3">
-          {filteredSuggestedUsers.slice(0, 6).map((u, i) => {
-            const userId = u.id || u.userId || u.uid || u._id || u.username || `su-side-${i}`;
-            const userName = u.name || u.companyName || u.displayName || u.username || u.title || 'Vyapar Member';
-            const userRole = u.role || (u.companyName ? 'dealer' : 'member');
-            const userAvatar = resolveUserAvatar(u, userName);
-            const isFollowing = isUserFollowed(String(userId)) || Boolean(followedMap[String(userId)]);
-
-            return (
-              <div key={userId} className="flex items-center justify-between group p-1.5 rounded-2xl hover:bg-slate-50 dark:hover:bg-zinc-900/60 transition-all border border-transparent hover:border-slate-200/60 dark:hover:border-zinc-800">
-                {/* Profile tap navigates to user profile */}
-                <Link to={`/profile/${encodeURIComponent(String(userId))}`} className="flex items-center gap-2.5 min-w-0 flex-1 cursor-pointer">
-                  <div className="w-9 h-9 rounded-full overflow-hidden border border-slate-200 dark:border-zinc-800 shrink-0 bg-slate-100 dark:bg-zinc-800 flex items-center justify-center shadow-sm">
-                    <img 
-                      src={userAvatar || getInitialsAvatar(userName)} 
-                      alt={userName} 
-                      onError={(e) => {
-                        (e.currentTarget as HTMLImageElement).src = getInitialsAvatar(userName);
-                      }}
-                      className="w-full h-full object-cover transition-transform group-hover:scale-110" 
-                    />
-                  </div>
-                  <div className="flex flex-col min-w-0 flex-1">
-                    <span className="text-xs font-bold text-black dark:text-zinc-50 truncate group-hover:text-blue-600 transition-colors">
-                      {userName}
-                    </span>
-                    {userRole && userRole !== 'customer' && (
-                      <span className="text-[9.5px] text-black/60 dark:text-zinc-400 uppercase font-black tracking-tighter truncate">
-                        {userRole}
-                      </span>
-                    )}
-                  </div>
-                </Link>
-
-                {/* Live Follow / Following Button */}
-                <button 
-                  type="button"
-                  onClick={(e) => handleFollowToggle(e, u)}
-                  className={cn(
-                    "text-[10.5px] font-black uppercase tracking-wider px-3 py-1 rounded-xl transition-all active:scale-95 cursor-pointer shrink-0 ml-2 shadow-sm",
-                    isFollowing
-                      ? "bg-slate-200/80 dark:bg-zinc-800 text-slate-800 dark:text-zinc-200 border border-slate-300 dark:border-zinc-700 hover:bg-red-50 hover:text-red-600"
-                      : "bg-blue-600 hover:bg-blue-700 text-white shadow-blue-500/20"
-                  )}
-                >
-                  {isFollowing ? 'Following' : 'Follow'}
-                </button>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      <div className="mt-auto opacity-50 pt-4">
-        <p className="text-[10px] font-bold text-black/60 dark:text-zinc-600 uppercase tracking-widest leading-loose">
-          ¬© 2026 VYAPAR BRIDGE<br />
-          B2B & B2C Trade & Commerce Network
-        </p>
-      </div>
-    </aside>
-  );
-}
-
-function AppContent() {
-  const getHeartClasses = () => {
-    const { enquiry, like } = unreadStatus;
-    if (!enquiry && !like) return "text-black dark:text-zinc-50";
-
-    let activeCount = 0;
-    if (enquiry) activeCount++;
-    if (like) activeCount++;
-
-    if (activeCount > 1) {
-      return "animate-color-cycle animate-spin-slow";
-    }
-
-    if (enquiry) return "text-[#d97706] fill-[#d97706]";
-    if (like) return "text-red-500 fill-red-500";
-    
-    return "text-red-500 fill-red-500";
-  };
-
-  const getMessageClasses = () => {
-    const { message } = unreadStatus;
-    if (message) return "text-[#10b981] fill-[#10b981]";
-    return "";
-  };
-
-  const { isDark, toggleDark } = React.useContext(ThemeContext);
-  const [user, setUser] = useState<any>(null);
-  const [unreadStatus, setUnreadStatus] = useState({ message: false, enquiry: false, like: false, count: 0 });
-  const [headerSearchQuery, setHeaderSearchQuery] = useState('');
-  const [isHeaderSearchOpen, setIsHeaderSearchOpen] = useState(false);
-  const [dealers, setDealers] = useState<any[]>([]);
-
-  useEffect(() => {
-    let isMounted = true;
-    const processUsers = (fbUsers: any[]) => {
-      if (!Array.isArray(fbUsers)) return;
-      const uniqueMap = new Map();
-      fbUsers.forEach((u: any) => {
-        if (u && (u.name || u.companyName)) {
-          const key = (u.gstNumber && u.gstNumber.trim() !== '') ? u.gstNumber.trim().toUpperCase() : (u.id || u.username);
-          if (key && !uniqueMap.has(key)) {
-            uniqueMap.set(key, u);
-          }
-        }
-      });
-      if (isMounted) {
-        const sorted = Array.from(uniqueMap.values()).sort((a: any, b: any) => {
-          const isAGolden = a.goldenBadge || a.verifiedPlan === 'yearly';
-          const isBGolden = b.goldenBadge || b.verifiedPlan === 'yearly';
-          const isABlue = a.isVerified;
-          const isBBlue = b.isVerified;
-          
-          if (isAGolden && !isBGolden) return -1;
-          if (!isAGolden && isBGolden) return 1;
-          
-          if (isABlue && !isBBlue) return -1;
-          if (!isABlue && isBBlue) return 1;
-          return 0;
-        });
-        setDealers(sorted);
-      }
-    };
-
-    fetchAllUsersFromFirestore().then(fbUsers => {
-      if (fbUsers && fbUsers.length > 0) processUsers(fbUsers);
-    }).catch(() => {});
-
-    const unsubscribe = subscribeToUsersFromFirestore((rtUsers) => {
-      if (rtUsers && rtUsers.length > 0) processUsers(rtUsers);
-    });
-
-    return () => {
-      isMounted = false;
-      if (typeof unsubscribe === 'function') unsubscribe();
-    };
-  }, []);
-
-
-  useEffect(() => {
-    if (!user?.id) return;
-    let isInitialLoad = true;
-    const q = query(
-      collection(firestoreDb, 'users', String(user.id), 'notifications'),
-      where('read', '==', false)
-    );
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      let currentUnread = snapshot.docs.length;
-      // setUnreadNotifs removed in favor of fetchUnreadStatus
-      
-      // If it's not the initial load and we have new notifications
-      if (!isInitialLoad) {
-        snapshot.docChanges().forEach((change) => {
-          if (change.type === 'added') {
-            const data = change.doc.data();
-            playMessageSound();
-            toast(data.message || 'You have a new notification', {
-              icon: 'üîî',
-              style: {
-                borderRadius: '10px',
-                background: isDark ? '#18181b' : '#fff',
-                color: isDark ? '#fff' : '#000',
-              },
-            });
-          }
-        });
-      }
-      isInitialLoad = false;
-    }, (error: any) => {
-      if (error?.code === 'cancelled' || error?.message?.includes('CANCELLED') || error?.message?.includes('Disconnecting idle stream')) {
-        // Normal gRPC stream lifecycle event when idle, ignore
-        return;
-      }
-      console.warn('Notifs listener note:', error?.message || error);
-    });
-
-    return () => unsubscribe();
-  }, [user?.id, isDark]);
-
-  const [userLocation, setUserLocation] = useState<{lat: number, lng: number} | null>(null);
-
-  const location = useLocation();
-  const navigate = useNavigate();
-
-  useEffect(() => {
-    if ("geolocation" in navigator) {
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
-          setUserLocation({
-            lat: position.coords.latitude,
-            lng: position.coords.longitude
-          });
-        },
-        (error) => {
-          // Graceful fallback for geolocation permission or timeout
-          setUserLocation({ lat: 22.8182, lng: 70.8368 });
-        },
-        { enableHighAccuracy: true, timeout: 5000 }
-      );
-    }
-  }, []);
-
-  // Stealth Lockout State (Triggers on 2 failed admin PIN attempts, locks for 15 minutes)
-  const [isLockedOut, setIsLockedOut] = useState(() => isAppLockedOut());
-
-  // Real-time Active Presence Heartbeat (online/offline tracking like Instagram/Facebook)
-  useEffect(() => {
-    if (user?.id) {
-      const cleanup = startPresenceHeartbeat(user.id);
-      return () => {
-        if (typeof cleanup === 'function') cleanup();
-      };
-    }
-  }, [user?.id]);
-
-  useEffect(() => {
-    const syncLockoutState = () => {
-      setIsLockedOut(isAppLockedOut());
-    };
-    syncLockoutState();
-    const interval = setInterval(syncLockoutState, 3000);
-    window.addEventListener('Vyapar Bridge_lockout_changed', syncLockoutState);
-    return () => {
-      clearInterval(interval);
-      window.removeEventListener('Vyapar Bridge_lockout_changed', syncLockoutState);
-    };
-  }, []);
-
-
-
-  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
-
-  useEffect(() => {
-    const handleBeforeInstall = (e: Event) => {
-      e.preventDefault();
-      setDeferredPrompt(e);
-    };
-    window.addEventListener('beforeinstallprompt', handleBeforeInstall);
-    return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstall);
-  }, []);
-
-  const [isSettingsDrawerOpen, setIsSettingsDrawerOpen] = useState(false);
-  const [isGlobalEditModalOpen, setIsGlobalEditModalOpen] = useState(false);
-  const [isGlobalVerifyModalOpen, setIsGlobalVerifyModalOpen] = useState(false);
-  const [isGlobalApprovalCenterOpen, setIsGlobalApprovalCenterOpen] = useState(false);
-  const [isReferralModalOpen, setIsReferralModalOpen] = useState(false);
-
-  useEffect(() => {
-    // Capture referral code if opened with ?ref=username
-    const refCode = captureReferralCodeFromUrl();
-    if (refCode) {
-      console.log('üéÅ Referral code detected from link:', refCode);
-    }
-    const handleOpen = () => setIsReferralModalOpen(true);
-    window.addEventListener('openReferralModal', handleOpen);
-    return () => window.removeEventListener('openReferralModal', handleOpen);
-  }, []);
-
-  useEffect(() => {
-    if (user?.id) {
-      const fetchUnread = () => {
-        fetch('/api/notifications/unread-status?userId=' + user.id)
-          .then(res => (res.ok && res.headers.get('content-type')?.includes('application/json')) ? res.json() : null)
-          .then(data => {
-            if (data && typeof data === 'object') {
-              setUnreadStatus({
-                message: !!data.message,
-                enquiry: !!data.enquiry,
-                like: !!data.like,
-                count: data.count || 0
-              });
-            }
-          })
-          .catch(() => {});
-      };
-      fetchUnread();
-      const interval = setInterval(fetchUnread, 10000);
-      const onNotifRead = () => setUnreadStatus(prev => ({ ...prev, enquiry: false, like: false, count: prev.message ? 1 : 0 }));
-      const onMsgRead = () => setUnreadStatus(prev => ({ ...prev, message: false, count: (prev.enquiry || prev.like) ? 1 : 0 }));
-      window.addEventListener('notificationsRead', onNotifRead);
-      window.addEventListener('messagesRead', onMsgRead);
-      return () => {
-        clearInterval(interval);
-        window.removeEventListener('notificationsRead', onNotifRead);
-        window.removeEventListener('messagesRead', onMsgRead);
-      };
-    }
-  }, [user?.id]);
-
-  useEffect(() => {
-    if (!user?.id) return;
-    const cleanupHeartbeat = startPresenceHeartbeat(user.id);
-    return () => {
-      cleanupHeartbeat();
-    };
-  }, [user?.id]);
-
-  useEffect(() => {
-    // Automatic Quota Sanitation to prevent Storage quota exceeded errors
-    cleanupStorageQuota();
-
-    // Check local storage for user and sync with backend & Firestore
-    const savedUser = localStorage.getItem('user') || localStorage.getItem('Vyapar Bridge_user');
-    const savedFingerprint = localStorage.getItem('vyapar_user_fingerprint');
-    const savedUserId = localStorage.getItem('vyapar_user_id');
-
-    if (savedUser) {
-      try {
-        let parsed = JSON.parse(savedUser);
-        
-        // Strict protection: Non-admin users must NOT have legacy unverified badges
-        if (parsed && parsed.role !== 'admin' && parsed.id) {
-          const isPendingApproved = parsed.pendingPayment?.status === 'approved';
-          if (!isPendingApproved && !parsed.isVerifiedByAdmin) {
-            parsed = {
-              ...parsed,
-              isVerified: Boolean(parsed.isVerified && isPendingApproved),
-              verifiedBadge: Boolean(parsed.verifiedBadge && isPendingApproved),
-              verifiedPlan: isPendingApproved ? parsed.verifiedPlan : undefined
-            };
-          }
-        }
-
-        setUser(parsed);
-        if (parsed?.id) {
-          localStorage.setItem('vyapar_user_id', String(parsed.id));
-          if (parsed.fingerprintId) {
-            localStorage.setItem('vyapar_user_fingerprint', parsed.fingerprintId);
-          }
-        }
-
-        if (parsed?.id) {
-          getDoc(doc(firestoreDb, 'users', String(parsed.id))).then(docSnap => {
-            if (docSnap.exists()) {
-              const fbData = docSnap.data();
-              const isDbVerified = Boolean(fbData.isVerified);
-              const merged = { 
-                ...parsed, 
-                ...fbData, 
-                isVerified: isDbVerified,
-                verifiedBadge: isDbVerified,
-                verifiedPlan: isDbVerified ? (fbData.verifiedPlan || parsed.verifiedPlan) : undefined
-              };
-              setUser(merged);
-              safeSaveUser(merged);
-            } else if (parsed.role !== 'admin') {
-              // Reset legacy unverified flag if user doc in Firestore doesn't explicitly have isVerified
-              const cleaned = {
-                ...parsed,
-                isVerified: false,
-                verifiedBadge: false,
-                verifiedPlan: undefined
-              };
-              setUser(cleaned);
-              safeSaveUser(cleaned);
-            }
-          }).catch(() => {});
-
-          safeFetch(`/api/users/${parsed.id}`)
-            .then(latestUser => {
-              if (latestUser && latestUser.id) {
-                const isUserVerified = Boolean(latestUser.isVerified);
-                const sanitized = {
-                  ...latestUser,
-                  isVerified: isUserVerified,
-                  verifiedBadge: isUserVerified,
-                  verifiedPlan: isUserVerified ? latestUser.verifiedPlan : undefined
-                };
-                setUser(sanitized);
-                safeSaveUser(sanitized);
-              }
-            })
-            .catch(err => {
-              console.warn('Session sync note:', err);
-            });
-        }
-      } catch (e) {
-        console.warn('User parse note:', e);
-      }
-    } else if (savedUserId || savedFingerprint) {
-      // Fingerprint / Persistent ID recovery mechanism if localStorage 'user' was cleared
-      fetchAllUsersFromFirestore().then(allUsers => {
-        if (Array.isArray(allUsers) && allUsers.length > 0) {
-          const found = allUsers.find((u: any) => 
-            (savedUserId && String(u.id) === String(savedUserId)) || 
-            (savedFingerprint && u.fingerprintId === savedFingerprint)
-          );
-          if (found) {
-            setUser(found);
-            safeSaveUser(found);
-          }
-        }
-      }).catch(() => {});
-    }
-  }, [navigate]);
-
-  useEffect(() => {
-    if (user?.id) {
-      safeFetch(`/api/users/${user.id}/relationships`)
-        .then(data => {
-          if (data && data.following) {
-            localStorage.setItem('followedUsers', JSON.stringify(data.following));
-            window.dispatchEvent(new Event('followedUsersUpdated'));
-          }
-        })
-        .catch(() => {
-          // Graceful fallback for offline / serverless
-        });
-    }
-  }, [user?.id]);
-
-  const [suggestedSidebarUsers, setSuggestedSidebarUsers] = useState<any[]>([]);
-
-  useEffect(() => {
-    if (user?.id) {
-      safeFetch(`/api/users/suggested?userId=${user.id}&limit=5`)
-        .then(data => {
-          if (Array.isArray(data)) setSuggestedSidebarUsers(data);
-        })
-        .catch(() => {});
-    }
-  }, [user?.id]);
-
-  const navItems = [
-    { icon: Home, label: 'Home', path: '/' },
-    { icon: Search, label: 'Search', path: '/search' },
-    { icon: Compass, label: 'Explore', path: '/explore' },
-    { icon: Film, label: 'Reels', path: '/reels' },
-    { icon: Users, label: 'Community', path: '/community' },
-    { icon: MapIcon, label: 'Roadmap', path: '/roadmap' },
-    { icon: MessageCircle, label: 'Messages', path: '/chat' },
-    { icon: Heart, label: 'Notifications', path: '/notifications' },
-    { icon: PlusSquare, label: 'Create', path: '/create' },
-  ];
-
-  if (user?.role === 'admin') {
-    navItems.push({ icon: Shield, label: 'Moderation', path: '/admin' });
-  }
-
-  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
-  const [isMasterModalOpen, setIsMasterModalOpen] = useState(false);
-  const [isLogoMenuOpen, setIsLogoMenuOpen] = useState(false);
-  const [isLogoLightboxOpen, setIsLogoLightboxOpen] = useState(false);
-  const [isCalculatorOpen, setIsCalculatorOpen] = useState(false);
-  const [isBoostModalOpen, setIsBoostModalOpen] = useState(false);
-  const [boostTargetPost, setBoostTargetPost] = useState<any>(null);
-  const [isOfferTokenModalOpen, setIsOfferTokenModalOpen] = useState(false);
-  const [offerTokenTargetPost, setOfferTokenTargetPost] = useState<any>(null);
-
-  useEffect(() => {
-    const handleOpenAuth = () => setIsAuthModalOpen(true);
-    window.addEventListener('openAuthModal', handleOpenAuth);
-    return () => window.removeEventListener('openAuthModal', handleOpenAuth);
-  }, []);
-
-  useEffect(() => {
-    const handleOpenBoost = (e: any) => {
-      setBoostTargetPost(e.detail?.post || null);
-      setIsBoostModalOpen(true);
-    };
-    window.addEventListener('open_boost_business_modal', handleOpenBoost);
-    window.addEventListener('openBoostBusinessModal', handleOpenBoost);
-    return () => {
-      window.removeEventListener('open_boost_business_modal', handleOpenBoost);
-      window.removeEventListener('openBoostBusinessModal', handleOpenBoost);
-    };
-  }, []);
-
-  useEffect(() => {
-    const handleOpenOfferToken = (e: any) => {
-      setOfferTokenTargetPost(e.detail?.post || null);
-      setIsOfferTokenModalOpen(true);
-    };
-    window.addEventListener('open_offer_token_modal', handleOpenOfferToken);
-    return () => window.removeEventListener('open_offer_token_modal', handleOpenOfferToken);
-  }, []);
-
-  if (isLockedOut) {
-    return <StealthLockoutScreen onUnlockCheck={() => setIsLockedOut(isAppLockedOut())} />;
-  }
-
-  const handleLogout = () => {
-    setIsSettingsDrawerOpen(false);
-    setUser(null);
-    localStorage.removeItem('user');
-    localStorage.removeItem('Vyapar Bridge_user');
-    localStorage.removeItem('vyapar_user_fingerprint');
-    localStorage.removeItem('vyapar_user_id');
-    toast.success('Logged out successfully');
-  };
-
-  const handleUpdateUser = (updatedUser: any) => {
-    setUser(updatedUser);
-    safeSaveUser(updatedUser);
-    if (updatedUser?.id) {
-      syncUserToFirestore(updatedUser).catch(err => console.warn('User profile Firestore sync note:', err));
-    }
-  };
-
-  const handleSidebarKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-      e.preventDefault();
-      const focusableEls = document.querySelectorAll('.sidebar-nav-item');
-      const elsArray = Array.from(focusableEls) as HTMLElement[];
-      const activeElement = document.activeElement as HTMLElement;
-      
-      let currentIndex = elsArray.indexOf(activeElement);
-      
-      if (e.key === 'ArrowDown') {
-        const nextIndex = currentIndex === elsArray.length - 1 ? 0 : currentIndex + 1;
-        elsArray[nextIndex]?.focus();
-      } else if (e.key === 'ArrowUp') {
-        const prevIndex = currentIndex <= 0 ? elsArray.length - 1 : currentIndex - 1;
-        elsArray[prevIndex]?.focus();
-      }
-    }
-  };
-
-  return (
-    <div className="min-h-screen bg-[#E6C76C] dark:bg-black text-black dark:text-zinc-50 flex flex-col md:flex-row font-sans selection:bg-blue-100 dark:selection:bg-blue-900/30 w-full max-w-full overflow-x-hidden">
-      <WelcomeSplash />
-      <Toaster 
-        position="top-center" 
-        containerStyle={{ top: 75 }}
-        toastOptions={{
-          duration: 3500,
-          style: {
-            borderRadius: '16px',
-            background: '#18181b',
-            color: '#ffffff',
-            fontSize: '13px',
-            fontWeight: '600',
-            padding: '10px 18px',
-            boxShadow: '0 10px 30px -5px rgba(0,0,0,0.4)',
-            border: '1px solid rgba(255,255,255,0.1)'
-          }
-        }} 
-      />
-      <AIChatbotWidget />
-
-      {/* Auth Modal for Guest Users trying to interact */}
-      {isAuthModalOpen && (
-        <div 
-          className="fixed inset-0 z-[250] bg-black/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 overflow-y-auto animate-in fade-in duration-150"
-          onClick={() => setIsAuthModalOpen(false)}
-        >
-          <div 
-            onClick={(e) => e.stopPropagation()}
-            className="bg-white dark:bg-zinc-900 w-full md:w-1/2 max-w-3xl rounded-2xl sm:rounded-3xl shadow-2xl overflow-hidden border border-slate-200 dark:border-zinc-800 relative flex flex-col my-auto max-h-[88vh] animate-in zoom-in-95 duration-200"
-          >
-            <div className="px-4 py-3 border-b border-slate-100 dark:border-zinc-800 flex items-center justify-between shrink-0 bg-slate-50/50 dark:bg-zinc-900/50">
-              <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-blue-600 animate-pulse"></span>
-                <h3 className="font-bold text-xs sm:text-sm text-black dark:text-zinc-50 uppercase tracking-wider">Vyapar Bridge Portal Login / Register</h3>
-              </div>
-              <button 
-                onClick={() => setIsAuthModalOpen(false)}
-                className="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 dark:hover:bg-zinc-700 flex items-center justify-center text-black/70 dark:text-zinc-300 font-bold cursor-pointer transition-colors text-xs sm:text-sm"
-              >
-                ‚úï
-              </button>
-            </div>
-            <div className="overflow-y-auto flex-1 scrollbar-thin">
-              <AuthPage onLogin={(u: any) => {
-                setUser(u);
-                safeSaveUser(u);
-                setIsAuthModalOpen(false);
-                toast.success(`üéâ Welcome, ${u.name}!`);
-              }} />
-            </div>
-          </div>
-        </div>
-      )}
-      
-      {/* Mobile Header (Instagram style with Centered Branding, Top Left Theme Toggle & Right Menu) */}
-      <header className="md:hidden bg-[#E6C76C] dark:bg-black border-b border-slate-200 dark:border-zinc-800 px-3 h-14 flex items-center justify-between sticky top-0 z-50 w-full max-w-full overflow-visible">
-        {/* Left balanced spacer for centered branding */}
-        <div className="w-8 shrink-0" />
-
-        {/* Centered Header Title */}
-        <div className="flex-1 flex flex-col items-center justify-center cursor-pointer min-w-0 px-2 group z-0 pointer-events-auto overflow-hidden" onClick={() => navigate('/')}>
-          <div className="flex items-center justify-center gap-1.5 max-w-full">
-            <img 
-              onClick={(e) => { e.stopPropagation(); setIsLogoLightboxOpen(true); }}
-              src={BRAND_LOGO_SRC} 
-              alt={BRAND_NAME} 
-              className="w-6 h-6 sm:w-7 sm:h-7 rounded-full object-cover shrink-0 shadow-sm border border-slate-200 dark:border-zinc-800 group-hover:scale-110 transition-transform duration-300"
-            />
-            <div 
-              className="text-[15px] min-[360px]:text-[17px] sm:text-xl font-black uppercase tracking-wider not-italic text-center brand-torch-text group-hover:scale-105 transition-all duration-300 active:scale-95 select-none truncate"
-              style={{ fontFamily: "'Montserrat', 'Syne', 'Arial Black', sans-serif", fontWeight: 900 }}
-            >VYAPAR BRIDGE</div>
-          </div>
-          <div className="text-[6.5px] min-[360px]:text-[7.5px] font-bold text-black/80 dark:text-zinc-300 uppercase tracking-[0.05em] leading-none mt-0.5 text-center truncate w-full group-hover:text-amber-500 transition-colors">
-            Open Network for Digital Commerce (ONDC)
-          </div>
-          <div 
-            className="text-[7px] min-[360px]:text-[8px] font-black italic uppercase tracking-[0.15em] leading-none mt-0.5 text-center truncate w-full bg-gradient-to-r from-amber-600 via-orange-500 to-amber-500 dark:from-amber-400 dark:via-orange-400 dark:to-amber-300 bg-clip-text text-transparent drop-shadow-sm"
-            style={{ fontFamily: "'Playfair Display', 'Cinzel', 'Georgia', serif" }}
-          >
-            ‚ú® VOCAL FOR LOCAL ‚ú®
-          </div>
-        </div>
-
-        {/* Right Actions */}
-        <div className="flex items-center gap-2 shrink-0 z-10 relative">
-          <div className="relative flex items-center">
-            {isHeaderSearchOpen ? (
-              <div className="absolute right-0 top-1/2 -translate-y-1/2 bg-white dark:bg-zinc-900 border border-amber-500/50 rounded-xl shadow-2xl p-1.5 flex items-center z-50 w-64 sm:w-72 animate-in fade-in zoom-in-95">
-                <Search className="w-4 h-4 ml-2 text-amber-500 shrink-0" />
-                <input
-                  type="text"
-                  autoFocus
-                  value={headerSearchQuery}
-                  onChange={(e) => setHeaderSearchQuery(e.target.value)}
-                  placeholder="Search users, karigars, dealers..."
-                  className="w-full bg-transparent px-2 py-1 text-xs font-medium text-black dark:text-zinc-100 outline-none placeholder:text-black/60 dark:placeholder:text-zinc-500"
-                />
-                <button 
-                  onClick={() => { setIsHeaderSearchOpen(false); setHeaderSearchQuery(''); }}
-                  className="p-1 text-black/60 dark:text-zinc-400 hover:text-black dark:hover:text-white"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-
-                {/* Live Facebook-style User Results Dropdown */}
-                {headerSearchQuery.trim() && (
-                  <div className="absolute left-0 right-0 top-full mt-2 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-xl shadow-2xl max-h-72 overflow-y-auto z-50 p-2 space-y-1">
-                    {dealers.filter(u => {
-                      const q = headerSearchQuery.trim().toLowerCase();
-                      const name = (u.name || '').toLowerCase();
-                      const comp = (u.companyName || '').toLowerCase();
-                      const cat = (u.category || '').toLowerCase();
-                      const city = (u.city || '').toLowerCase();
-                      return name.includes(q) || comp.includes(q) || cat.includes(q) || city.includes(q);
-                    }).length === 0 ? (
-                      <div className="text-center py-4 text-xs text-black/60 dark:text-zinc-400 font-bold">No registered users found</div>
-                    ) : (
-                      dealers.filter(u => {
-                        const q = headerSearchQuery.trim().toLowerCase();
-                        const name = (u.name || '').toLowerCase();
-                        const comp = (u.companyName || '').toLowerCase();
-                        const cat = (u.category || '').toLowerCase();
-                        const city = (u.city || '').toLowerCase();
-                        return name.includes(q) || comp.includes(q) || cat.includes(q) || city.includes(q);
-                      }).map(u => (
-                        <div
-                          key={u.id || u.username}
-                          onClick={() => {
-                            setIsHeaderSearchOpen(false);
-                            setHeaderSearchQuery('');
-                            navigate(`/profile/${u.id || u.username}`);
-                          }}
-                          className="flex items-center gap-2.5 p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-zinc-800 transition-all cursor-pointer group"
-                        >
-                          <div className="w-9 h-9 rounded-full bg-slate-200 dark:bg-zinc-800 overflow-hidden flex items-center justify-center font-black text-xs text-black dark:text-white shrink-0 border border-slate-300 dark:border-zinc-700">
-                            {u.avatarUrl ? (
-                              <img src={u.avatarUrl} alt={u.name} className="w-full h-full object-cover" />
-                            ) : (
-                              u.name?.charAt(0) || 'U'
-                            )}
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <div className="font-extrabold text-xs text-black dark:text-zinc-100 truncate group-hover:text-amber-500">
-                              {u.name}
-                            </div>
-                            <div className="text-[10px] text-black/70 dark:text-zinc-400 truncate">
-                              {u.category || u.role || 'Member'} ‚Ä¢ {u.city || 'India'}
-                            </div>
-                          </div>
-                          <ChevronRight className="w-3.5 h-3.5 text-black/40 dark:text-zinc-500" />
-                        </div>
-                      ))
-                    )}
-                  </div>
-                )}
-              </div>
-            ) : (
-              <button 
-                onClick={() => setIsHeaderSearchOpen(true)}
-                className="p-1 text-black dark:text-zinc-50 hover:scale-105 transition-transform cursor-pointer flex items-center justify-center"
-                title="Search Users & Karigars"
-              >
-                <Search className="w-5 h-5" />
-              </button>
-            )}
-          </div>
-          <Link to="/chat" title="Messages" className="p-1 relative flex items-center justify-center">
-            <MessageCircle className={cn("w-5 h-5 hover:scale-105 transition-transform", getMessageClasses() ? getMessageClasses() : "text-black dark:text-zinc-50")} />
-          </Link>
-          <Link to="/notifications" title="Notifications" className="p-1 relative flex items-center justify-center">
-            <Heart className={cn("w-5.5 h-5.5 hover:scale-105 transition-transform", getHeartClasses())} />
-          </Link>
-          <button 
-            onClick={() => setIsSettingsDrawerOpen(true)}
-            className="p-1 text-black dark:text-zinc-50 hover:opacity-80 transition-opacity cursor-pointer flex items-center justify-center"
-            title="Profile & Settings Menu"
-          >
-            <Menu className="w-6 h-6 stroke-[2.2]" />
-          </button>
-        </div>
-      </header>
-
-      {/* Desktop Sidebar */}
-      <aside 
-        className="hidden md:flex flex-col w-[72px] lg:w-[244px] fixed top-0 left-0 h-screen bg-[#E6C76C] dark:bg-black border-r border-neutral-200 dark:border-neutral-800 px-2 lg:px-3 py-6 z-40 transition-all duration-700 overflow-y-auto no-scrollbar outline-none"
-        tabIndex={0}
-        onKeyDown={handleSidebarKeyDown}
-      >
-
-        
-        <nav className="flex-1 space-y-1">
-          {navItems.map((item) => (
-            <Link 
-              key={item.label} 
-              to={item.path}
-              className={cn(
-                "sidebar-nav-item flex items-center gap-4 p-3 rounded-lg hover:bg-slate-50 dark:hover:bg-zinc-900 transition-colors group relative outline-none focus:ring-2 focus:ring-blue-500",
-                location.pathname === item.path ? "font-bold text-blue-600 dark:text-zinc-50 bg-blue-50 dark:bg-zinc-900" : "font-normal text-black/80 dark:text-zinc-400 hover:text-black dark:hover:text-zinc-50"
-              )}
-            >
-              <div className="relative">
-                <item.icon className={cn(
-                  "w-6 h-6 shrink-0 transition-transform group-hover:scale-105", 
-                  location.pathname === item.path && "stroke-[2.5px]",
-                  item.label === 'Notifications' ? getHeartClasses() : (item.label === 'Messages' ? getMessageClasses() : "")
-                )} />
-              </div>
-              <span className="hidden lg:block text-[15px]">{item.label}</span>
-              
-              <div className="absolute left-14 bg-blue-600 text-white text-xs px-2 py-1.5 rounded-md opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-700 hidden md:block lg:hidden whitespace-nowrap z-50 pointer-events-none shadow-lg">
-                {item.label}
-              </div>
-            </Link>
-          ))}
-          {user && (
-            <Link 
-              to="/profile"
-              className={cn(
-                "sidebar-nav-item flex items-center gap-4 p-3 rounded-lg hover:bg-slate-50 dark:hover:bg-zinc-900 transition-colors group relative outline-none focus:ring-2 focus:ring-blue-500",
-                location.pathname === "/profile" ? "font-bold text-blue-600 dark:text-zinc-50 bg-blue-50 dark:bg-zinc-900" : "font-normal text-black/80 dark:text-zinc-400 hover:text-black dark:hover:text-zinc-50"
-              )}
-            >
-              <div className="w-6 h-6 rounded-full bg-slate-200 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 flex items-center justify-center overflow-hidden shrink-0 transition-transform group-hover:scale-105">
-                 {(() => {
-                   const uName = user.name || 'User';
-                   const uAv = resolveUserAvatar(user, uName);
-                   return (
-                     <img 
-                       src={uAv || getInitialsAvatar(uName)} 
-                       alt={uName} 
-                       className="w-full h-full object-cover rounded-full"
-                       onError={(e) => {
-                         (e.currentTarget as HTMLImageElement).src = getInitialsAvatar(uName);
-                       }}
-                     />
-                   );
-                 })()}
-              </div>
-              <span className="hidden lg:block text-[15px]">Profile</span>
-              <div className="absolute left-14 bg-blue-600 text-white text-xs px-2 py-1.5 rounded-md opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-700 hidden md:block lg:hidden whitespace-nowrap z-50 pointer-events-none shadow-lg">
-                Profile
-              </div>
-            </Link>
-          )}
-        </nav>
-
-        <div className="mt-auto pt-4 space-y-1">
-          <button 
-            onClick={() => setIsCalculatorOpen(true)}
-            className="sidebar-nav-item outline-none focus:ring-2 focus:ring-blue-500 flex items-center gap-4 p-3 rounded-lg hover:bg-slate-50 dark:hover:bg-zinc-900 transition-colors w-full group relative text-black/80 dark:text-zinc-400 hover:text-black dark:hover:text-zinc-50"
-          >
-            <div className="relative">
-              <Calculator className="w-6 h-6 shrink-0 transition-transform group-hover:scale-105 text-emerald-500" />
-            </div>
-            <span className="hidden lg:block text-[15px] font-semibold text-left flex-1">Vyapar Calculator</span>
-            <div className="absolute left-14 bg-emerald-600 text-white text-xs px-2 py-1.5 rounded-md opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-700 hidden md:block lg:hidden whitespace-nowrap z-50 pointer-events-none shadow-lg">
-              Vyapar Calculator
-            </div>
-          </button>
-
-          <Link to="/terms" className="sidebar-nav-item outline-none focus:ring-2 focus:ring-blue-500 flex items-center gap-4 p-3 rounded-lg hover:bg-slate-50 dark:hover:bg-zinc-900 transition-colors w-full group relative text-black/80 dark:text-zinc-400 hover:text-black dark:hover:text-zinc-50">
-            <Scale className="w-6 h-6 shrink-0 text-blue-500 transition-transform group-hover:scale-105" />
-            <span className="hidden lg:block text-[15px] font-semibold">Terms & Rules</span>
-            <div className="absolute left-14 bg-blue-600 text-white text-xs px-2 py-1.5 rounded-md opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-700 hidden md:block lg:hidden whitespace-nowrap z-50 pointer-events-none shadow-lg">
-              Terms & Rules
-            </div>
-          </Link>
-          <button 
-            onClick={() => setIsSettingsDrawerOpen(true)}
-            className="sidebar-nav-item outline-none focus:ring-2 focus:ring-blue-500 flex items-center gap-4 p-3 rounded-lg hover:bg-slate-50 dark:hover:bg-zinc-900 transition-colors w-full group relative text-black/80 dark:text-zinc-400 hover:text-black dark:hover:text-zinc-50"
-          >
-            <Menu className="w-6 h-6 shrink-0 text-blue-500 transition-transform group-hover:scale-105" />
-            <span className="hidden lg:block text-[15px] font-semibold">Settings</span>
-            <div className="absolute left-14 bg-blue-600 text-white text-xs px-2 py-1.5 rounded-md opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-700 hidden md:block lg:hidden whitespace-nowrap z-50 pointer-events-none shadow-lg">
-              Settings
-            </div>
-          </button>
-          <button onClick={toggleDark} className="sidebar-nav-item outline-none focus:ring-2 focus:ring-blue-500 flex items-center gap-4 p-3 rounded-lg hover:bg-slate-50 dark:hover:bg-zinc-900 transition-colors w-full group relative text-black/80 dark:text-zinc-400 hover:text-black dark:hover:text-zinc-50">
-            {isDark ? <Sun className="w-6 h-6 shrink-0 transition-transform group-hover:scale-105 text-amber-400" /> : <Moon className="w-6 h-6 shrink-0 transition-transform group-hover:scale-105 text-indigo-500" /> }
-            <span className="hidden lg:block text-[15px]">{isDark ? 'Light Mode' : 'Dark Mode'}</span>
-            <div className="absolute left-14 bg-blue-600 text-white text-xs px-2 py-1.5 rounded-md opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-700 hidden md:block lg:hidden whitespace-nowrap z-50 pointer-events-none shadow-lg">
-              Theme
-            </div>
-          </button>
-        </div>
-      </aside>
-
-      {/* Main Content Area */}
-      <div className="flex-1 md:ml-[72px] lg:ml-[244px] flex w-full max-w-full min-w-0 overflow-x-hidden">
-        <main className="flex-1 min-w-0 bg-[#E6C76C] dark:bg-black min-h-screen w-full max-w-full overflow-x-hidden">
-          {/* Desktop Header Top Bar */}
-          <div className="hidden md:flex items-center justify-between px-6 py-3 border-b border-slate-100 dark:border-zinc-900 bg-[#E6C76C]/80 dark:bg-black/80 backdrop-blur-md sticky top-0 z-30">
-            <div className="text-xs font-bold text-black/70 dark:text-zinc-400 uppercase tracking-widest flex items-center gap-2 min-w-[120px]">
-            </div>
-
-            {/* Center Animated Brand Header */}
-            <div className="flex-1 flex items-center justify-center gap-2 group">
-              <img
-                  onClick={(e) => { e.stopPropagation(); setIsLogoLightboxOpen(true); }}
-                 src={BRAND_LOGO_SRC}
-                  alt="Logo"
-                   
-                 className="w-10 h-10 lg:w-12 lg:h-12 rounded-full object-cover shrink-0 group-hover:scale-110 transition-transform duration-300 shadow-md border border-slate-200 dark:border-zinc-800 cursor-pointer"
-                 
-              />
-              <div className="flex flex-col items-center cursor-pointer" onClick={() => navigate('/')}>
-                <div 
-                  className="text-xl lg:text-2xl font-black uppercase tracking-[0.14em] brand-torch-text select-none group-hover:scale-105 transition-transform duration-300"
-                  style={{ fontFamily: "'Montserrat', 'Syne', 'Arial Black', sans-serif", fontWeight: 900 }}
-                >VYAPAR BRIDGE</div>
-                <div className="text-[9px] lg:text-[10px] font-bold text-black/80 dark:text-zinc-300 uppercase tracking-widest mt-0.5 group-hover:text-amber-500 transition-colors">
-                  Open Network for Digital Commerce (ONDC)
-                </div>
-                <div 
-                  className="text-[9px] lg:text-[10.5px] font-black italic uppercase tracking-[0.2em] mt-0.5 bg-gradient-to-r from-amber-600 via-orange-500 to-amber-500 dark:from-amber-400 dark:via-orange-400 dark:to-amber-300 bg-clip-text text-transparent drop-shadow-sm"
-                  style={{ fontFamily: "'Playfair Display', 'Cinzel', 'Georgia', serif" }}
-                >
-                  ‚ú® VOCAL FOR LOCAL ‚ú®
-                </div>
-              </div>
-            </div>
-
-            <div className="min-w-[120px] justify-end"></div>
-          </div>
-
-          <Routes>
-            <Route path="/" element={<Feed user={user} onUpdateUser={handleUpdateUser} userLocation={userLocation} />} />
-            <Route path="/search" element={<SearchPage />} />
-            <Route path="/explore" element={<ExplorePage user={user} userLocation={userLocation} />} />
-            <Route path="/reels" element={<ReelsPage user={user} userLocation={userLocation} />} />
-            <Route path="/community" element={<CommunityPage user={user} />} />
-            <Route path="/roadmap" element={<RoadmapPage user={user} userLocation={userLocation} />} />
-            <Route path="/notifications" element={<NotificationsPage user={user} />} />
-            <Route path="/profile" element={
-              <ProfilePage 
-                user={user} 
-                onLogout={handleLogout} 
-                onUpdateUser={handleUpdateUser} 
-                onOpenSettingsDrawer={() => setIsSettingsDrawerOpen(true)}
-                onOpenVerify={() => setIsGlobalVerifyModalOpen(true)}
-                onOpenReferrals={() => setIsReferralModalOpen(true)}
-              />
-            } />
-            <Route path="/profile/:userId" element={
-              <ProfilePage 
-                user={user} 
-                onLogout={handleLogout} 
-                onUpdateUser={handleUpdateUser} 
-                onOpenSettingsDrawer={() => setIsSettingsDrawerOpen(true)}
-                onOpenVerify={() => setIsGlobalVerifyModalOpen(true)}
-                onOpenReferrals={() => setIsReferralModalOpen(true)}
-              />
-            } />
-            <Route path="/create" element={<CreatePost user={user} />} />
-            <Route path="/chat" element={<Chat user={user} onOpenVerify={() => setIsGlobalVerifyModalOpen(true)} userLocation={userLocation} />} />
-            <Route path="/terms" element={<TermsPage />} />
-            {user?.role === 'admin' && <Route path="/admin" element={<AdminPanel user={user} />} />}
-          </Routes>
-        </main>
-      </div>
-
-      
-      {/* TILE CALCULATOR DRAWER */}
-      <TileCalculatorDrawer 
-        isOpen={isCalculatorOpen} 
-        onClose={() => setIsCalculatorOpen(false)} 
-      />
-
-      {/* PROFILE SETTINGS & ACCOUNT DRAWER */}
-      <ProfileSettingsDrawer 
-        isOpen={isSettingsDrawerOpen}
-        onClose={() => setIsSettingsDrawerOpen(false)}
-        user={user}
-        onLogout={handleLogout}
-        onOpenEditProfile={() => setIsGlobalEditModalOpen(true)}
-        onOpenVerify={() => setIsGlobalVerifyModalOpen(true)}
-        onOpenApprovalCenter={() => setIsGlobalApprovalCenterOpen(true)}
-        onOpenCalculator={() => setIsCalculatorOpen(true)}
-        onOpenReferrals={() => setIsReferralModalOpen(true)}
-        onToggleTheme={toggleDark}
-        isDark={isDark}
-        onOpenMasterConsole={() => setIsMasterModalOpen(true)}
-        deferredPrompt={deferredPrompt}
-        setDeferredPrompt={setDeferredPrompt}
-      />
-
-      {/* Referral System & Free Blue Badge Modal */}
-      <ReferralRewardsModal 
-        isOpen={isReferralModalOpen}
-        onClose={() => setIsReferralModalOpen(false)}
-        user={user}
-        onRewardUnlocked={(updatedUser) => {
-          handleUpdateUser(updatedUser);
-        }}
-      />
-
-      {/* Boost Your Business & Reels Multi-Step Onboarding / VIP Active Modal */}
-      <BoostBusinessModal
-        isOpen={isBoostModalOpen}
-        onClose={() => {
-          setIsBoostModalOpen(false);
-          setBoostTargetPost(null);
-        }}
-        user={user}
-        targetPost={boostTargetPost}
-        onUpdateUser={(updatedUser) => {
-          handleUpdateUser(updatedUser);
-        }}
-      />
-
-      {/* Global VYAPAR BRIDGE Approval Center Modal */}
-      <ApprovalCenterModal 
-        isOpen={isGlobalApprovalCenterOpen} 
-        onClose={() => setIsGlobalApprovalCenterOpen(false)} 
-        user={user}
-        onOpenVerify={() => setIsGlobalVerifyModalOpen(true)}
-      />
-
-      {/* Master Developer Console Modal (Admin Only) */}
-      <MasterDeveloperConsoleModal 
-        isOpen={isMasterModalOpen} 
-        onClose={() => setIsMasterModalOpen(false)} 
-        onLoginAsAdmin={(adminUser) => handleUpdateUser(adminUser)}
-      />
-
-      {/* Global Edit Profile Modal */}
-      <EditProfileModal 
-        isOpen={isGlobalEditModalOpen} 
-        onClose={() => setIsGlobalEditModalOpen(false)} 
-        user={user} 
-        onSave={(updatedUser) => {
-          handleUpdateUser(updatedUser);
-          setIsGlobalEditModalOpen(false);
-          toast.success('Profile updated successfully!');
-        }} 
-        onOpenVerify={() => {
-          setIsGlobalEditModalOpen(false);
-          setIsGlobalVerifyModalOpen(true);
-        }}
-      />
-
-      {/* Global Verified Payment & Badge Modal */}
-      <VerifiedPaymentModal 
-        isOpen={isGlobalVerifyModalOpen} 
-        onClose={() => setIsGlobalVerifyModalOpen(false)} 
-        user={user} 
-        onSuccess={(updatedUser) => {
-          handleUpdateUser(updatedUser);
-          setIsGlobalVerifyModalOpen(false);
-          toast.success('üéâ Congratulations! Vyapar Bridge Verification active!');
-        }} 
-      />
-
-      {/* Offer Token Generator Modal */}
-      <OfferTokenGeneratorModal 
-        isOpen={isOfferTokenModalOpen}
-        onClose={() => {
-          setIsOfferTokenModalOpen(false);
-          setOfferTokenTargetPost(null);
-        }}
-        currentUser={user}
-        savedPosts={offerTokenTargetPost ? [offerTokenTargetPost] : []}
-        initialPost={offerTokenTargetPost}
-      />
-      
-      {/* Mobile Bottom Navigation */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 w-full bg-[#E6C76C] dark:bg-black border-t border-slate-200 dark:border-zinc-800 h-14 flex items-center justify-around z-50 px-2 max-w-full">
-        <Link to="/" title="Home" className="p-2 text-black dark:text-zinc-50 hover:opacity-80 transition-opacity">
-          <Home className={cn("w-6 h-6", location.pathname === '/' && "stroke-[2.5px] text-blue-600 dark:text-blue-400")} />
-        </Link>
-        <Link to="/community" title="Community" className="p-2 text-black dark:text-zinc-50 hover:opacity-80 transition-opacity">
-          <Users className={cn("w-6 h-6", location.pathname === '/community' && "stroke-[2.5px] text-blue-600 dark:text-blue-400")} />
-        </Link>
-        
-        {/* Direct Upload & Create Button */}
-        <Link 
-          to={user ? "/create" : "#"} 
-          onClick={(e) => {
-            if (!user) {
-              e.preventDefault();
-              setIsAuthModalOpen(true);
-            }
-          }}
-          className="flex items-center justify-center -mt-3 group cursor-pointer"
-          title="Create & Upload Post"
-        >
-          <div className="w-11 h-11 rounded-full bg-gradient-to-tr from-blue-600 via-blue-500 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white flex items-center justify-center shadow-lg shadow-blue-500/30 border-2 border-white dark:border-zinc-900 transition-transform active:scale-90">
-            <Plus className="w-6 h-6 stroke-[3]" />
-          </div>
-        </Link>
-
-        <Link to="/roadmap" title="Roadmap" className="p-2 text-black dark:text-zinc-50 hover:opacity-80 transition-opacity">
-          <MapIcon className={cn("w-6 h-6", location.pathname === '/roadmap' && "stroke-[2.5px] text-blue-600 dark:text-blue-400")} />
-        </Link>
-        {user ? (
-          <Link to="/profile" title="Profile" className="p-1">
-            <div className="w-7 h-7 rounded-full bg-slate-200 dark:bg-zinc-800 border-2 border-slate-300 dark:border-zinc-700 flex items-center justify-center overflow-hidden">
-               {(() => {
-                 const uName = user.name || 'User';
-                 const uAv = resolveUserAvatar(user, uName);
-                 return (
-                   <img 
-                     src={uAv || getInitialsAvatar(uName)} 
-                     alt={uName} 
-                     className="w-full h-full object-cover rounded-full"
-                     onError={(e) => {
-                       (e.currentTarget as HTMLImageElement).src = getInitialsAvatar(uName);
-                     }}
-                   />
-                 );
-               })()}
-            </div>
-          </Link>
-        ) : (
-          <button 
-            onClick={() => setIsAuthModalOpen(true)}
-            className="w-7 h-7 rounded-full bg-blue-600 text-white flex items-center justify-center text-[10px] font-black cursor-pointer shadow-sm"
-          >
-            Log
-          </button>
-        )}
-      </nav>
-
-      {/* Logo Lightbox Modal */}
-      {isLogoLightboxOpen && (
-        <div className="fixed inset-0 z-[999] bg-black/90 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-300" onClick={() => setIsLogoLightboxOpen(false)}>
-          <button 
-            onClick={() => setIsLogoLightboxOpen(false)}
-            className="absolute top-6 right-6 w-10 h-10 bg-white/10 hover:bg-white/20 text-white rounded-full flex items-center justify-center backdrop-blur-sm transition-colors z-10"
-          >
-            <X className="w-6 h-6" />
-          </button>
-          <div className="relative animate-in zoom-in-95 duration-300" onClick={e => e.stopPropagation()}>
-            <img 
-              src={BRAND_LOGO_SRC} 
-              alt={BRAND_NAME} 
-              className="w-64 h-64 sm:w-80 sm:h-80 md:w-96 md:h-96 rounded-full object-cover shadow-[0_0_50px_rgba(230,199,108,0.3)] border-4 border-[#E6C76C]"
-            />
-          </div>
-        </div>
-      )}
-</div>
-  );
-}
-
-export default function App() {
-  const [isDark, setIsDark] = useState(() => {
-    try {
-      return localStorage.getItem('theme') === 'dark';
-    } catch {
-      return false;
-    }
-  });
-
-  useEffect(() => {
-    try {
-      if (isDark) {
-        document.documentElement.classList.add('dark');
-        localStorage.setItem('theme', 'dark');
-      } else {
-        document.documentElement.classList.remove('dark');
-        localStorage.setItem('theme', 'light');
-      }
-    } catch (e) {}
-  }, [isDark]);
-
-  const toggleDark = () => {
-    setIsDark(prev => !prev);
-  };
-
-  return (
-    <GlobalErrorBoundary>
-      <ThemeContext.Provider value={{ isDark, toggleDark }}>
-        <BrowserRouter>
-          <div className="min-h-screen bg-[#FAFAFA] dark:bg-black text-zinc-900 dark:text-zinc-100 transition-colors duration-300 w-full max-w-full overflow-x-hidden">
-            <AppContent />
-          </div>
-        </BrowserRouter>
-      </ThemeContext.Provider>
-    </GlobalErrorBoundary>
-  );
-}
+              <p className="text-slate-500 mb-6 text-sm max-w-xs">Connect directly with Factory ownersxúÏΩ€r‹Hñ ¯^_·bÂ("≤¡ E2•HQ*ﬁ§‰î(±x…ÍZ≠V %D 
+@àb±h÷;6=f˚∞”;Sµ´.€ún[≥ùyÿß±5õ6[€è…ò¸Ñ=Á∏;‡∏;$ïôU€0Àª?˜súyüÌ^$)ÛÜIú¶lo‚á^ÔÒ“Ù…Oòˆ<>ùeY<a•◊å≈ìÌ(æﬂ∏jwÿ∆6Ò>ÑÁ^¥[K≠Œuµ¯0Ú“Ù•76NœªØ∫ªæ˝≈˙ˆñ≥Ói‰ﬂ≥Q¸!HÙ’_?˝bm¯Üù≈¯G>õ^vWzkl˙±ªŒíx6Òø{6ã"vYò„¥;&Yê∞so⁄]aÈ»Û„ãn:fY‚M“0„I◊É
+ﬁ0?Ét–}¥∂Pjy`	6ì$æxúeÍ,.∫´l‘]]`K’[8ù,f˚^8aG√$&Âe]‚Î™◊}º‰á‘W6`≥4HzIlccÉµÜ≥4ã«A“b˜Ô≥{Ù1Løí,|ˆîµı°Au‘∏Z›eæhÙ˜0é*{^™4Í.Ø≥”8ÒÉ§{*ˇH#ÿÌÓJøoÿÿ•U⁄Ü∂ìó\Î/≠ı+] ¶Ù7ˆ£–˜É…B “ €§Ì€¿ÄçlO :◊’V°›ÌQ!â'’}[á}[7ÓõyWLKr—}≠<‘A1ü´yU~;û] ülg`Èã>Kh¶hX+∆Æ⁄û:ˇßΩ	á˝Ów¨Ù·‚•¯‘:iuz√ëólfÌ~Á⁄‘jòû@æ¥Ø&Q8	Ù~:lmCMXôtÍiªÁù¶q4À XÀqfûè2¯˜Çéà˛k {ëê—@%aÎbßØ≠7	«∏¥”Yî∆ÕÉ”Rù[ÂDYMõë„∞ÿæïè˙ ¥WñEo·™µÆ/asïSdÍ∫Ê§ôéßà¶ É4ZÒ2∫ó ﬂı0Ï¥*¿ØÙqÎ˙∏sﬁ¯v	ˆmiπ_áçK¶¡ÊıÂÜØ»?äñ°'}œM£Ñqæà◊j]∆Å.˜-@bÅàÍås8Ór¯]a]—+∏ß—,ËÆ√hFbß›e mmAäŒm„?ÖA‰≤*O√N^Ï`m~]	jVÿÿ˚ÿE¢iÜâ—µM¸c$ëÚ¡9H¬ÉmèºåÖ)√Õ
+¸«K£∆ˆßïÊë|mÆ˜Mü_≈36Ú> “Ü¿¥œ<¯s]≤≥$[Œ{˘¨?l~÷P
+6õ|êÑWíÂîΩ…$Œ†w∏1ˇqê¶ﬁyêˆå{Ya∫Úù¨›9ÖºÙ∞∑˚¢„‘Ç2]p»î[ÕW 2iﬁÙÍ¶|LÀƒã7˛4>õNÉdË•≤]√˜·‰º{‚0∆ß¿Xò5€Ÿ†S±&√(X1ﬁ∑BF,ßÖ±ú?⁄
+&¡Yò•É¶ØgëÒ¨Ù÷l√éB„ísO3/…ü⁄ºK0≥ÄËË+Ë€ø˘G35“⁄yr2âm˙!ó,áR‡≤vå]ÑŸ‡c2;É#0K ™{ÆV/E·üÌR|r!∆Òi|ˆdÜT(eÒCÅa–œø‹%xdÄ.‰!Y`ßû ÔÕ.„I|Àr£˘?^öEs`7Œ~⁄)…Ò‰’4ò–Ä/üˆ⁄F¶V√:∆¨yûx~(®õ≈›ÑàÑB—„nÚyLø∏XZî¯"Wî˚BÁärÎ* C5‘,∏Ç‚/πu»ˆ∏Â’zã^√Yí∆Iwá¯≤,Âö‰\3bóôT  —l˚€ıOè-ç„éhÏ¢VµhïΩ^ÓO?æQOÀ*ä\∏Ï„¿gf˛Â(ÄE	ÿÅw9Üïbœ°ﬁÖw…‡î∞Ω	úBxG"êákoqU9RÂ∑å"|I&/7sµÙ9Áêæû6ê–Ôa‡E›,Ê„ 	“`2ÿÁKe8øcIù†wNù!⁄Íé#†‚?bi˝¥ÚËSHÎ6&K
+Wp¿ìpÚæk∆Âef”ÿÛíì$™(rÚ©Ö„sñ&√ΩjQÛhV∂Q√≈ê„àˇü˛(!»ùÄ‡¥ı≤…‹ñœ≠5Õ$¸ÔQ{Ò ÈÅYsQH∞›Ö¿ÒØ˚o˚o◊ßﬂ&Áß^{y}q˘·⁄‚Ú £≈~ÔQÁÕ]k8ÃöÖq8h∆Jïè?.âw@®fì!2éÛ±ı5∞Ÿ®é¢Ú¥Ó≠ãû= E˛_ÁúÚ”jì$åÿXß†+vpëÄOÀŸ5ÛÃÅ8p†fGôóÕR%ÎœÅ´TGZ!≥Ê◊%°%»0Ô¸≤ïq5·Êe⁄ãÂ™Rpn ¯∞I|aõ´mª\Ë¨¡5ÁD¯sud∏c/ºT gqìÃø¥qÊwœƒ\«
+c¢+∂d^•¨ΩÈ˚¿x§ãlü§¢E∂;ÜŒùêbgx…ËhŸA“ˇâ7≠ŒG¿Ø¯Ô%ùÀ´ée]pB/‚!1r÷¡¥È√0ª4–(è/ß#˜JÅ
+ƒZaU§g*~rÎ
+Õu††ç}ozNJéà-[¯ÕêõhÆ"\J<œ®◊À+∏%eUôyÒ‰⁄Yî‰JØvP∂≥ú˘˛å‚ââgŒÀîˆqJÂm;Ã[˚Åˆówn€^eŒ≥≈Â˝£¯˛˜â– ˚Py€>Ò÷~∞sF÷m™ÇÔ· “
+}íç¥3:s$ö∆rëx_hŒøÇ≈E…Â,~˚≤ÎÕ≤‰”UVÂªV;)ñQvŸ{”ˆ8=GQˆ §`ä')Z5ˆë7€`P≤r:» {>ôÍπmﬁˇ“P5	≤Y2±…$8Ø˜¡Â∆6˙™¥vıNü gW¢ˇß¨≈°F–&¶•Ë[◊ÔåB∑mMÓÁ¿åMó`@.~Få≈y–
+mBI[0Ú&~ÏQê…-hÛËhÚj<ıê“ÄDFcÍí.G6ê_ñ•6Óc™¿1 iäzMTpj∆¯ê\≤*"‰c≈ãï∏N\k∑@
+tÜ—Ùâ¨¨Ø4ˆ‚¢¯‚4	º˜›P”¬/fa——OU‰è”Ô?Z;[£Ë8	∆r
+Æ∏Ô%Ô—{Á∑·dà¶4’µáæ—o˙
+≈[Æﬁi€«  ®	hZ Ãã¬m›‘KP{'ªSﬂâπMÄéUû≈^∏∂˚™‹∑k7Ï6uq^¬±Îºà&P£SSÜqïè:6ÉèU˘Q’u$HI∏∞—uƒB´-O—£æÈ®‘˜Z:÷@˜‚ã^<&mu¸ã¨ıÄcÚﬁË.V~Pßµp4Çmˆµ`ﬂ_˛8	+>Vs8I‘˜‘™ÕàvSGDï5dbΩª¡h(Â‡Z7\£Èók!W˚§É’ïõ¡O‚)j6õ=ø“√æ˜1áø-[Q<_SŒ~€"s±s™-‚¿≠(·›”40ÜÖ8<›˘ﬂ˜–∑Óıñ{”Í‘0ã4Æ*ﬁÆ†≠1zç ∆^^p#©äk:∑[g]˜G£ΩQÕ9(Æìdæås∂iˇπölΩEq“C†NY‡ofù^£‘«·88 ÄI>oø~≥»Æ 5Õ 8+]‡°√¨µàäL8¨ +vÌ–í∏óñiw™|[µáπXŸΩ…tñ5‡cëa ‰¨jXpòiÆ «˙∞f≈IM€@.wJÓ9ı
+I{õﬂ€ºdãàïa0VDot43ö"røñB„Æ(o•Øï≠"#b0ñB‘fıÉÊOâËôƒ±4Av†,7âôDcq1Ùv´Â®û±6∫r<£Ä`Ó08Î©G©√l_z<XGêcZ-[”◊∂fÙöÀb≤JÁ9Ä[…Ü+ñrçh!ó'ˆpÏÓ‡Xm]ß§ ˙ƒIjÊ¨8ÏØ¢πïîπxzŒ0gŒ‚dlÇôxr4;áŸ∆{é`ìÖ–c<$Ò‰¿K3 3Ì@ñ Ê¶ß±ó@U?Ù®D;XdmﬂÀ<b±–o√êË’- Ü‡≈€-√2æe^ ºåïÕ(⁄ƒ>€,JïÍ∆˝	∂çÉœ.ß(‰¬ Õ¿ìg@ KGƒˆp‰aŒπÖ¥∏èÊ‚ﬁpL˚É∞Ù˘bÔ<<[‰?‡/ÛhTÀ>wà73˚dÿ‰’√X]_ñ∑z‰‡√Wì±1‰%ÃhC?O{C,fvÂ¡«SÔ4
+¸ç´Ÿ4äΩÍÊ¡IË‰ÁÒL…`#zr[†ﬂ∞ﬂ¢[±m-¬,Çæ å≈	{æ˜l>$Uö‡è_ƒËbd…•M,ùÜƒd ì?ﬁˆPl(çlZ=ó˛¬qö$‡∫Ÿ÷Ö» r|øŸEú'Å„ ΩºÃkµÉ^Ê%ÁÅ†SV0ôå‚ñlcA‘≈ùò"rD≠·K‹ò^Øg3ùàüó_Åú∂±ÄJ=;t
+ºåœçp3>∑¿œ¯ÿŸË™œàÍ}luÑ—(|‘]È È.Ø àÆ≥x8KÒ,#éeaÒ™ƒ›-≠U<„,n	
+Ùcnﬁ≈õq|ÚS¢‚V~≥@Z˜ä–¡f‹&Ûû $œÉ…8WµZuK∏Kvú´"÷˙˘rq\«˝	ó˚kÍ™“üƒ≥‘π‚cCbào Tæ† ıK ÈÊt ûÅ¨àN|0Hv‡Ö>€Áﬁπ“Uõ¥“Mˇ 1ñ¬Ë∆∞p£Ë≤%MEÜ"óÅó@	⁄®On+|ÏYsD,…ªQñM”¡““Ö◊KüôLw=x –o/˝∑;KÁã¿»wÆü‚¶o|DQÃ ï–ÔÊzëÌ1oå∂|áŒﬂóÒå}=ˆı•7ı∂ïÑËúÁÄœƒwÚ	ˆg√,ÌΩ≥A-«÷\…g√ü¿ól,Lb‘Úòƒ0Ÿ ¯¿1]LqdØ∫≤∂Û`]SOÎhGâ,]^y∏˝≈Óõ2*)ƒéZµü4ﬁq≠_;∞√ÀsEE¿úbã¿<¬ƒ(⁄Gy™ó˚∆SÌêvº∆ÓfÿP#GXÕ∂hI+À‰ØÄ*]ˇ‰'KK¨€Ì≤}§õ	€	> HÇ.*)∆¡Ó«æaëü¸‰l6íì/úóE©d˚äÖ)˙ã/3ß˛Ò">'õÈ¶?'Ïz¿d°ê0®ÈMæî•å≥Æ‚–ˇ≤TÛ)|ƒS> ^Ï2/Dî(;∑æ”ÕY6Ë	—xÎ/"aﬁ”ﬂΩad/D/†”^îr- ˆé¯e™y ~hUÑB@îÁÁ¸ÿ;],|p·óZ„qã#<Ó#ìd≠)wå¶øΩêˇ3ô¿A¯û¬ŸÚøN¨¸Mü˛N<ƒiÎIª‘.∆;
+x5# r»ã≤˚Ïh˜€úx—%,BJﬁmÅ(ºÖM≥˝YîÖ]‚°ÿ¶ÌfaJ#·eY˚+†Ç›£iHñ{∆ãƒ‡>€˝‡ m≥pX”N±6b‘Èã0ÂÎπ•º–VvÙıõ'Ì◊o¥•Â<›1Pæ∏≈o}yI¥£µ∆Ê=.£7våhB4Dªv’ﬂé«SQGy„¨â´@ú'’øú5vÇtòÑS‹EQKy„¨	†M'™…üZù,ô•Z∏:œ¬|5Úﬂ⁄≤‚XS‘ö=)tgz#ÇUV€Ø¥¶R“/;ì D\,^˘µc-RÔt±…O¸ë¯a<Í‚åpnPF(»3Q‡˛]~^T8|˘Œ
+¡¢˚pd¸ñzòM√=>‹¸Küõóé¬t¥æﬁˇYxïŒ–DV fÒ[obìö`?üçÅµ ∂hÏiÌ¸∑»µ˛Ö¸ÂX‚S/B°Ω‹™à'ZW_˚(&Avø&j kΩç£›Ìì√›Ó÷Ê·ˆ´ù›Ó◊ªá{œ~“Œ z˜Ø>2ıêˆVÒª9`ÁJQ[lê˛“MB|I9°"BçÏT^ó∂â‹Ú É’ü˝TáÏQ|Å¡º≤ù£‚∑{XëØ´Z5SSôéêÑ]ÂT…Wé≥µπ«ÄpŸ·n‘%»˜¬≠9Ù“üÂìT›ñÛ∞ƒâF
+æ{Æø3!=1ï≤V£~‰cRﬂ‘ì)ê6“ÚR¸p(èb4.kàüé:cçZ» 
+ÙDz¯D§òs3?åë4R©J€Ú<7¿¥T>?d˚ÚWÛ#F®îc_y1›P6™‡J/K¨¬‰åØ«D&¡ùq9ó¯¸¨±É≥”∞(åÇSÄ¸ß¸—œÅˇ0ò∆I‡à´ÀY¢˘´–∞‚ √—/fArôWWﬁ9∂k∑[ÿ'Ø\º“
+$5æ8¿‡∆…%˝ÌS"#˙≥HçÉ∞Öòó+©}ÜÈ≥ ‚r—47ÆΩsc°Ñ/aæZá≈ÔfÎusó≤|æÚEπ∫»|*˛,â«œ@¿<ı“`_†Û {ÇWªgg õ∂Uã%Íπ‘…UìUaEYQ@ $ÖaÂΩÎE\mlÌM}ßZ®')è„w®ƒÌ¥ÛA–WIJØ7Cƒ¸Âó*B-}# ÿú¯bgK_Ö¿–ÆÃ¥$ÂiSÁó^NÜπºÅû∞9m8º…è )≈™d…e>ıã»£ˆ˜#∆ÌΩ}KÚÃ[œO[ãÏ_ΩzŸ„¯)<ª§Ü;rîF51‘S_qa®i s#¿¿ÒI^ç◊Œ[~òN±ˆ.:,µ—yÉˇ%E¿ÙdÍ„ú[º∑ke∆Íä¡d=\¶Ó>/Ü¨∫Õ≤,F§'8õˆ¬Glã\,∆#*„ 01çºK,jÚ≈Ä’U„-£¬;æBXÔ,†ìﬁn-y”pâêƒíl∞0™#HREÄ√Õ$Ò.{∞ª¯/ΩÌ©2dß£(ÒK‚§°t°vØ¿Ç≥4_ót6i⁄^xÅ!Áœf|˘ô¯å:ØÀ{Ïªo˛Ø–y&ÙrÅØÛ&ØY áX;Ô!Hí8i/<D˜i/¡d£@ÓAu˘ùTaOŸ¿Ú¢øôh£xdqÚûñäù—êz@… ËÙΩ!–QÑo÷Å\óÄRÿ‹¯/ 3`‰ı0Îa(Aπ´Aoöê”ﬁNpÊÕ¢L¢ E∫SP¨ÏMX8â√é∏†ˇeµÑÊ©å"ÿJ¢ O≈Ñ$o("≈TÙE√íe±’P|*´H˙ÜbR†ß¢Úá©úî‡yA˘ÀPR˙*ÂÂƒ±å* ßÑ <†ía∆ø˚]πm0Õ=[ƒ?¿Ìù1O q®döCÉ!q©Ï¬KQ◊ç? £«∞$ËâﬂπL&2áDó
+‚®L=’1™x√T≠á¶9ßø3@Y4§•ñÜqjh+ó≈ÑR Å]Œ‘}à‘EVûq¯!Ù…ÁåÉ„ÙAñ*√_dÔ$¶@Í¥ÙŸ:¸ı&ÒEªs˝ˆ≥´ t…ÒÆdóƒÖôÈk≈ü2Ã$D+3“PfÎkö?üB‡ﬂkYëñä∫ƒﬂÅÒ⁄ªIRêä∂¥û⁄™ÎM≈ :w≈0¢æ+∆W¡‰ˆÕî Ïo¡∂¨ØÊ+ﬂÛ›àì‡ ≥c÷	√∆.Ø<Ï/≤/V‡˝ﬁ√5√ñï˙©ﬂæRÖ[5˚ … ÖóL⁄-·á¡€Ê¡†ì8„∆C¢≥Äo-:◊ÿñeysZ¶aç4£à„iv…∞•©¿3¡GX8ê*fH!˘;7‹”'òAGSÍ|,h.«ç˙4¶X¥Mé@Í∂ÿ_±‚}©ï”_≈≥lvºJ~úB≠◊^8F3?Ä„s…ãıÜÒ∏’AlÍ,ÿ;U∏)eL–ÅÇı‡<àë— àıÂa=Õµ©IPj 9Ëd±˝´≥≥pbÁ÷Ñ#…Â5áëîâ0∂†õ@ O@∫,ÍK-≈@_å¢@ƒ…Û@£€Dâä2~Al%.ï•îÈ∞2ÈI=Pˆ[¬…ó
+¸.˜Úå7úˆ·Â Á∑⁄èŸ2íãx‚À6 Ï-¬∑Ó≈"hÜ‡G7H±Ñ˙o 7X¯çã˝µîc(¬‰ƒá‚;ÍTÉY¥,•d
+«¥-YêÂ¬∫¢:ŒñÌ'ïoeé©R@0_ï˜
+˚T˘ñ£Q›Û∑b™®|ÆêçaŒ©‹wﬂ¸€ˇA ºjDÁs~^4»˚~Ø•≠ÁJè	∫\÷Ê‹rösF"Y⁄…·	:πÇÏ»óΩP`|&~∂ïÌïEzﬁ-Ìùd¿«çè≤´1ÂpM÷ünWì‚8ÕÁŸUM¢â÷¢é'\u¨PtW†WUâ(†ûà°(!åés ˇ∂À∏‡ßs ~jgPM¯ZÈ≥éIûõ6Ø8∂P¨]ﬁ®2êÎüîÄ`ŒùŸıãZÔ„ ≈@ ZØééµ∏∆”ÿø‰£+∫UÜ`PR¿ zøNwîñL*$HM ¸º
+ä˘TÛ*)
+£m“Õ:’FrOƒøí—K	ïx=ùœã»0x·0@ÆÆ®hSG®mÍ
+â÷.˛√∏¡)ÁÏ Pö÷ÄB{Ç:6SıñµÀ±Vu\¡[—Z '≈ı~¢SˆŒ „ ØÖ˛ı;[r¯ﬁŸ}±{º€R‡◊ñùä^)'P0Ï$«ò¢óRÛÊÍ$§E*ñ®TDJBπﬁXKuÏ˙)À~r≈;ÏeÀπM«Ò˘yÙ˝m”RF˝Èªupr<ÔV˝(óúœñú¯ªYj[yì}¿®qÊ¸Ô1,{¡ÒNeÖ≥0Å∂⁄®vL1Í◊A2¢éeß“â7ÕwÍ<»v‚a⁄∆QêWZ˚Lv∞s∫ò˚W•
+æC?ïv ‰ús^;ÈŸı |úGQæ7ù•£6W-¯Ωês⁄~œ'Nv_€~•ZLŒ≥{¬˙•˝/Xä:s(u9VVVW¯µ‰´åR8a–|/ÂŒ ˚π•1≠5Ít1úbÛ`oæì¢Ìb—’•®“ÃN~0ØUõwUr–$x5¨Ñ	ülNQ	HÔù™ar{ÕpäX¥Aıí#QÿRø=≈˙Çcúb⁄rÉñ/∞'ú‘&aÌîüî‘ä´T†§ëí⁄áÁËß?¡!)’ßelƒ!ÊÀo±»[X*§™Áç—	©<6Òˆ…[^~¯P„^—9n˚üÂ¸.ñVÒ.GNÄw=æW®Úì>Â∫@é÷Bƒ”…9»Úh.(ikF¡0’!îóù∆£Î‰rtﬁ„¢˛YésÛ>ã∆Ë?®Óä$“°^Ø8ù∑B:;Õüπ{S+o“6L[èpíCﬁSêS=Í8Z™óÍ“úS3bÂd´Ê’3ÍeqDéRŒ“ä¬”äp¢‡∞r≥dç	◊Ü,wÆS–´*Ω3`V‡AË\/	–/Ò!(iÜGÕÌPcHt'∞üœÓ+â¸)E˘s‡32TÊÎz∑óÄ≈∫S+•¬™à˘ÀÂwÛàáÜ∑7FÈR@ı@2Dt	ºÛD©C˛5⁄	5àJÓ%åcùÂÑFŒœÉ7Ωur|»(ºÇrIÛ˜PãÜ†∑ì˜\â¶éQΩÏ0.È•4{ƒèüÿ‹	^ÁK˙6úÑYHRÎb±‚|r{~XOR§	4e(°°1√w2¨)∆—7¬ããòTøOÛ˜ﬂä‰{¯=!HﬁŸª¶˙£ÂÉO18•%¸1ªË>ÿ‚lF$¢,ñP[(∂™z*9]Â ZPüFàπ›˙ˆﬂ¸ßsÃE¯xsñ≈›CélÑ_Ì1«9Åˇ#A bÉkp≤Ê?f˚=ûVMRn˙∆åQdJAye6U∞5ÓŸ–¶Ê∆u.›∏>ê˙≠p;K"Û™MtŒÌzÅ/ÀùìÛz”Æ3,\ÈúöPªV‹‚’ïæ1%≠≠gÆ{Á™˜∑tZﬁN√	7,∫jm˝[ÓÍ˘vL^ÎoﬂóïaCÔ≥á{Ò˝À\Ï
+æØä!LÑY- Ä+m˙Å≥S§§ñÄ"«‰È¨…}ÔJÚ∫,Tˆ)æÙ(b£ìGlT?}i´©mtJA∂b÷∂Ú¿çé∏a.bm•ÃaÑwGÒ∫v¿µ¡≥ªíµÉjtÖ…G h:ÀŸw"L\”∆¡ô7´4;åZ›"õ≥˚!44u≠≠t‚3¶ÇWX
+ô‡rΩ¬luAmWı[®©ä”nQÕ‘(©pÜﬁ	Üﬁ[0BçÖIå@WV°A(~_6‹ƒj$êE…ƒGQÄ$lC∞óRE≈TQ¡T›Ë•¥Q`	j!«g1ëF¬X–’Zº`+nl∂ÿÅ≠≤ÃÅÓ‹!>–›πáõÉS+`Ç∆≤g‹ıúG}Kú’⁄Éní◊π'e¡Õ›∆aò\¡î–@ã‰ P`äx	Ì	Ãc≤s≈SïEˇ°
+Ê¬Õø*®9)>˚*à0æûòetYybÑì yqúæ %g|ñ∂£xÊÉdüª	Í:
+Ú›L±&V‹‡i<ÛÃÄ œ¶2îÍâÍB$\~–d,Jµˇ≈∆◊qVæcr9J¯’Y¬Ÿ$Dı
+æPO/“ã'‰÷≤!ò{—x[|Öü∞O8{°Å1‘ß›Å¯p*ü|Ó<ONì$Ñ<õπ|AU/œÃÿ	–îΩù‹«òL—ˇálª ÑaD7Ÿ•!ºAè}rl6ô®MÛ†ì!Ì¶à@ôRÙàæ‘b˙>— Ù£≈ø4P0>Ò+øN@~Ä‡Êˇ"……CΩ!Á[∏C©ß°D¡d#OMÙ´<ÅºtOõJ~à‘Èe™X<ˇÆí5ÙP1¨F∑õÃÿd£kd’T√äHu˝ÈªoˇÙ9(˘A∆euKˆŸUiˆöœu≈˚Çvz_ 0¶Coí£—¢J¡ä0í÷+ÈFSz†WÇ≠	€H…:°º˙hBºØmKËáÏ)µ√]fè:’2ı–Z˜√>w{^©ÍM™.…çqSu@s`¿€£∂»ÕÇﬁÃ«ˆ∫∫ı¬`^N–«;Hø›’¬‡◊æóçzËEÁ”Àb¡"=XÔÙP«»≠¿v‡«ºtxñÍæ+93r#∆£Ìxﬁê˚lã45lÔÂ—ÒÊÀ„ø˙I~ÀÃdæ1™√éÅALL°ôg2Ë{YµõFïπ∆fëÈΩÛ–c;¬ãùGÒ),ßÍ·:Ÿ∂Ä’ì8MÈ“[Ã»ƒ∆ò>'Õ5sÌ⁄∂∑í”z+|x5◊9üÆöhê\‚€≈ ,VK)0P◊@-J8n†ì	ıªÇ\&‹≠ñÕEî*æÏX=rø˝„?‰öS…¿I˙-•≈VDó%g‹’√(µÇ <Y‡?ŒÑ·IƒEµ§/ƒá@S3©û*¨_Ì∆kÌ^ÈÊÎ\^e›ﬂ{x$‚ºÈtŸiŒ÷ì`E
+ø;e€—°5·æ™Tœ©ª¢¯ÌΩG{DodµAÅ/Ñ£ÎŸGTs’#Rd≤2+€[ÄÖo8ΩmË
+9MbÚX=≠1πNûªGG≈^ôdóì§Óm‘·ﬂ»É»ªQ\÷…ùqUw‚	Et!MF≠úªı`%•çQl>∑Ë¬Êï7˜N∫°Ñ\ç®øìÂ◊íè’˘ou*iR‘o0cm¯sÃªd∫2Œºöc¢HÅeZ8<cá¶+‹o6}ad3<á•¯awpÀÛ~‹R
+2T¸Lƒ]„ÈÊñ¥Oó–,}xQ§8–\m~a3Æ3[Ç∞ìÊñ"^∫,·af•‹˙%≥)æÛÇ∫úFıqAg≥⁄)¶»Ω1g!ÕêÇ°≤ÓySs´±9∏p∞-–≤≥ñRG¨¿Lv\'V§FqùUjÄV%qäx›Ù¨ £6è˛é$.πQÚ6∫;πéXô7&≥3jjZ“…BnıûH+J,SLôeeﬁOƒ±	zõªß˛¡ãBë≤vû2ìFú≤øÃ9që>˚ypôrS%
+ ﬁ8è$Ã(1<üäîó?ù%œMc√ôaÑ71ùé–µö†!Ò.æ∆EƒÂAÙ$™µ÷÷˙ré¨5ˆ&xÛå¸©fF”_Ê?À√óÔπÿLB_≠±ºI-á¡‹]]r¢û“+’z”;£¸LÌ-ŒütË≤ƒ˜äS◊{π-FòÓ”.lh´ﬁK„q¿´ø'æ'?^ÄÂﬂ”µ@R¬◊æÎüï∂Hº˚≥˘íœ∆Äm“HÖ_<lî –_ÜwûœÇ±‚(ÊGYªS:ôPd¥ƒ∫ÚeíNoÕÅ◊ML)¢=)ﬂgö^¡êëIa&m„ƒ? ì¡–)•¨µÌìÆ¯[˛·˜’Ñª<9Ó6GΩÏdÇ◊UΩ-≠ŸíÃËkÖªZl’:˜ªM•¥»ó]n≤*PÜMú∫±+ï≈ë
+˙Pö˚SÈÒ6∑6‹öÇtn@‘XV1Y÷ARSh∫;à™á™2dqËRˇ-¯i∏oWOÅıHI«âS„"*çlìUâxQXò4‹W≥Ïe¨§j¿æ,¢lÑﬂ„Y÷^^cü≥ı>¸oπﬂÔÁCØKß•oaƒ{;§k1‘(IJ±¡ìSwdñÍ¬cNc‘UÜ„›ﬁÊKxëksê!`ò6MÒrP÷˛ÏJôÆ¯3}úe◊r·0xœ'®>~Ád∑ê„p˙”Uíw™†ó»ècRÄmà¶FÂµƒJørf™6 ´™ùäÃ≥‚E9±¨˛˙®™ ´pPL Ôπl◊∞íÃŒó¥ d4}∞^(áæí„`~?ñXº[˜Ûv‰x∑íÿÛáPJ(úπ“UÈqìw0√,i°˘¸âÛÄ‹P«,5Ã%∏‡k¨≤rïs˛µBìËUKΩî•ô≥”]S¿±’âbásó‰”¬†v]∂ ¶7"§πœëôåû|:*Z^Ø
+mD-oÉ¸Ìü˛6W…ﬂG\8K^÷mê¥§%KÆ<≠=Ω2;RSÒµ\¢àô!34I é”}å’–uˇ˜ú*‘ö≠è2«˛r¢PHÀO]‚2nL«-5√QFíSãÕIzÊÖõ»ŒûÇ∆®⁄TL†Œ9∆LÑa[√¿ÏéP∞ò‹ÌØ÷àŸ!,/¢∞ﬂwÇÏÆåOlıqü‹≥&∏ÔAØ˝ŸPG<]Ÿ€"@¿J…#¶,[	ö9ŸíØp⁄ˇN0÷
+['rk ∂8@ÔÀIÄDñqˆﬁªf¨»°äÚ¥⁄G‹!mC—†Òª€)<˛Íxˇiƒv#“¶?©Ñ±ùÒ¨ê˘ùn¯;}⁄{›Súˇ3Õ/.U≤zÎ>U©û´ª}r¯B\)¸ä.êÕù∞*5p˚ËS5œœLNâl¯ül¿Ã%yûW 3éYªiﬂ‚4ª•VRbL ô$o˚›ÔÿΩ"≥ª‘«ò*O∂ÑâJ∆‚÷<<~)Ûº¸È738£µ®¥»Dn≥n‡0Û‰<t∑‹nÓíÎ^ñòÈ˝≥zã≠VÆH4K√°0⁄ÊΩ◊÷íŸ®‰™÷V0Ω^N]J-E{¨ä∏•…Ÿ¯3v´Lª(päæ(j@úY˘PAf˚≥"π†—s∫8ãÌc◊L$ö«T-BMññDuızÅ ≠ƒ©zëÄÈkq¢´◊ óèµΩcÂ
+˛≤b⁄,”¬òÕó€`3Õ°ùR?éQ·ahπS¸,G6¿Ñú·EDS8À9≥ßÒ±û<Í‰ß¯
+ñ@s~zóÎ	ìÁ.nôí≤j”ãèf„”	LÀTåê”QcüMß“Hõ§ãÊÓˇÈ∂4„∏Î=ÌLáSoÆ4«j?öÌÕ Ü‹®éˆ••c$∞Cîÿ5/a≠9ê“ﬁªpçC˚¶@£EÛdf‰A\øå√Ëçß´≠NqÁﬂÎˇŒÎ˛v≥˚ﬂÙªèz›7tˇﬂ€Í-·¢+Œjx*‚ﬂ	æ‡CU0≈<Ω⁄∞
+‡46x“0W∞z[G1î `⁄äñ´IdY®ã‚Â∆,0iØpmﬁSQ¡ê{÷ƒ÷‚¨sëA‡ô<-≠4üÂ++Z.¡ìBDÍ´ì©«kŒ£yFª%];m‡mµdóWÕ`˙¶6kb¥9+ã‡»âu5ÅÔ@“Òö0m…;†é{∑Û9}‡÷ÑôäÓ˛ƒÙ@\ósÑ©V«ëWÕO¢N·ÖûõzS#x£IﬁHG q.–pCø¥j¬Gî`îck/ieiŸ3âjÛ≤ÇÑ€Kèºtîy§Cj˝îVA∏›˛T2™wMÀﬁOpÄ”õÊ.*í{Â.éªê«éï‚i0KÏ©‡U^_agüÊ∑0·]§%ïΩëƒösW’k#Ω6p—UöåÚ4QØ≠(>m+∞¢ˆcÛ+d¸û™Ëbo≤å„‰Ro¶Ñäº’+ïJ1}˘L»A6Ú9	1ûeDÂ^¬tãõäò∞+ºmÆù6ÜöH‹êΩS„Ày(!üçé’I¢¸TµÆq÷ïZ‡~˙∏¨ﬂ˛˝v≥#¶z…r˚¬ÄâcÀDg•ÑˇUöA|0Â•ﬂ∏î˙Ë’mDü,•ˆI5•¢b	æça<Û&õ¡4ÌüÆess¡6_ÀÚ_&ïØ-<CâëÃ-íè3FΩxI4∫Ç´ﬁO%<q/á™™TM∫bM°Ó·SmÕ{Ωû˙uQ;B2z€Ü/€’%4!V[˚±ÚV±≠πV€\#∂å_4è”ipÃ≠®Ôö±iπ√>àXÈ«]≠^rª¯ïÓ†æ3E~“∂K¨*[¶V´nõ˙µ…÷i≠ô∑/+ß’“v∞∫ È¿ç0¨ÎzT¶U©ΩÚâslÉúa+„áV˛élÿ@a…4`‚7;‰óYÍ"Æ”@aO’œ⁄•
+Ê"íg4bYµa—∑eÕÙ÷0Ê%Ÿ˙DxÎ{@Oç±ê	Ÿa©2œ¬÷‚ìt´—ŸÎòùÅrπÇ‡?ÑixFaÜ≈I)<‘ærü*_£}ênÛlú}ΩŸ‡B~X÷g∫«§å8%ñ0¥ !∆&|∞U3ßöôº/ﬁYòNÅqC\©ZLunK·õyΩ ˜∑ÕÜl“∑•ƒƒ]´…Ù+Í˛ﬂˇ#£RÖf_Â'—Ká¥¸ò‚Í´x∞gô	_4ÕøUÌÔ–˘ª˛5⁄~ó™ﬂï‘_S¯Ûî˛≈ÂπƒO;'{VΩ”œ˘énãb∏=∏0ÎIB…ç¿˘ΩG‚Ïà@Øä©tƒBd÷€»o»‡/™Ê5Ó∞ YaV«Æôg‰ÒR∫≤ŒîÀ∞inJ5•zRäA/ñsO*Ûq‰t¥gt¥π|P]‰åw$uTS∏ré◊Áz§%Y˙ÏäØ≈µ5π„…ßŒÌhﬁÄπs=éÀ˙∫~v•4<ÕÛ√Õó«ª;Ï€?˝û8õ√›˝W_ÔÓ¥îúZxìº0
+ˇ•àÅô10+ßÅïâ]AEÒs∂xCA	Œ∆´∞˘ÒG)¬¨ÁÁÑÕ
+∆Û(à)Ê?ﬁø_—WG\ï¥Ö´≠ËÜòNä7^ﬂ`FZƒ€JÎ*“ÙŒ»ìÀZdÓ´Dö $‹ó2®∑ñ®ÏEÅΩ…§a
+˚™VOM∂™ã¢€≠Ω¿d.√&∑õ®s‰óÖ¯%®á®j'Bƒ‘x¯¬C›ZXi"Â‰:ÓÌ5‹Tb‘ª7‹yyˇ.◊5Rã§ç2¥È¢âπJRqÁé?_{—S7È˚öÓ»ŒK”ä‰,?`Ü‚ÀÄ›+πRÛëb•E√Öî–¶›0ñ<QÇ∏ΩN‚‡Û≤∑hœ‡‰ùñäµíªŸƒg0|õw˜÷+›Î%Á—1ßìZÓÂaP9ôT¨Ìr¥M|˝~ÎrwÙÙ≈ıqxuw-	UΩÚ8—ÓÊ”m¨®ø{RÍUÊxS˙<Ä©Ö®üœp>0%ÇòbÛ@Iw_nnΩ J⁄^Ó˜ˇ·˚Ïªo˛˛˛Î˘;¢≠;{Gº»∑¸¯.ß±ı·≤E◊Ç1¬◊0Y]m\π6dô®ãiÿ⁄ ïëïê¬Î0•Î∑1÷.øöìEÉT~˝ÜK)_è¬{ÎÕ ú"WZ¥¿ﬂ∏+Kg_∏≠
+'Ã"«à,Ïﬂ’Ü_	)∞≈óπ„™$d∞)ø##÷ìBî…/z†dÿi*∆ØøtOÅ'‰‘¸YúÏê$∏è…z®±#Îgmt¢eê≤áM8§a•IüiTæ÷µ_"r©ıïVE¶§¿∆WYó◊™7ƒÛFÕŒŒ¬è–Âí:ãb ié’Ô≥øbZ~)ˆ9{D ŒÍ≈¿–OÊÎ≠œÆ‘¶•7åà´◊oø+F*}ÚY¢JIÓTÄ#L—Mÿ@sﬁôzï"ÏI‡è.€«≈#„ï6çJx¢˘∞õsÏú%.8ˆ©Í„¨,gŒó+Ω:N^[û6Ë¡—®Uı¡ù§À[ê£Ç∫Õ∏˜Nﬁﬂçª|›å√Â-¨¥.Zƒ ´NË¶*⁄çRÇ=*¢4≥‹aÜa(2÷~⁄ìÓΩ8(Râ¥:¶Æ-)#JGØ^-BÄπE2oÑ95äÇΩmÆ√Æ=	VÔ˙"∆‡2´¨(oCw·CçC´$/•5ç_\h‡“ÑÖùíç§¿∞ÍUÜÕöÄmzb4‘ÖñÚ6åƒπı›7ˇÁ?Â—?‚dº€y˛{2ˇ,æÅU$˛hëùŒ.Qπwü4_)_Õ/¿HãK“ª£sõÈ2ÂNQWäóå®ç+Ü∞´Öò¥zÑÎ≈P°^áyπLE@≠‘Uòlz3ß-îø«º$©ƒY˘™kmUOôıgJ[˙}<B„@oä^BF≠T‹Ú29ƒ™TXø5úª‰•Y8∑n§v3ÕDRÊ¿Jåîù≤…∑J\Hﬁ€ÛUΩKéñÛØr#õVﬂ¢π™Hø môÿ·u!¶5◊œ7nV.ÈÆ»Ù˚¡ã‡¿≥”‡LÍkÂV¿ªa[\à#∂M,ByÁ‰{uãß£xR)H/’RÿïK—KµïÛ ô¬VdπKe^ZˇHV'-˚áëG⁄ëz ¿/÷«th
+>RJõœ0‘xO∫ÑÉ±Æß¿K±0]r!˙ﬁí©Ö•öÚd´iëûŒÔû∞*ßÔF≈Ôû˝ÙL8˚n`~]™$(¯rˇ˙æ∂2Ppå7?‹CtctñvHüöñ≤cUgâÒÂyµx„ 0T.ONóÁ¨Úså£¬∫ˆ]Â¿∂»Aië√ b	”ì¥çqb+¥8’¿µe˜6Èìêü©IcCÅª£K#CVW{√vs4-<™ê,J§+|íÁ.oSù«~¯ê!0Iÿ’∆»<—'0*}ˆ€ÓÎï~ˇ;=∏ıÜÔóˆ…Ù‡'ÒﬁÃíÓòRL^´êvá<–ı◊Äp0Îâ¯9Ì>`Èx0ÌÆSjoq.∫ó]oñ≈OƒÙÀ√Ä/F!¢`°	˛O7ç0 Üƒ–9ÅèâQ(P‡wW>F¿≠~Ï^t¿_]jfÈ»§HﬂÚæG°èW*“∏Ò›aÃké∫Øı?åﬁ‰√R|"Øñ>g_Ò…ü/6U√¿_ˇtw}˚ãıÌ70ÒU>Ò59Å”ÍLÏÀwdA0QFcÿØJÌso⁄]È≠iµ™ı.∫èÿ˛ìãÎCõ<∫Î˝˛“É~iÂÈÀ*|YsçX¸õ√€Ç-ÄÉ˜æ€/ç∆Ñaû˙†÷`Pkl©4¯%}u>ïˆF+jk|t3¡x@?¢sê†&n¬ÃãÄ1@ Üπ{AâÈ∏≤,me–1P‹…£Ø}ëSFdìyºDÖ´mAÂ˜QêÍ≤
+≤ GÂ·Uà∏ïı¡≠TﬁM+´Òzyy˙Òç2…•/˙|Iêöçs§(R≥SŸ	“˜Ï€ø˘G‰ËÅ€
+ï€æNxpAet”ö≠æhÁ•_Özö ‰«⁄Â¡TÁxÛLAõ)Í0‘¢öß≥,ãÀì„¶∑	áÔ7Æ⁄ï¨ÁÍ£™ì9aO—µcÉYt,ıÎ·¥⁄	)¸·ÚúÙÑNÛ°Â¡]
+
+Ë<ÌÖìa4Ûê√*ÍÂ*?a@b¸√∫æiÑú€∑Oü‹}öÃxŒ¢∏pÍ“+ıæ¨©¶•≤=%yÙôP˜&ò]ûoıI%Ôf˘π∂~+ªiÁÔÕUt*ë£«“•Å|≥&i'ÙÁ«T†≠8ÚŸÙ#P”Èewπ∑ñ#oƒk∆Û±åÊ„4N∫”8‰ò9Ò&iàpÄD/)[»tº`4˘6n,¿¬°·Ôπ°N˛.Oß‹GÆ¨©πÍ…√ácœÔæ˘wˇ#P†&†9j∆Ü.e„X˝÷©Æø˝Ë6:∏ÜdÂK~J≈D∂ÕJ<q˛à+ø˚Êˇæîoåg?0◊3¬ñYúµXVAãø˙B¬VÈ'¿ó™L‹◊#œbÇ∂*˜± <Ë!ÄˇØ%|‘Å6c%ÆXy\jØ9jX©V2	ï∑DõÀCò…√|Mâ'ùsèÍŸ≠ °vÌCyæ˝”ˇ\¢Õ’µ*ëgÒ≥‡çÔïÈÓSçÄÎ,R~ÏΩdJIi˚è‡+∞‰ü/9X îàõ^Óóx˜Z^T¸¿1@ÙXÁUóky‰Âuÿ=¯ü*b®lÚäëMæ¥z6ôÒ«® 'ç¬ Ú˘ùÆU‡≤±À¯Â&®∞»
+7<>≈ı⁄•ÅWx€"°0¢0¢Är&tΩ/∑‘ƒÅÚ>/„eû%Aë“GM•Ñ&J‘ògp«¿¸,Ê∑Y»‘©vìàúÊi‡≤8é“^C∆Uá±wÄéfß„0€∏*Âqæ÷∑å0 ü-,ÇÑ»’Í¶6¨
+¢IQ⁄ﬁ*∞™áHì ¯å?»5n\•£¯O$¶} h≥Ä?\êˆü3o#SØ?¢§ˇ,ŒR„WJ0¬{ΩìçÖ›Ríi3SBj»ç+ô—⁄<$@ŒîÏg„*@¬Æ“‰<°5d`©ÓöäJ8é·)ûƒ∫ôH~M‚àÓJK ‡+¯4Qoö ~R¸@ìEq˘Ò,ã¬I–EœbÒ™$ûõ÷ÀL3Õ§ç?
+ºÑyJ\€¿iﬂS†®~uΩS‡zf¿Ï&·˘(”Êçƒ	§≤M+Øπ{lcae1	zçÏáAÍÓó§nDx1[§6ûU~Ñ˘’ÑÁÉ2q?&îÂÿæ˜)·≤Í∫V¿˘y‚˘tµ_wRgT^Ö?<èYß(±ñø+ ≠È⁄=Ö—° NuU=4
+Û„˙>‡]Â	-I@µTôÎJ37luïmÕAId÷Ÿ˙ ∂ò`ÎÒÎE°4:k%”ó§'/≈˘üURêñ†RW¥@ø«Ò4ÔÏ•˜!<Á¸‹1úgMEjÍ_≈éS1Z‘£˘»>í⁄òÔKáIåW{$8‡†JA-2_wq?6xª•:ß-Ú*&q5úò¥D ¶+\†R¡¥"»ó ◊"Räê˙”2$K⁄ø∞hÖ'ß$¢∂¥i!eá∆A‚E>?ßÖŒA°±OÑ?◊ƒª±rUT÷Œ§Û¥1∂ä⁄SéÚÅE˛ W’Ÿ˚∏ë ÕRõ8xÖ),»7Ñ≈T⁄ußdËÌ•"éNîluîÎh¨˙¡2ˆáµ„≤Îö.’=B®ˇHõ¿“Ô≠ËÚ°J4^Ë¢Uoé)'‰,J´ÎŸôhµm+˚[`¥ª8àÇâˇQ¡&'OŒCúπÇ0˛ é_fn#[RR∫O◊∞Ÿl˙I˜∏ts÷ü˘NÎ≥˘qÏwC£í¿≠åﬂbG9;Pó€æ“Ê$ëDŸPp∑@qäæ´õ˛ü=8»y@‡ΩÆ3∑?^Hÿ¬—3ÍÜhA›ÙSÄ1%rå˙~Ä¡ˇÏ· ¶#¡s0[BŸŒä∏¥˘~“≠Ê1ªÓªÕgÒ„ÿ≠Y!{∑bSSRÊNºs	ÿ¶Ë‡Ü«[[’1êàÀ≤˚óµÚ`Ó)Sq™zEw_à}Ÿ(,K©¨¨—†aln±˛Ä}Ω{∏˜lo{ÛxÔ’Kv∏˚ãì›£„#÷^YÌ~ıÍ‰êmø:yyºÛÍó/ÅˇŸ<88|ııÊÖNv;ïÒCªn	À("îgm◊˛öJ[|¢‰ë}ÿÔ£{÷TQè†πBÒaçÈÔ$æ†OYxΩÀâN∆ãºa÷Tão∫â°$ÕHMıÃ·zìwd≈n‰Rdƒnˆ∆H‚A∏@£√÷ V~á&f‚Ì¬ˆùƒºà˝bÃ¨>¢iÉ}$ˇ÷ƒNí¡YÊÉ™•®x~9
+&"IH ÏCËÂ‹˝q˜J≤€1ä.Y˚€ıOèuíπ_^"ﬁ,/.?|ÿA˝¸dÕ˛óÏ"D©ôG:ˇ ÀÉÑgdO1#¡e<√¬aÇÁ@'≈ÊÈ¯Â»ÀRX©øÁé€sNΩ…{yÕ—“sXdÓ¶çKç˘!bî¶CÓ.˚8Õíxr˛Ñ/6Æ2ˇMCc[ÄiôQ€¶9óÆ.g{gl6ëÅÎÃ;CZYÒÜÂtì‡≥ãI9K¬Ûst≤±nÈ‘r0åöWÒÕ•W(%9Ë˝µ≠÷º~ ∫¯k@ π¿äÊhÒ®’¨ñÈ©Ÿñ`=¬/‰ˇögIêéôÿ“Q¨ÎòŸıˆÆM©ËMÑ∆—{ød—V⁄sj6jF#Õå\Îÿä«]R;Í≥#æÂ>Øe•©“ÚC˛3†!iËR∞∂Ñ§Ö'/c& TGè fZ…¨«ƒÇ¯û(ó§ÌH€Æ@>)·1B_åˇAXãêV™b-L[Î%W]Ñ∞´ã–n
+H~ÑòàP0fñÖ@%zuá∫˙°¨ô∑Éà‹TA5Ä"Ü4N›~w2‚R‹{∑èëó”^qä^ÚõÎÓ¯¨m	`*cSÅÏ¥˚ãjú™⁄€Ö˜ÂçÇÎ˝Nßy?˚x/∞µ≠üQÌGÎª£§Q©>öÛª˘°Ìr|ghÜ€∏öˆBﬂäâ≈$Î$ıY(snCò§ñ¬k›7Ûsæñü[5 3ÍcV·FÂE57:æ‰68qÊÍ!œÀ&∫(–%ˇ∂FÍRÄ*óJ‚4EXG-Ã.ª_¨ôiè|,Vj˛ÿπ,|lß	ü—Õ®æâbè/o:#ú∑Y6F∏xo.d>òñπ0Ø›l¨£’z1¨õê©ì cÖõ=rW√‹ßÍ0(£êÕ0xX}AÂ¨¢“ûÃﬂÈ⁄c1ô[Nz97ŸH_›i„Y´¯ ™–º“Ø
+Af1O¿~√©#‰gÎí{ ¸)x¸¸V0˙îCJ˘7Zwµn.~X)U:f9®ÓàòEÍRO4Ëì„√Åî.*ÁÖ{ˆhÍ—¸‰‰Ñî5¶œﬂffèü∏,πŒ•ôπ …Fπ,–®ph‚Pqy∞ÁÎâ˚∂eò˛´æ7å9E^£ÿ]÷€Ã:t	˙–ãÇc‡∞DîÏÎ7»Ü ﬂJ◊œÒÚz6'3
+åñØÿugæÅ7Éµ+Ö≥xK]∏ 5˜YV√k"“4k@'ä˝¯ˆÔ˛3ì˙	\Œd–t?ô÷‰•Øóñõ¿uQº!ÇÇ–9ÕÎëÚy¬Îq¡#6ôö<GM≤ëØ÷¬ìˆﬁ›°ïkPÑ'∞ªÈ¢¶7ê
+ÉN„3fì)‘ßs='4‹‘Ì¡YSŒÂ bòòˇÙ{°C£,Æ\{Ûÿ^T‹Ä ©"π –¸ÓwäDS`|'∞Kß9ÛIvÄ√√€Ø¶¢Ñ∏w∞ƒ›~öm¯7ˇ	-¡{rƒ®,,teÌ√¿K1U9Ã3	÷JêJ¯;
+˝^YqlƒvIÏÙ[◊w~¥·,sîﬂ0&±0Ioop°á;;˙pƒÍO…ò∆ΩŒ≈1zÉ6 ®5k∆ü™k†î,9j´µ¶•™ôÀ$m8£U“/*¸∞’âsÏﬂ»y»©[ÿ√ß˘±K
+àâPí@OÄ≥öC∂]Y*yªÕ?§#˘iˆﬁ†L&LÙHäkÙÎA_≥]“ªW©g\4*ÅÇMŸ,∫UD|‘Wó ÁF‡ró¿¬∑ ∞¶@§ÄSÔL JÁ∂◊‘∑ÍÏÆ-≠⁄¢Ü0LSŸJ9ãwy¿6µø˚ÚŒ¢fÀ=⁄=>9h`£Õ}Ò>çuV∏¥3ﬂKﬁÁΩp@P'fPb‡¡‡EïóyT»¥‰‰ÆÀ¿\S¬+ØH†4o—¥¬Ïõt@\±RnÕmî}º@òm{âoı7ësƒ∂€
+4CÏs¿ﬁ%˚≈!€Œ]-i”‰ÏÑn÷µE¯m8í≈ÿ6¿ieEö#púö%Ñå3ch1&‘ ` ?§,¯àYï¥9àÑL);è‚S ˆÂœ(UÁâgôŸiô•ù#*√Ôy˙ˇázÂ.∆É‚ÁäS©‚Ù àº” “N
+≈F‹sÙ∞◊“H0tPIã|I´∏∑cµ÷“Ä¨√uD»·√√c(,ŒZFÑßÕ¶·ûo«ƒ’¯¥¨–,8-p.Ëù˜òóPç÷◊˚?O#˚¯åA<π˛Jb/ZıGke‘UX*U‹EÖë ´·lâØ™Ò ;åÃÖ2ßÅ´≤ª w™πN,FÉπ5sÑ>¸„¥·ˇ8¿~ì˚O∞ØhYˆˆÉ√æÈ K¬'`≥®võs∞IÁÄ˝|Ë 1Òÿ˚Á√páá¡˙¡Bf,ç}_'…Å$±tõ;;9|¡⁄ØË⁄5œíˆ∆yT‹•˛òh; ≤i:XZ^ ≥ªıÜÒxi|Ÿ˝M“õNŒm-àcˆ
+Á8I"€È®±_»*Mÿ?ê c	∂:Å sÄ-=Ú`ã˚Ï8~LÿÛ"ÚV¸— ÕP'6üP}ÃVS´¿Ò∞"p‘π®‘´¬\IÏÊkâ+’,h¡!µ∏ºE≠qPç≈íB‚W6–ﬂ€M4Ï¯2Åﬁé‚ôœDrÂ:Q;∆tÒ"Ódo.¡ÜE•8Ìb@È«¿∑#R∞‰πô‡¥…csâë]Ò K·w6Ü∑æ⁄€WÖ.ïÏ±„^vï¬Êr9H˙t¢ntÏaFîw“°áæµ>≠9erÜæ∏é¬>ÑC’tOg8S™≈ëÙi¸ëß˙¿¸ƒ#(˛VxÄ…|£bwRë˙⁄.^ø\ùÚi“æãOmä‰f∞æÍF∞S%Ã¡í¢…Üo]'"üªúô“d∏Qû™”˚…ã≤çÖm~yïÄÚÃ•\5µCπÇNåø¯k]Lqá…««éˇPègo‘uä-∆ñ‹ç«©¥7UEyqﬁÊ≤°’ò
+–d¶aH√§≤(õSXßí4ÆäjïiD(jRîŸd»Ø‡ojÊ%¶~¿∏ MÜ•ó1]ˆÁÙD©—k:?;>⁄å~Ê¨?–≈¶\WŒ∫1Éb+‹∆∫fíŸYπN»d¡%!„•œÌ"Q¡4ä§ÓÅ3ß%>2ÈvÑ˘ªs∆ßO{Ø˚opyb{∞¡b·ËÍM¨ÏLÃài&©PMÜIqyí†r«òvØí›”˝èÏ(z‰‚jÛ8ÒÈızÓ4ëÂÎ£j«¯áAä◊»R¯[Ravk¬≤ÕVBÆÜ÷Ó”ùü∫’¡'◊=ià˙u∫Ó)‚?ø º¯›d<¨¨∞∂ﬁ`tı&∞RÓÌoˇÙ9ˇ¨˜@f8fMØ¨–uûå[á1[zPehÂ{Y‹#Ù√Í€Z7ıù8øõ/§Ω˚q∏F·»∞jˇdÛèpÍ	$∆	†[˙K$º‰îo’¨™¯[0Q¢v.á‡"ti09)ß“JÿgQÅ3)"˝ëZl≠G3ßN¶6î®.•ì|`WÒ&Q◊-JÊê˜Ω”57⁄îOóJq0ê^∂´ïò•&t±ú‰@:ÜØU¬òrÔç€:ÿyëÍ
+?e≠˘dü›…0πú‚mHw–1W»^5¬wﬂ¸Òo¨åë€®\Õ6U|±*Ùå|^‡*ou“ÿû)&t'(k® Éû*YÏÛA‹ù˙a>-dëŒß¿.ä´ßÕΩ”%x˝<∏lê˝v≠ë2Çg +≤q≤v%ˇ<Â[≠Ò ™≥4œr7á5g˛a‹ˆxX“œ(kÒÖa˘hbá—ã’ J+9òö9µ^Â©G≈}n!˜|£¥ÂÀ+Vˆ”÷ı„%º}q]ÅãvÂO√l˛∑–Ô(âVaÇ)*«e‚Aô˛ìXƒ=ˆj2Ë2V1◊‚ƒìËíõµSË Ì=¶Éπ¬G$hEÌL0€(l¿˙O—`3·w^g±–Œ‰óà›g‰Ê)ïiùπÃ·ÆP[x|Ç∏ï yW@|µ-M´…ï¬©ôqÀ~jÊV~ÚÁÃ› aQ®¬∑´R’º∞S©ﬂ‹êgÃkGkfX˛‹ dQ¯JvV2P»¸¨3Ø¯h‰TgÖ(Pˇç4[u|aìDØ¸1ß{Õ°ç'|Õ:∑¯â_®ç^)”P£$±¸q©§*«
+3»æ:;´I£$»5ú>K∆YCa˚™’π∫u[w- ⁄¸./‡n*˘Ør“RnDïØÁ˘^-Œ¬f÷ﬁÍ4¸=0Ùú˚*≠2ıGÙY…»#ßÃâÿ{ïQ√ã_[5·
+uÃº’8œπ|”'l‰áæ`Ò›õ>àëÙ‹.ÊJf`ª?yÆ”œìﬂIR`|,)8mê °‡ªo˛˝ˇÀ§C#^˚£ôî…jF©nŒú‘Uıµtß]∞≠√Wõ;€õG«lÛÂÀW'/∑w—ªˆ®Å'm)◊·\˛¥Îˆ¥0¥Ì$@{¡¶“{Ü"ß≈ nGfßQòéH:à”Ï∫Ñåî˘mˆ‰jhrn∑À¶ı)è4O^ı"N∫îE~nü€[›"ñ∑BXHÏƒÀ‡Ç·í2úßÖ‹ú˘aº»æÜ!¬?§ÜpJî<Èëïøs∫:?QúÕ1^lƒ>ø°|ûrŒ+10√ì8á¡ﬁ· of™uƒõ4”yº^ä:Õ9w#.w_‡Xr˝·
+<É€œ_ä_gLÓê◊wÄ°wà—∏–{gpño
+•8N±PkÅ$·t„ÍACÔÀ_&∏ÂÚkﬁë˙&¡yà≤ ﬁ_d$NBòzd¯Åa^≠^Ø	oÛ€ÌÊdQÎ{e)≈‹àa≠“∑ºƒ4“’}º‚Z∫òiÈ˘õYÊGúä‰4Hô~#?ª˙∆8ŸöÑj∂∏5e1*y◊ÛÖ)yiÌµ}7Q5√¥ƒ˛ﬂ Ô-ÁF1ﬁ°ŒÌB‹J8›T›J^	ã ‡_∑ÈÛu¨‚^
+Â§svèÜÄ#8¢î◊N≠àªuÜnÉ?HÇ!∞>5q¡Û∫/:<ÅIÉ∆÷˚∆[˘*‹©íˇ≥∆πÊ1πmá…0
+¨9a˘vÚC	˚€?˝ﬁ5˚öXBªY ÖhLöÓ≤m·yÉŒ¬ìOë±âN§wß\‹ ∂}.'ÍÔıﬁúD:∂ÎLî5CÈ¯ ˇUH»øˇG&^sé}G∫äÙÙ£ß;˘£UÇ4r˜#0*8¢-y-\ 0≤√€&Æ:".+…å¨‚êN;ïÊ2URNõ¶ÏóÀ1Zmf&iê≤PÔ∂·’ 8ΩKR€±(uF9ı†e’sHÎ5°‚•’y6<sˆªy¸so–f)›lN•&e@Nsü–ÙI¨ªn‰ÌÃ¢¶c¬V≈’–ıÌ÷®∑*X“Ï qŒ\€|øk≤Ë¿ bë«áj&|'—˛®¶ç√∑î‡VqëóÑiÏXÁÂ2ì‘lÿq‚•#·uÓI]f ÁÆu¨Îkƒ"ﬂ≠ìÔ1¬û SÃ—ÆSj± î*ñ+ãã7”û{s&∞]Ã7ßn¥∑Ü⁄—Õó;ÏË´Wø‹ﬁ<⁄eõ;Gl˚’À„√W/X{ˇ‰≈Òﬁ¡ã]ˆıﬁŒÓ´#vüÌÌo>ﬂ=jí)>ø‰¥¶ä∆tâm˙>iÎ¯›õ>;& ƒ4é$íxvÈë›&˙ èêÆ,uÁI∏â…ΩqFz«Ωq”Säw…πç4∏‰ä–»˚«ù´”¢ØUr÷7—◊RK${Æmπè…/#dcPíƒQùúÊ QodœçYÍùÛr®ó≤1bIˆcÊæm[Ä†0πî√ºÚò/àá*®'År^:≈Ñ+8GF"ﬂÛ4¬dÚò$zÇ)lÄkƒz,ï+ìp2Äå°+ WÒ8ê7PcdP<#e7˙¢`d6eÀ˝Ó4©ìr
+éEÑKa∞Äˇ<Ázç’≤Å#mNû«ô·’Ê¥6^æ^∫8@ÂåÉ.TMFàW™8-˘¶€ãr&⁄7_NÃ∑ÒSƒÎY›(∑¯0ØMD¿é—ÆËéu‘~	˛$ÿÅvåÿá$Ä,t§y¿aU÷"»õ8M 8mÿ1õº≥DLhéü}^£Ë´£RìïZMkîu´©£åÒé#üv'‘nëöÀtÀë˙Ãô7ú{H∏Ô?‚:ÅFÇº<wvNimÓpØò5g{¯Ãµ€–◊bjá}µﬂov_R˚’_†§>∑…˛M'loOÊÁÎ%—÷i˚_<_:x˘|Èó¡ÈAÉÏâM“Ü}Øf˘ˇ%Ä”ƒˇ‚‡˚yüŒqe∫Rì W'8KÏWÒÏxv⁄ƒTp;°◊ù
+Ù.ì_…ˆúìπùÌl;OëÁ]å2≈’’”∆&æ√öØÇª†LÌ„ã·PrüZ=ê0‘àRBJ˝ä]÷›^5’œœΩ_{	∞;€A‚ç√!^CrìLqå¡ß5S∫ΩﬂÇHYr£oÔ^|jMÙn'‡öî∏ürÅë€ˆ`∑√ÛâÙ∏˘¡¿ñ˚¡‹`Õﬁ0ÛÇÍ´≥≥pàÈT_Ã>ŒíKw3ëW˘V$e+˝ïıÜ◊€!ı;ìY Ä|L[üﬂbh¯≥4$Ω™U0è#ë∏"ØTΩÏ“,≤£»s«‘%Ê0É∏®9êWA¸—√/÷◊V¨Ä'Lf∂zœqÙP†hÃp•,SÛ\ ?BÄ∑ªP˛p†z4äì±¨Œﬁ€;LBZÏzÄ¨wìa+bâ<_È¸0©‘æ%\ÓÑÈ9f6MÇ1^ƒqyøƒ˚!G¡rÏ>ã8n{…)´≥pÇÊg?HÅÄ•<m–Ñ|ÛP_Å P¯Tx—˚3Ä„&Óe∑ÇiSj2Cv1´Œ≤÷ |C›ì;ÓM4VmEÎªo˛óˇÁø˛óøì*k]X? ôçä•d!Hë›£q§E!∆]vÑ?√˛◊í˙o`Â^yá/©mjèmcÂòny·≤0G∑Ç¨1;6KigÒ…1É\	Z GC˛TCm B ÂN X§6yf6)’·-±˘Zu§¥¿G√]CY Mëº/ÍÂÇ4€ ˜	û‹+ˇ„¿@Æ1∫Õ[Õ%bn%µè5y 7P/<yu»N^º⁄‹·v\ˆlÔ≈nΩ+D„sQìô	ürv¶9Âîfâáh¿ªÂhÚ‹lú±≠;	Z~'—äíﬁ©Ir¢&©öÙÆéÄVÌoAá¯£G?∫Ëseï}ŒüÜπâî∂û∞ïµfàx™õ I‚§˝Ó€?˛$¸ “*Ñ ˇqÃ"\=÷˛Ïän+•£t◊πÜˇzlﬂ˚éÅÈ¢(æÄ√Öxì-¥∞≤∂ø’{◊`L¡:î
+siÕYOb´∆UÂ6VÉ]hµö‘‚¨6IÀT[§4ÁFi∞äõe=ƒiÔé¬ÍáÙ¬uım1,Ÿã'DÔ7X;iHs∑D“ÉßΩÑ“D58”^ÂMâñ–û“›Vçv∞>ı’u„Â¿6SL√ ®È^T2k˝≠8CßúÚ§õ1ú :‰‘)vÍèDMR´∆e6ã˜<y¢Ä<6 •Âà*xÚ¢ta%–E∆Ç¶Ì7W±/¨¬‡ºc‰œÛ]»∞(˚c:F√•7Õs/(ãàs>ŸÂn˛V∂Dﬁg^gÏ©Û—ƒåßî÷Tü5O]*8|Òr¡¿?ç¯?zf“ZWæ[9Ã7ΩÍ<¨ú.U”ÃÈ≥Tïøl¨X9ü_óJ≤Á›pUt# i¸±Niä≈–Mˆ9Â˛7“À ø/ZÆS¢mdÆ°RR)Œ4#~◊›b¥ª∂ãÎcoÃLª}sJö%
+,)ÚÀí∑‘"Ò„xJé¯ı˛du!7çSïààW¡rÇM«,&±éø≠Öûu<a÷(ˆÌCË)%äOJËFQ"è›P*È†Ï%õ£¶gÁF„‚/Õ9™°‹}wö)Svä∑lv_/˜˙+oÑ;Øx˜hÕË≥ıÄﬂ÷m›w˛±âÏiÕ˝åè›Ë
+º¿‘â…õyêª`È”i8)mE≠°[ö∫EÆUA‘Îıö\ˇˆÿŸCáj¶ﬁ¬Ä‰˛´iß ÑsOPÈ⁄ruÙI2–‹$… z≥âÿL.¸ô¯≤0Å.˚ﬁ¶ö‹a|évÿJÆâŒ«Å´M?H¿ÒQke´X€‚≤Ë◊›,\ãNsû3Ln&=≠≈Î)Eµ!¶JPTKÊºÉ—~.É3êâF˘jY”ù3†ÃüÊ∫}∑x îOÒOã K˚¡«õÃpùj§I!¿zî€¢6^øQt3IºÀ^ò“ø–zO)’©øºÒ⁄°ö·˝Ã&·of `ªìLÅÛ»éÇLàÕW[iéO))"∫íﬁYQçgjOË¢˘=ø„ê‡r=⁄¶{´6)O@FhõCäüEˆíñÆò3’ÌPü ˘©Ì<ùç©t^≠Œû∞æã√x™’I6`ØáCπ¡ãLY%xœ˛äµ≈¯1|˘ZgëıÕ°y¸‰ı`ﬁ˙^µ˚ç÷xÛM2_múê“bñäèxâˆ≥c‡∑óâË‰ãM9.◊z}W
+t°aLí8>{5ybC¸ägq¬˚„ﬂüˆBü-–EËiÁπ:©^Â·Éÿéïé[£0¬j∂É9™Ï8_`ﬁ›≈ª∏c≠}ª∫!ôu‚ÊﬂpÇz] 9>ENâ„ÄËƒmëFÓä+>ñ◊•ƒF‹¿RX÷4œÒ&UÕ.Fû≠;aJ%Ië◊î0æåcΩñmŸäÄT±eÕSÕç›$rIi≠i§á¯S\	Çë©>˙Ç‰æÑMoJ∂w*Úî"∂¡"˙ï÷
+£e„j∏ §3Î°ÄJxr”ô^ôC„˘6]Å«&ó}7Û´¯Öì™
+-«ì©JéÈ∂õRSbM÷±…818–$è≤®sr»osøœà*±-Œ77¡cÕMíx≥?ùâ7mz®Îhé†“/∫≥®*º·FW)s°µ∑‰8?£®¨iÛ®u¬Sp
+ñÁÿ‡WÊ¡(ú¢æµØr.Èö√ø·P…◊ò£´A§Ü“QC§OeƒnOÛ(é‚1$˜µ±mmïΩ{J7˙ üË’EO=D#Vr≤”EgÁ≠öñV∂¨@3≠Tò·≠Á.˝W”≈#åπ±@+à
+2ô ®t≥p∞1È“Ëû:¶»5lo«ôI†xØ⁄∫˘¨ÕöÙÌnmGòâ^°O”ªØC2Æ˝r,⁄˛Ï  T°§ñ°Œª˘®}É ß¢l#Í’®X≥É⁄0›X¡§ÇXt÷N¬ÒÄ˛nd∞¬)ôP≈«Áòdøœ›áwûÑñ®MBV£?Wî,QŒñR–1˜)Æ‚‚NIwÿ=Jœ<ºñâGr)…áóV˙’¸]•,\Xlµ/cπ0ÎàZ+ï‰Á’óz˛4XÛ¶Lõq∂≠{_ÔíØ‚¡Ê…—ÓN.∂8óç ógÄ¡Ëﬁ9≠[/ÔÛ6¿ª ¬oôy∆
+Õ∑Õ:#AäÚEV‘Âı’a÷õ&∞’"Ò&πè‡eû–Håèv,Œ≥	^F–)ûØ 9!Ωcâ@◊BßFk‹$h‘&Wâõ\êdøıô+sÊ∏»Ÿ5æZ≥ÜNkJ¬b˝Ù¥°j·é’G£0à| ÅhMÄ©†Ò∆‹Rc˝á`N´W”-;,Lç•,pE M)ÉjŒì©Úã ˜bKSóZôÂ'PV∏t8%“ª\"Ωˆ´uÕŸ1ùyC‘'ç#ó˝∂.≈*™∏˛j¥LÕ¥©∞h‚πy*Ø:ÀπË«ù”kU7ç∫Óˇm∏à<óÃÇ<áÿ+ƒ˜oˇØˇIáYí≤AÇ‚æ˙ù€LŸ8@È/EsL nûíFTº#ZJaãòÂ'LÑ©À∞aàÏ€œ∫_ouˇûO!‰¡âÑ”4
+l.Õ<ºë û®≤cu≈ÍÌ˙Êç…Ø«#∑∫ÖB~)<Wí∆Íô+ãÖoë%{æn≤l∆¬´ôDÿc∞)´9F#b@ x¿–JI˙ozÕ˘ºÅf¥+O÷›À⁄∑QJsÛâΩΩ€QπºU£.´î≈ÃIêÕ0∑ÍR÷TpÁÿ¯AX˜∫kkPE˛Í≈|+™Œû´{ñ˚‘à[∑x¬dE{¯–u-Å¢Ê3<ƒkËpÜß≥ÀõÕ´1ÌÀ+4⁄˝ey◊ò™/„¨˚∏~dúè«ÆFB%íí≤tMM2÷\≥$∫©Ïæ
+m∑ÇGŒGø:ÍÓÏ~Ω∑Ω{CòõKó*üõËTÂSIõ≈®Lº·πó≈IoÖ””ÿK›Í]}ı. Ücÿ’∂i›ÎÓ<7?∫€´DiáÒê«Ωõ4›TÕúóü∑Ç;Ò∏»Õ]Á‚DóBÉ _(¸∆ë›≈…¸Ãÿåm«”À˘Œ¬*’¢Œ\ÿm3ïw:Np§àZSƒàHm§8lÿâÜpÀi=+ŒÅs¢‘+ÓµÖ.¿Ì+∆9ÛÅy
+'Ìµ‹∑©‰ƒÆ;ú!{ª»“π∞|Æ$'ñ^õ∞πn|õã€3[∆S∆˙x.∞"äxvï(.Ik◊ﬂ˛o˚}È⁄èÔ@íÃÖê7∆S¥±x˘m–V^£ü›Ç‡ó#
+k∑ÇIwÔekë]¡.¨µ“ı√Û0É7¿) »µRÃøGÒ,—ÑìY(Ø ˆPLé©í›kË’ ◊xæ]ôkOÊ(‹DõJlum5h«ŸF]xêçb^WSYÀ«‰C|)æ⁄R|;f˜2f4òBJ˜¸ÿpå≥ˆ˛2»z™1L¿ãây)G*»+Ë.)qcø¯,L“å—e1jQÖæ+]Ôè.Ÿ¯É{æªø˜rèmÓ±ù›£ü7π1ú3}∏Ÿu∞T⁄j¶[∞∏LñåowòŸ€bπ;üœöxa$ÏWñç‰¶ª\√P“>‚*·	†ﬁπÛ†o-(y±ËJøÍBcrÈ\[úœÁ»›(◊eùû¿¢«]œ9ãï%7â´:V2oñ<u:Ó[óåîßÆî±e ˝˚±Dp H!f·gœ† hﬁ\”5ÊÊ™Ø`·zRVìWg°õÁ[Ó4+÷Ôff‰ππÄ∞ï≤áî…èÀ.iÿ@ë?WÜ°??Ÿ<‹9‹‹{qƒ^Ω|±˜ró∆§º›Ÿ;⁄‹z±ª„∏\˛∆	¥›np:¬îÛ"Œ¯£ÀC{?»<@DóQ¿~$qqƒdxâ–˜\N_DµEó¿9¡‚r~DoﬁL){<¸√sˇ‡§j;˚)Â ⁄ZŸ¬/”(Ù&√¿Fänö7‹©¬p∏o‰ìK€V§·	2xï™˘a™Ó€ïõ∫ÖX‹,6à$=ô$◊~ÚJ¿ÎÄs˝D6πj∫t:W›±∑•C[vV3D{ñ√%ÀÃ2<q:ãRkÊ.À∂∫CœLg˛ªo˛˛0›Iqƒ∑vÓÊ∂√£C;Ñæ˝„?∞¸ÀÓÑÃÌ∏-8UuÓ€∫\ÒÅ €f)€Ün“ÜWú∏≥¸>p¶äw\ó“4ªô AõTÊxÖ‹—ﬂyôIG"ìfÙøw†∆+/ƒ¸O{).ÌSpÑWØ•GC‰¨}ˆÙ)ìeå˚7ªœå‰ÀW˛≠Wé≈lÊáπkÊ.:ÉˇD√
+CÆÆ|Ã<Hﬁ‡V‰Kk3≤Ÿ˜âÔ„˚7ˇh.∫-»ñ(ùˇ¥V8I— 
+•ëÍ¡®ÙÈéI‹üÕQ#ŒôCı¥›ÜâvÏzµÕ÷ÓK‚ΩñNr‹ìÃ„	´¨õÕqÆÎ»;≤KÖ`‹hÃç#ûo∆π-›.åo§‰ÍÁW*ô|+Ãmâ2â&∏»_c0Â´â0‹·“	ß÷E ÂUå+´˝q˙}ü’ÖÒÇK$∑ÎΩr≈∞B~ÁëÚó≤ÒÖ≈çQªıÉÖQõ#Q√Õ.RµkF%\˙Ω	]'Ü±l/‚s3&öˇ“T{œ9µç†∑ß‹⁄Œwi*Tp_ö˙†Ò·˚(./´‰‘ÛW{ojçÎÆ5»™r*NÃ£›∏ñ◊çYIÍußXÀ!y'Åç˚ç.÷¸ƒ˙‚’;9⁄=d˚õ/7üÔÓÔæ<f˜ŸŒ&|¬k*wèvèhêâï„JdõoBûâv=9∏°Ä¸K{fÛl@ﬂÖ{≥éå·ß8ìÉ˜Óp§‰É√{¡?üQBÈE-4˚Õz	⁄(≥7˛õYê\äfè/é~ÅozYé€‹úv$€Ä9Ã"i*‘H>eºˆ~1ü!t+Lt3 o(+Í;	:RÃ˛´7ìøõØ)Ã„§6CøÁkb:¬‰æJ¸≈ú„Ä”z'˙X‰ª˘ö:O3µ¯…çÈçõ©Ó&ù	\›^8F3?H€bÁˆƒ õæ·röﬁ”+à9õæ¡L Ø„øÓrg8rfÃõ’Ü¢vÄB—}ßáAd+=√§∑®y±ÜH∏AC5ˇÑ˘“í8U,5jËL95∞í:o8ˆÕf&x_üP£ΩÒ]±U•Ïe9.¬ÉYÔâ]Ó≠π)´Hx¥}a^¿P›†&3“_‘8v}Õ∑˘>€é–Ò˘»O·4p'O◊ıò6~àæ⁄oã≈·“≠uó≈ºyÏe{¢°ﬁÉ∆hˆÉ3≥‚¶|§‰µô."Ôá#Üâ¯PéÎÏ	‡ÿ≥Z…‚$ Ö=eºbÖ Ô Á8ˆ&Å€…˚∆∑Ω÷x6Û1¨FjÔ•¥"€Ò‰,L∆à‘Œº£â;˝ê#.◊±lö2\nê¢7¡∑15·ÿØ…/HÌqÙ3â11Ç’†9∑X|√8µ 1‡ á>T7Õ.fóy˙¢Tú¡˛8Ø≥goº:/£_6£”»52ÏØ8—\πÁ<èpÉ‰6è≈:ö≤;û¶q4çÇ3∑Àb¿∑K+¨K J+sI/a¢¡ç€î®÷)Ï(˜79Àâk1J‹Èúwb ÙûËTnÕq6®]=!SFÿú^+ªòÛ?ãú´Y$¶gë=?:ÓızÛﬁ@1ç∫è0VÂ7Œs!EaÇ¥‹<AItW‘“k˝vi≥›ÿﬂ&Á√iß{{Nm+j®q@@Ù#ÚaOO•3•”ÀÊÃ®$‚(à®û˛lL°E»'◊^~’~M2€"kùÅÙ	DˇÙ/
+¸v&ã«¸oœáì÷LpOå=w}MÍº^õxÙÛH$7ÏﬂÊˆ€Mm'w{˜mûeYK…£ÔìÿΩ°73/¬ã2öô‹kÛ#ƒ§¶äÓ}ıH„Í}‡+w‡±-6¨êÛ+yBØOvÓï™âx Zõ∞¥∏<)jŸù VÔno˜TΩ#;⁄-≤‘ﬁç÷iñ=SR3	Æ(eÌ+MÛî[„3vU±C⁄bò ZsfÍπ6ò÷≈õÈ∞Î{î◊XÉ‰
+}[!A˜°fit7Z%∑‚Ú
+ÊV\—›ŸNsZX∂S◊%OW/∏˘0Æ(‘Ü±£Xw≤SuzX[˙C˜Púp+Âr%ÀΩ˚ó°.áà÷Àÿ¡œp—1Y dãÉ≤≤¿>*ù&ØDpN{∑†Ìµ:ûﬂƒ—d+ÌsÆ¡„∞$ zúŒR`Œ“4HIÏÊb∫à±Ü!åÅ≈FΩdÈÂd»/YDAù§0¨‡ãÏõâMü	åâe¿ÈBF*˘AF¶“Õc/yè‹DñƒQ⁄se>«∂Ê8πÑö¿T£øπôßúÜyåSÙ3Á	mÒÛBé˚∏ãzMÓùµjÊ>ìˇ◊ÿ≈Œ+≤ÑT~*‹¿=Ö÷‰Êox9O†e9∞“$˝`Ù¢ÅA£!√ó⁄‡@]U"¸óπ≤ƒ ~<–Ω˚æ–Bé˙í[d°´X·j<>kª˛ü&¡ÄÑ	ˇw5πºŸ÷tS™öUùäÑ'√Í,MöVU”*T/)˚∫L≠zˆÀj◊®4
+é»Ôˇ®ElöôÆiﬁÉA…õ˚Cô´·Œ≈zN√ö‡Ÿ¥§Ÿ—nzÄ''I$7ïøhö#%ø3 —ø@äJ‰6:√÷]Êçnö<§-áÒ¥î-ŸÃ⁄˝NûKüZ'd7;A.û€ÕÍGsÅqUËjûM£a⁄cW‡Ã≤í¢	$pÔiuì’%ÂÎ8¡?1ŸÁÊIZpïé‚Y‰„• 2˛íR„~v(—≤ˆöH3¡‹5√˚ Oééö§kñ.≥Y ∆zæe¸ŸUe’f¸®†3jEU•(8xî}0Y≠û\È7e`'“ÿä˜d®ø_˜ﬂ‡YR_…›Ld>Œ∞∑:rπ´,Uë&Ù˝89•Ll¥ﬁW4†‹∏é?4€6æ®§k†1gÃ9⁄é˝†”$+ùcwMÒÕÈ"£ç!ﬂı8√™¶Èáäi"P”Í~˜ÕÔˇwÂÉ\Ùf·«W˙R)ç˛›ﬂSP√—Ò†Thæ*@NH˜lC+j.-ˇºî¡e&˙ç°Ö_®r˘ZL9Ω“”ÿËë
+î#—Àz∑xæ˚Êﬂ˛˜x√AR*÷KBV˙Tz˛Ëó¡åºœøÛT…˘ã53É3ã∏Í0NÃΩéwò\/-˜õ-˚]Áüªö’$√E”4ÒuŸÅïC'y%(Tœ≤5Ãy3_ñ{Œp‰tû≈…y‡Ì«æ…™?[NÚmIlÄ}Å\ÔÁÁK3hÁJ±hª≠‘µ!iÈ∏|^˝‚âD≠î=óãÌxÈà≤Ò∞.;ÄU∏Ä˘∞Õ—ã•4uã˘©d†¡ÓãÙCRÇ‘ı›ÄŒÔ^∑IŒëm>µfß∂qfÿÔñyh¿Û`ÇÅü¡æáJ,π)Aπ∏Ç2LEC∞ãÿ»˜qäP‡uÌˆC ¥’F)”JÒãyˆµ“˚Gº«[®∆HÓ√§ÒòÒΩ*N„z√!—L	£ΩºÉÚÛ‡“vôE˝us¢“t>…Q™ø=ÂŒ≥At†‚™6WÆ,á¶RúôãR4Ã+?˜I∫}Ry}RM.©ëvSôf|›òU<O'^NA^s	≤|∏}5'ç’Á<∑üN5k¸&¯Sªwï4 ¬ë%Åú˝Tÿ!C sÿ§¨H≈ª-U˛µBÿèê‹§ÌxDæ7nI ““Z_Mnˇ†tSAÃnå·ÁFºˇ   ˇˇÏΩ{s«ï/¯ø?EV∞3ç∆ãOà  A
+c>` îVAs…Bw°ªÃÓÆVU5@FÑ◊wÌ	œÏåØ«Î]ØÓÂÍÆ4£–ıÿæö–Ñª·˘*
+}}Ñ=Á‰£2≥2´™ARè⁄—]ïïïœìÁ˘;Öè”≠œ‡NDÇÅó2˝ï‹V”YÃ˘Œg<Âﬁ‡ß≥M;h§®u!/oJ2ËØdπC+œÑ£)∑∏m«„…Xsen«ˆF5QsM"∂ròÅ‹ÛÉπáK©<ÄΩªI<F"î ≥]©8∂≥$:¨Ú.'3€’M‹V:Ï2ÈÆ6wIr)K¥æÌ;_ﬂ
+è/]¨cw7‹ª}ñ€kkÉ0…ˆí(abòxó¯ZÜ˚Âhª÷_ÆrÉßUdb˝9ÑW±v<A7Ï◊Œ˜óM©2É„¬†ã~)Ë`
+k–—êÔ, Y{«I úúhIeÏ)3π˚9yôßÛñ4oh=Ê~È‹˝i¨ªò√Cî¶jhtÓ√è~çn∞∑√>'1bßBA z‰˚‡ÊA4© ÙdÑµ¿›^`;ÆÀuf‹ø%¯&e≠p,œyY~>™ÛêüÑ4ﬂkÉ.Ä"5‘%+*âÇ’Õ˝bA”v{Q∫πãù¨äıﬂçCV[Ÿv¢I ΩÍs—aò«(´/≈•iˆ›c∫∫Êq{*#—#GË@UÔ;æµ€ÆW
+{üç ◊¥R∑}v+N:ví§udØ7+Puj?Û#TÀpDZù:'&;ˆbÒ‘tg%»˙Yy—:+1´Eù≥R„GC·J∂”,oCUAèãjπÖll]»âbä√6œ#‚Ωàù4Ωﬁ.é]◊ë´⁄z‡hˇi˘Ì≥ãÛs€Í¬q≠∂Ü˙ÇàÃQ◊ÅwÆ‘Á DK êèùªydó˛Œ…Z∫ﬁ¶:·“ê<Ãπí◊L∆◊°Ì<∂]8o3◊∑Â!J®T∞©–∑åFq∆÷aÎç∫Ò(txT9˙ZÁ4<ìá<-¸näéÓjÊÀ¬Ë¨pOX:_éPˆÕb4˚1Á(ßN®ΩV™¯«VpôÃÖø§£aksÔò∞G•’êGÈ(ÜŸÃ\o˛ïYìÚµÒ$VuØ\◊r rxúﬂ(®¡ÍëmÊÜÈç(;∂KVXÇÎ±b%—í∏˜ÅÊœ_-pØçYv“ò´\–7”™8p9nêÿ´pÍSRZQ‰Æ9¶Sóg”\hKb"Ê`àÉËi“‡0–àáöÓŒ©n/ôàÚ´xko&ç›À≥™3•√iXÆ†yA^g√d6≈Q¯UÂ6+ÿ≤mM¶—∏üWÕhI›∑†ıﬂÌ£»ƒô/ç”Í…LãMS2^K/õÒí6‘€˛6r~ÎlÃV;)◊‚r}VÎ¢-≥ø:v´ÉeiRñ¯Æ S.Sÿrm+7›îqXê/º·Ÿ+ÌÏÖn´NÓÖGÖµØPm´®—–¢fÆÔÖ√qú…1ƒ ¸°W,É
+¢>∫ÏkØÜÒ™
+]»yj4_§s)ñ¡Y√„Zƒü¨âÅ¿jΩëëU‡G⁄Ùñ,‚éîﬂaeA≈KM√JΩ™qz }˝ÊŸ÷Õ≥î3˜UÕ!”+G›i¨˙Â À≠µˇ%å∂o=.)ﬁèJ√v_ÍÚ4|˜ä=ˆ`^9 TQ	Âﬂ‡>˜äÅuúÅuµd4wòtÓ>·}Ã)i¡Æ_)ìπ µm†ø)ÕÏ|:<dâ,ucw¿\È\é≈è¢<3Ω ∆«â$‹rŸ ûQΩªÕ’XÅ¸¨°H/@d¥4úg“l[ –Kπ`‡ò¸Sf˚ÛΩï'a´3N++Á⁄ÁœÒ≥ú/‡)◊H_ ﬂÈÃøÊâÚ‡≈T(Añı,’≈ m+“ëΩø.ΩÌÍ
+6ëTäÑ)‘ºÿJ9©E°áä —ıä:_‘ä8q˜8H‹ÀÁH´±$îoî ’›°m[£S√ æ≤d8¢A	¿ lÃ¥ û¿PaÏµµ”÷˜FﬂΩyåÉÑ≠}ÄRk] ∫GABv¿ßÅbu9uR4IYY7:`˘¡?˝ Z¡*?˛è?gí„Y¡◊—ù“ù∞O,Pãc’k¡ò˚˝àEiAÄ„«Ï~|Äf…ß¬ÿÿ~RÅÙ≥ÎL)ü•Ï	}Y-ÔH˛D;		v¶9ˇ^òª˙hæ◊Bÿæ”ÛO–√«πÿé"89é⁄1b]=ÈgŸ8]ôü∆Q˚®di0∑;Òp>G›Øù‰ù8≈mÌ
+Gù∏>ÿŸ⁄à·@F≈ES,åŸ”'Ú«pºéûæ<‚Xëh¢ÃÃ¯eB“†x>\øÚˆ⁄x<çû«ºÊ§Üe¥,˙´
+ë&,˙cär8+¥Wg$À∆ŸÂçAlY-]#W_∆é¡ñ1*a	L,˜ÁŒ¯ùÿ5¢q¯®Ê≠üªF)z¨û¨«1:4SØáø6Œ8I–µzÅ÷Ò6ˇkÙ∑<wÆèÖWMËG∑p@
+õ%·4«Ixà/n≠BçÒ’JîWIóo∞÷n∑'-˙óﬂ`ß@†&&$gyg©yº5G‘åﬂïs´™˛TÔ}ÆçÜﬁwCJ–PË}¡≥P¨ﬂf_Ñ¶K-H(Àq~ûÕÕÕ±7ﬂ^€^€aÎ;[7oo2†I|àÜpæK¯"Érﬂ:òå∏O·%¯õOpÚÿ¬Øb]—w\'-Òóß∫Xeµ®>@.°«ﬂ:]aZ-+¿†“:~]´nÖÒezG›◊e’4GÍΩ‡]{¯ËuÎ7å
+æu ”2ÛÛÛ°\n·(Ø…_è81¶Ø	Ø5tÀH⁄`¿hë9•qΩi›‚@ØÑCÃ;Ñ,—π	Mº |≈Ÿ¢Rºkÿ•à´’ºK2ÜkåÕ?7nOF≤¸¨àﬁz]’îﬂì√ÌÆ∆®ÖZb@—Vªˇ-î∫ˇ’”¨/c‹*∑U˘1˜óÀ1˚JKÌ’§Àà	JÂzu°®bP!G9ñ
+ÁVÿã.øB¸VTª€qÔ÷-<Ÿü{xu·∞ˇHÎOX≠ÜW_¥x#D_5ÑÆ`oÆU8å∞à æjÑHãp±^ºø‘n…5Fˆ
+yàî˙s÷≥%‘r’»"‡µz–/ﬁÇNîtaıíÛö
+ä/’C˛u˝∂·:ç©¬ù^ÿìËq:G◊%ó «4Êé ∞§ÈBS[Q¯v«‘YUÁª2(\∆∏ €§≥t»	¬ómı‰Ñë±tÖ=ú˘ˆ¡¡¬¬¡¡LãÕ|øt:Ùı¬B∏–]†Ø¢¿#7:LŒåcµ›	áZa1%‡8≤∂5:àFÑâx¿Ã‡ü≠—˝I6„Æ”mı!™'Ë¬√Ö«èØåü=Nz˚AsÈ‚≈÷Bã˛m_ú}T‘∏4ª÷ôºΩΩsˇÕµ;lcÛﬁﬁÊéC9´çmq©Ùó¶πµr⁄I√R·ùîj≈Iäoä•á|Ät{Ã”Tù«Lx¯(∆¡∑Ò)À.∏‚°
+ÜqW˛åPæÀ•§G'…¸bHì'Ñ°Ø`›˜KV˜˛ßN´*≠íE)√ñÕ(ÀD∞œÓq5%é|≈9ëkıÃ„í˚õ{nΩ”C‘ÈÂ	W‹Û.q±(*&´¿=˘¶ŒA6√¡Ü•0O¡4‰YIﬂP˜IÎ5¡∏*‚À¨ÃÀXÿI7º!^yÕ‚S:fÅÌ—‹ßÆ∏R‹≥ ™yo5ÊƒZ–ﬁLS…˙c*πÂK+DZ–ò¢] %Äìá˜#∞3ÖX[4„πı•Kîs˙%J
+gx„Wny(ÔóÎL>€“¸2g¡Y8Úv«PFa¯÷ßëÎØ»qqØ˚$cÕì\∂í‡¶.#™kπjMvëıX‰7õÑA)QW<|Aà“<∞êÏvé!ãRŸÅ
+ıìëZ~ç;lÇ'Iù§ˆ3öò‚»kˇÚŸÎFäá˚îÜ	€È√’˙◊Û÷_($_∂ŒWy˝ä'RÿÃYÏÄ
+Xvd)÷_†l‡≈}‰‡›Î	q°:LìÏˆ´-–U¶ù∂ßØòXZÉæ.§Ö.á≈ˆ•=)æÙùìú¥‘ˆó°˚óImø≈±}ú™˚Sû˙\ÿËé\~AyMÑïâ≠ƒÓEÇ>£ú≠îr—w®k-3Ï™‰‘˙r®wZJr˜9GI7	Âù÷7tIÊ ”ﬁßZÒŸªø`Õ5©í+áê(át∑Yyt∏ÄC†UÜ é–kùÕcå¥}'<å¬£ä6˘2Ïπ‹Èé_ı±ÀU9à
+sÎ§à#'9∆UìcÙ>ƒú!âW⁄ò£TaüCYòÖ£Ô««h4bœN<Öùãcî®}LÓı©8VƒÎ÷ó÷ıW¢‡zÏ|Ò^<f ¬v£$§DπÇ;ñ:?'_Î«äîÔ4bíù	˙,a5c¡Ø√+¬h◊®5ƒó‰};fXE√ˆåoi8±îÀS/VPÍHê€· ë?ª61a…Ì•∂ﬂeXãñbÔ—√îm⁄ë®©$ÛëXò¯.œx˚ˆØüûîk‘x…∆æº~¸Éˆ›`3kòo¸Oz±°ãÍ‹:”CGä[•ûCÒ\≤Á≥«üÛx‰â∂∏$ì◊¶ióTùd¨ûj⁄∑4@∂π˙v®·Ø4?˚ÒØ^ù∆nPÜ∫·†Ún˜BÁnÂq∑h¥D¨Uêmû¬∏å™√√‹V]!Á°ß≠^*âˆsÍ± Ú5Xy	ä[˘X#óŒ4wÅJÚg9N.‚¢/˙Q˙|Ó]5byøH_#ƒ“5ËJVè»â≠∆®Œ(’—ˆ ï¶9∫ñfI'î≥r{~r«G†πr∑å≤>ê®Ñ¡Ô≈÷‚ï+Û«	ÚiTÌŸ◊mÑçe™ÿ¯Ω®$x‚≈∆˚≠(ÎG#∂xëÕ1êeÔF£I¶_›ë∆-ªk«¬+wú}e´!øgã±i\±÷ã¨µsÿ-[œÀ„≠gd„Öó3gWT
+<zò<˝˚ÊloµÎwÎúSÄ[„_QJÆ“]°]ÇüúÎgˇØlÎÄ"Ø /¶„¡8ãØn±Ò §Ù%ÉA|‰]Øa’£Q √¶Ä_ò”9·6€ÇâƒG‚å‰ÜÛäÂÓí;n°7åπÙøÉ±è„$NﬁÙRô‚ ãÖKEéo:˜.Ÿùá'Q}Ä[«“≤~yì’{vØç˘Ç~ÊáX÷∑˚í#∫ö^Ô‹≤Vpáÿ\Ç3¥‡ü)ﬁß®%û"¨«†ÆÄñ2m∫Ñ˜ﬁã3 ‘Ñ©Ç|º3PW«i´:Ì©PΩ‘Ÿ–E´¢vÜXØì¢«’>+k[L™{^Œ¨à›rF$N`a6$Äö>2„ıÀõ	’îèÄ *ƒaz©}Y˚‚AN≥?˚/;’$¯Âò÷ªp∂àTW[£ÉXB
+—˘]M*9tâÜÊâ	¯Ïeg¶’Úø,!õ…8Ü‘KÂ¶Ãî^më3,∆Vànûå&élrﬂE‘˙Ïòã:&–q§˙#´Áò’ `L£ÚƒC§2çydÙPñ¨ı7Ç£T¬H{2€É„£8Ó∂ÿ&˙ıBô®ì∂HZ√—A•üb{ë{ÍN:∞[ÿ˝ÉÉπ,CÅh @ÍﬂÃ¸lÉ†◊É·ŒD∏'Ó„¿aÚYÉIPS¥¥ŒÖ5Ã(∞”Å§Y1Ã'ÓX˝Ëøç|ëq®^Ò~∞¬W+ÄìísáòD…–„ÑKÙ.ú„•i&+µ€nsl∏Œ\øãAõåqÄŸ'é√¨AâüŒ.o%•“¬ÍZ,Í>+…•ïg—¬“"ç<rÍ8dºjò3KO’ßn»	ﬂj™Y°’†rEÒ˛„¶‚©°f¬åÿBO•'¸ıY:πc‹oª˜˚K®uÈ9ÄÚ6©Ø·˘!B˛^Á]'∏v
+"‹ã‡À6'9¥90%Rˇbi{ ,ä∆nîØ”≥¯–—ep7EHH)´Û0’IdWs·p&%Íı≥2L˘·=–ƒæÚºd”ò[5ºYãô+c≠pçπrPsÊh/IâVÓÖ.õyü_„2>”	Æ±ZÛÏ?ú F´v
+ÛSïkm Yê2É>ö†SG‹òbVj8Ñúuv¸n˘≠)^¯›_º¿‘º@nlGeEÖ¥Ü∫£‡nU¯aEHÂ!Oì¨øBÛÑ≈#7M·J‚«
+∑#Á—b_ƒÃ"'á®u-=é/òAF)Ω(º®4GˇP≥M_o™"≥y‘œ√(•∆PÂ[¸ª^oXªP/üˆ„£[q“ã3â…€U∏l‘rR^¸~ûmƒ√!å<1$Œ)LÛ7»¿ÒñÌ√Fm£cΩŒ∑õÂMÜ¸û|≈F˛ªÏ-dÃ_ÅﬂJJRÑ:ï‹ƒo%%Ur2*}[˛*k;ÕÊÜ8¸∂F„I∆˚Pº^Rã\U¢|D@~˘⁄ /+,•†…áèÆ7Æ›πÛxcmoÛˆ˝ù∑ﬂﬂﬁ€∫oSÏ·aº>âíÁÒFt8.Ú◊:ª7?}ˇ7üæˇÔüæˇÒß¸›ßÔø˜È˚øo±Oﬂˇø?˝‡'üæˇK˙˜ü>}ˇOpÆ~¬⁄˚?˛Ù˝?PÈÁÙÔÔ© |˘∑Oﬂˇp∂ÒH_Ub≠≥›qÿA≠´Hÿù‰N¡˙Bì[cÔxj£»/ò√«ÉêÍéI	ìùùIîÑ Q´Oø·öﬁ˙;qGo'kﬁF›ÄŸ].ÍΩôÕﬂtª òÒWÆÒÔeKà‚V∞u•lë‡5µIvÂØ≤Â<N7bÿ{º%∑Â/cù∞–åh°øŒ£û¸¡NÅ\at„ı<"U—®õa∆SrÀAÙ™p›Cu4b«ÀÌè:aWQ=˝byQv3IbæoÔËW<”+IÉz»[XΩÜT	‚Ù›Ÿ.ıDp¥a”Û›Â]U{(£§=íl@˘fgáÔtÕ1=,äD£Ú¿`“S|jvV9qxJ—˜:[ú’¸=út«ı∏àAÌ`´:‰©OoïŒß,Ñ—*ÊX94‚Õ2‘—†ûa2)B‰0¸®∑jr7aª›vëQ®Ùë®k;’ªKkC†‘N_eMkîœÂ»AΩ0ñã-0£W∑ÛËŸÖ‡»¬Rƒ›®(ª˝~°˘-Ô&è◊ïç¸ñË§c3Âáæ`‡ı[]h8oàX¶EÙwLU¿ΩnoÔ*¢√%¢õup$≠ãËeí çôëX$;éöààÉ·*ƒõÙö#ã¥;Ds⁄p5 `mænóÜ∆9J«£ûU\ß`M¢Z-z¯t÷(#ËmÛ	u7œk'P∂ù≈∑0πyaˆ¥≈Ó ïÉÎ£û~˝âYìMÜÙ¡/ô¢ú@ÈDáà˙ª|6‘jIÈÜçı\£ºi‘]QìúwıT∫F7aÂ9fò—6›#sIB”‹Ω5„sˆ\àTwhó.µ/\∏z’WÜ¶Ì B{yyÒjŸ$≠hµ∂¯Ò¢U·ôº∆w‡òÄ0?»0M¯6f˘H˚≥0ó≤§uKéÕFYØrÜ≠âÕbïH§?ŸØ5µ',ãÜa<Å!qq¶lÑ«…QØø÷ÈLÄÉ;^AEo(»$’†”7E±;ŸF8°6Ã
+∫t≤6Ú˙õá∞Ωµı*\ª…+}ı‰)E˘
+JÑ¢¿%9B~m√Å5lbBÛ;ÒëLh^xPA'≠*`'Ò† L¿Ñ	î%≈e6„†â“è•9D-õg/.,£ñ<†≤ù$Ïb)ò¨YÌ≈¿ ¬ç›ng)˜«`ÆÉhàTodÚfÉ€∏Y‡1U˘xçî¨ΩÏ	aIxÃô–«yï<~ÛGT’‚“ÚÖø˙6f|›≈‚q#§?ät≥õ©´¨«qìjnXÁæ5–X«)Ø√ºß∑Œ]ƒ¿Ÿ˝Á=V(70¬∫3).z˛ñ«‘ô«ã=ÃC.†≥Éz~ª· 3jJW^ä~C≤pskèÌ∆™'·¨<ÒÖï ÿ%√ﬂ )‹—g•‚1j|£∫‹ãÜÔF˝ût°&Gﬁ‚Ì^ÇŸ»sS>Kﬁp¨q…‡ÿxÛ~∆Alóº3ÁŸÓ1\Ú‚“JlˆÄ$i®ÈÍï+W.\∏|Ÿ∏M‚3éd⁄è“˛”…0H~˛Uo"ˆóÒàÄ‡°; £≠cj¨ÄqJÕ≠|o…˜#¶v/Ë¡øK@‚Ã◊vÌ_“w˝	BpÀ$Ì∆˚∏µ¬÷w÷Ó›||Á˛Ì˚èww6TÅSçƒ·np»°z¨ïÎ%ÒO>˛Ûü≥∑¬Ù€}£ßœÈ¨Ñ–.ï‘ÆÛ∆9'æ[£Nú†3UÑw 	^ªQhØ‡J?˚/Àj?iµEÁIÅﬂ$W.>"ò °bÉÉ®Àâ1¡áFCtB√±aÿEéÉ5≈πí≤4†ë.:HêpëÒeõú·66æá—˛NçèÚ«‡;«Ÿe"=W®>Öç≥ë˜/ ≥÷‡‡’ÛVKBYﬁjENÎ6≤Í_õ¥√D◊[Z12ÊyqNW¬Ã˙ƒ∑mÓh«keÚí≥x¨Õ©p≠>´]∫ÓFüïÕ$ÌìøPÜ"Q¢UTﬁË©/Ÿ@•ìrÆlRl=	ÒÁêDä! \*AvıKJ‰§"øä≤ÎPÈ∫êN$ö¢Î£H "Ç≠…üÂ±m˜`NÒÜ∂ˆÜÅY92“à¸Is°KPuâÿsÄ∑ïFÿ¯!Gò ks≈ (∂C ACÚàm™ßUC©-º4:„biﬂ,=9b^;ÂÈ≤-≤Ú°~r+x"#º5¢pè‹ï≤gK,◊wIÒH„¶•D	B‚ï ≈ÜKOHKÌãWó/—ÔÚïˆ’KKWÂ	,*âF¡ •9®¬Z“"≠O°4	xlï)ù®˛ÃÌ…˜XH≈ßÑxâ≤Paß4ˆêèÄ!ÎNP€lÏuÙ‚∏7Ô„ÙA2@@[âÉ:ÑKm~ó`Poº≥˙⁄â64®¸8mYóFΩ”'πò≥:Ù/ ∏ë≤1¥˝q)√•‚Y©¯ îcñÎ	πñÈ“]∏àÌOŸ›0ÈÄ(B◊ñv›˙â@CÉF›âÆ›•™öPäfÉ
+	2–©ß{§o	áMwü„≤É˛Òíó•4ù´%OÊ;ÄˆbﬁRMïöWeºài˝jOF¿dFa¡—:œÏ÷*R:YtF“Æ?≤—b2ã˚;ƒ7Ä0é%≠ñÅRÉjkö\åxN)≤{j“JjO&iÚ¯µìõ¶ãèö≥ßVXøùî<â¯ºs˘“,p»˚\W›\j±ÀàÌ+*´êÎ$S∫b
+úÚ∂x2∑jΩu÷«Ö?√X+ó§í˛åYP∑\∆J˜Ñæ"Æáåâÿ·ﬁ˚Ó$Œ¬îfEIhC®z©à™60{~û–´≥j,π8ßºJ4í˝1Ô(ÅMßìjLHSTZ^bXNèU?‰1∞¢üÍÆNEÂE]à&ıöºaI–∆=dPπ–æ™˙·¸TGÄ¢√†Æ°Ω+<¬<¶!-‡≠›˚bs1‰4ßÀ®˝K∏‡Ú EÈÂwÎ&ÃÍNà)0—“oëT∏?·ÊM¶o≥∂ˆ4)Ó{av?Ÿ†¶i¡MÆ‘å∫-Ô>b¬ŒÁVjıß—∆ç∏ã'ßÒ∏KOÁzñcæÔøÉNª8M;Í%¯t¡_◊Nx$›ÕA‘ãˆqëÛπ}Ω»•ÂDÊcÎﬁÓﬁ⁄Ω=∂≥y{kwoghÏ÷ù˚o≠0„ë=$Â©©w˛<B∞Éúö•Éc÷\¶Ï¡p(=Èïb(¥ˆJ~«°¯ﬂ˛Üiy^’=í[∞/tñË:é√ íXÖ r¿πˆ]Ú.Ç◊¬.ÔÇL›ÈÛû…™ÚÚí7”Ïèb®ˆí®◊CFπ8GÄ¡Õ3‚¡"B©≥®.;∞óÔÖG82r~çBﬂøNø	ˇI÷@√°6áŒ‚´∆åÄ¢=Ç?=kÙ`EÖ~è‚IJ®¥=rπ‚å«- ∂§éÑYﬁ|6&ﬁn˝°÷≈£9Sπ¿Ëπî=R=ÈÍHìZRfTYœ€í∑ÅÜìö&˚Dı(¶:ÔÆµ[!æ™Å˙Û¡$Îœ'b)°i@Ωvf˝5¶€˜w˜4Wü∞dSt^jÄ©9dœ®ß£rÜFy˛˚i<j‰&∆ˆ„.–ÚøﬁΩØÕj»◊«@µV≠ımÃ’-¥‚Ú≠7á»◊Ã´=(»àı€!|πÊ5vq(4Û∏Lñ±@)¬∆NÅ2qpk‹Iıˆòó~å›HÀÙ¢8úIº,∞a»cÊõúe~öE	uŸ¥49À5ÿ « „—_Ω®≈RJzÜêJÁ%Ò‹Ë6õì‹=M–ŒG“ú‹03â([Éã÷[uêCï®Dc#fL≥ˆπVâg4£Œ[%\µh˚™u8aE≤IŒ{‚’ˆ=„-ß∆/ú1»≥÷0“…#Ó©‹¯ö¬5ı¬¢÷O~,Ì2·ÎV!Î\ëje§w-êŸÂ{ewç>ûöf˛…ıÕÓ˜9≥Ä©„˜-◊wS∞9eD2ÄX(™ ÿ?üŸÅ¸Slß I~v
+4úœiA¿œÁî’C#0É-
+OGAî°{˚0JÅª¿¥&sùàã“2»¨ü–æ ©ı€ìŒ#9ƒX–˘,ÃÊ/EæVå≈5†◊õÕ«x∂bxÉƒ¬‹„VeAŸ˘Ω&>'u¬Í‹òùm±Âã q˜ëZ)Ω§Y Èˇ∂M˝ï±˙Ò~~ÜTÆz™Æ∆íóã]T_cç;U]bÂ¢7Ö†Øœyq[2‡C&Ωæ…vXñË<f≠`1)Fd]„ÔYÓ∏tw¬TJÈ•À>»ﬂA£ø5 kÕY+M_cØnY]X∞ñï∂†D?qMâØrïËóx
+œZ3
+’_s˙c”¨=ÎubaŸV<>ã∞¿Ó¶Ë:#∫¡ï±tX¢ùNbÏçÇ~ƒÜ— P¢ƒ8Ï√∂üŸçz#ˆ`L‡ú~Œ∞ƒ4A~?0”îƒ€F¡1
+cc˘‡Òò≠õ≈Mb´º•úœ˚fÙÑ{ú˝.É˘o≥54¯¡òaÎ(!ºª?Eˇ‰¡°a√ô÷’	Ω≈˚ß\è1»wùáÑ‰NÑ•Y6éT∫@â	v s £∆GÀÅÄÎ®o”≥˘¿c/ÄX¯JPbÂ.å(7t¯¢'Êo∏¸„˛Á⁄á˛o|{qq·ÍÂçñL–¯ˆ¡¡úíÃ¶›ì`≠	fÂä«såÇ∏ÊÍä
+§æƒ©Õ¯ÃUB°Óv˛&;4Ãôob∏?∑$¡Ωût–.8Ç‚;G˜JA≤¿·0√°)Ó–‡ò(—‘Cùö%(*—Ù Ç[ò(ŒÄEÇ?[§)Ô„_g c!·FuiïT‹Ê_EN∫ ù@ë∑€YêÄ8≈ÇîΩ±w˜ŒÊÄîù≥m^D¸¥˘I§Íº¿¨®´Mk¶›ç“1bÆ ≈ q=¥œhpZl•=ø˝E}¿\xltŸƒ6pe≈HT>í¥è£dü¨ãŸ≠Áèv1J¡	¥÷©ΩÇÕ∏ Åq¶±£pD	p4"®Ëøå:® ŸÌ ˝œx4'&—¿Gﬂ
+q[¨0§$⁄8]72N\õÔ/j„‰çíó√c&èXíÄBAgE“ãl:ƒô√∑†’!ÅÉëKíÙj„C)ñÓÖ0#O…,|3Í·4Q|<≤Ê˝{77fµ≈06∫X≤\ÏŒup°Ω	l	Ω·eÕ	º^0k∆å=1.(8EÚ—Ög11,_aT7—±›Ãµt∆E¥ç~€Ì0NzQ†÷ë±l¥ ?{˜CˆÊ˝çµ;Ï÷˝êﬂ\Û∏E[aƒñò@”Ù¬Hh1îv˛ïπ„™'¯Fƒ@)Dz™TFJÊ|‚r‘Õ|‘â¥º∞º`J)˛ÛÁ?˘-¸˜ØÏÊ÷Ì≠=ä≠{7∑÷ÿΩÕΩ∑ÓÔ|«éüt≈#™õx†/≥ªk Ô‹ø≥…ˆ÷÷wŸ⁄€ªøÕö“Fó∂ÿM
+§h-aÚô≠Äç◊Ç˘ù˘@¶ÀbkÉ`?ú≠≈	”‡x†„◊è %¢E‰AÚïdçûgv∆£–0VÌˇ˘ÙÉ¡•_˙¡ˇÚÈ˚“•ØË˝ôßï•∂r¬[—Osg„çµ{{ª8ôpåóëkSè.’¬EßM^[m∑›bb∆ÿEædn>—ï¯TnZÂ¥çøhÍî›,-Kea¡Èh@≠®xA^¸£®»≈b>~jfºpAÒ‘»˘â¥∂.ª∞˚çƒÈÍ·Kkó/ 'ìj‰fÏ;µ¶›¡·û®˚´∏à‚qÄ¶bË(_O#ÑKÜ¸”˜?°-˙;
+$˝àáì¬F-O∞Qÿm77◊ÓlÓÏa‹€Yªâﬂæò]'b∑ˇÃ7ùË•wœy@Æ-\ˇŒ”0€æõOChò:ÈÒ^¡ﬁ+¨óπﬂÉáaﬁ*í˚ä˚˛•vzæ[s MπÒ`wÔ>–å/h/ÊﬁjﬁªQı”ªπaÅñYa¸{Q!≤}%vbûπb }»ç∞Ø` E˝2∑ﬂØ$V~ÑmW7ªî;π!U»-¬h˝dM5íÕ¬f∏ƒ∆¬‹óqﬂUyfÍ»{Àƒú"˛õôü‘!æâÂem!?i£kÏcû:X`˜ªqf5H⁄K¥D›GfœµÚJ©„≠±°e≥Ú/∆.—ñgâ2ZVï(JÏn˜µê«ıjb√^ÚÅ$˘R`È@v¶•ìíYº·Ây^≥O)´x∂•äqvëª
+◊Ònî±»“5ç(ÔM#œ≥ªk˜‹Z€ÿ{∞ÉGˇˆ˝T34}<Ûl£∫óÆµY6úÀÛ˘ù◊m#™µQd∞Û'jr≥ˆ¡Ï ¯XI–∏À‹a –4S,¶pÉ´C”Ü6¸§V–Ø3¡¸◊WH[~& ƒÀ¿˛ó¡~Å/êº“õ™2GK” KìóGFë´ëA6SâÒ9√b6 ó>èwA•˜µ8í%;•ézkﬂ∏†+ºß‰E†ßlkTyòø‹•¿Õí_ãµpÓ?“b(ö∞_óG–lËÄ ∑eQA2Oj’E›’t0ò#Wß9º≠˜aø)"”‹Ê-©)¸»¸ê˙ª‚Gò}àÚ£ÉT4-ü=∑Ö‚Dﬂ≥‘8áç»ç¬:*‘@µ††+CVIÔ|3â«û|GTã±L°n2√•r÷pø)“lÎ_∏R‘Ñk7˘∞y™?`á u—¬¬|@ë@º˙h¸Rã√uSÂ6UÍútzV∏ÒãØ,ÿ¶£Ú≥Z'qRRYb99ÑnÆƒìåd¥RãK∂®=]&ØkÒòºø¯PŒàæôÎ‚Àµy~øÊ„kIÈe'õπÆæNYÖçß7s›æR^!y¥d¶JÈSµ’n·DìSWrõë9ÍVî§o‰ºﬁ‡3l:Sºãsÿ8_éIèÓÉ‚%\¯>é$´3õtdS5m&ÙmÛ’˚u›z9ù √´…T(âT˛P=ÂˇˆÉVS‚Úi?œ∏ˇ∫âóX'óJ‰ñ°é!;Ñâ>ŒKl˜∂®ÿ[#ﬂ˛’ä›·‹<ÙÅÉa˙k˛˙ÓµC®£æΩ·⁄4´uœn,~ÜÙóøn˘û‹∫˘
+◊+E…¯Á∆± y\çà’˝≥^ë‘”iV$Õ◊´Zë~2˛Eq Ñé—ºOX0ò}ï|ÑèQ@ª∆ü/è ùõÇ9@‰…Ê
+ä7<|ÇÇˆ0æí,±ß©Eõôf3Se¬∏ˆ⁄-FDZFë[≤>~ÉÔd«≥•i3KwæÍ	^+MÕΩÜ]F◊w2ve"ØfFâP–uâmæµ¡”PèY?û§aªÌMˇ’ﬂPòUsÆ?˜
+M[=MÅæ(Œ¢1–üØ∑ˇÆ_õós=U*N˚ö;â_Yƒ•‡{1C«√Ø∞[a´∫≈ø≥y’+ﬁ2©ÓÕKø’~4ñ|YQø2pEØ˘¡ÁÓ;ıú˜ﬂ”˚Ø÷ñÆì_[qZ f	Øc=Ò.% ûqRSÿ.KfGÂ_‚ˆ¨ŒùÊœöF«†ÍÎyÅ˚$˙<œú∂dó„Ù_î'™ìÃùV“¥¶\Ó‹±PPK¶≥üÁu‘’E–1ë ≈ì;•ˆeMÂÅ—è”a»ÃÖoGIÂÇ°!]‚¸«[˜∂Ï5ä ˙g~û¬t«4∏¥ª°Ω‘JA_	‘V`Peâª\0 ˙«/ûÜBiz
+Í›ly_<y¯≥-Êƒës%•‡ÔzTÄ9®Ó…ÈWãÜWSn6≠&ÒñÒvz€Üyém…’ôœüˇ_ÑM˘ù âzAÇπPIgñ d®Q'
+Fîi4 [|qÄ"Ù+˘•ÚlAØÂ]Ú[Ú.·YÜﬁódÍG≥eâM{ÜlÇñÑê›ä2 Ö±˘l&Â>˙àÍ˛òr˝&˝ß◊?ß·ŒØ ZÙEΩ© †SkÏﬂä´I?°¨O?ë^<œ’ª(ï”ø”ÅÒaÓÓÛ'∫{’TËªıä7P™y¡˝ë^Ù70 û∑N=(J∂ÿ› Aò±ÛÏvÇ≥DHÈ@û±yœÈ-?ë9∞˛êØAæ4ˇéfÏ„≤E0ı;ZÓ‡{•À «ûøƒÖ±$c‚0pŒÓ∆›… Hÿ[q‹’ÁÙﬂ>}ˇˇ˚Ù˝üäf}Lõı=ºˆ¡èXqÁ¬(LYqã◊ÚÔØ•ÊˇøÀ˘êj˛5ﬂ*ÖóM›iJ”Ã[ˆ∫ØlO2Ã2m¶B˚àGå—t…˙≈í=ó+◊”ıÈ´oπÎØÑö¡øLﬂ’µçª≈„…œ#x¿ ¢†‹Ω∞”âΩ⁄\€P„-\aﬁ•Eˆ¡OeÊ∑πètØ^ï-G}ü∞ù˚ûjßÓÿ[°Ld∑ï`Z6ƒ»∫Ï'às"Ü¯zCûÃ.ÔÂOqÈÂm„MyŒgÔ∑¯N[≥Ú”o“çΩ7[*˙<rÛìµ¿ª¿ñçYÔãˇAs≈¸›ß¸Læ˛9ßMº¶ç q°"Y•1w¢∂_R~À]CEÌ N|"wÊ/Îc∫OÃ¬‹ƒﬂˇ
+π	ô∂∞Â»Zx1°ºûıπÇ/6¢rÁ¯Çﬁ7˝£6mçíÄÊµ¨;q–%nF\
+@√ìß)Z!Tyg1Ÿ;<˛õ‘“w°Å9°˚X-XG•wtˇ„hà‚-5“)œÉµ∏è±7éBxnQ©&ë,`C>∆Êˇ5üì}U,∫Ús…¬˝a˙VÓÑi$RMíL$™|ò‰ õ≤=à3h®ª‹õíÍ~L€˜yŒa|"÷ó⁄Ãí≈ûâr”∑{O∫¡†aΩÌQç÷ô¬ôÎS¨‚è9ÂíTÏw˘YÈb†=º%>ôÛñØàN}¿n∆¥ó[ò∞ à)|y#N«(A¸p≤~'H¬˙$ ÆëÿjY%wƒˇõº≥|h~)gıGÍp£Ûü‰f˚à˚ÁC) KØ˛”≥g˝ ù„¢A<§ç:Iz"änæ3â∆∏Í±uˇƒÂ{[Êá!?•ﬁß"ı∏º˙€¿¢¶g™ö_˝ì‰Âœ@ÉoFAo∫Ùù`üv}êı„A‹ˆQ0”úuÑ≠˝ùÓ|˚æõÛãÔI1ÈWís˛YNd%Wˆ¢≤p¢ÚÒ™Á¥◊D›úîÁ,Ì+⁄f¬ÍÃ¬¨W†ÑqÇ$Úˆ>Hﬁƒû‹Ç	¨ø≈¨⁄P^”´k¢ä√\Pˇ_Y}6ET&…Õh‘¯
+y˛ÖºÊ,áN¿iM'ÕFp@„∑A9#l(L£o›Ôıˆ∂RN∂‚H¯Åcj _QQsKUg⁄OÔ˘˝Yè≠ı`ÙŒ$ƒ‹cú i=âû¯Np4í'˛OuŸÖÔπ˝Cw,I·'ä˘ˇ#gêﬂ{’Øx%Ïˇô›)y§qh¯ô∞Ü∏Nƒ˙qÜ©∂¸	œπøü≥ﬁç ëM£˝TÆÄw[nY—¶¿ú±˘CÅ Å§˙ ^˛K≈å€Õ8ì
+ÜΩ§}Ñ˚…ÇhÄ„<{´bŒ¡IÚ∞À_˙	-ÅÀ›è•nËCjµÆÜyUïOØ|·‡)…käŸæ5aãÏÑcƒ™íÀãÎ»§@†à◊ò
+@fJ¢ˇF-ˇupg}ïò‹ﬂ Zﬂ¯±Á]”kdp'ÌéπÎ ﬁqBÒŒÑ#dÒ+
+`ìŒi%”¢Aø+OàÁJ_˙j(≈˛Ÿ÷^ãå·ìåXyÓ◊K‹îH§YüNh’‹	∆–T¿Ïar».Ø…Yb-M√·˛‡òmo§bˇXäø˚ÙMΩ∆Yóèhîp‚òÆb˛Ωî∫?Qkl˙ânÕ‰ç\#dYûÎ˝ºXw3◊kG√œH¥äb¶úPî™•h2Ω@˚oÔÓ±uê")≥˝ˆ}å˝›‹Ÿ÷Ê≤¢ ∂˚]í	˛û»¢PbJΩÜæg·?òåˇïZ}6ΩÊ[·~e°Zu<;ÎyûØ”ö†"Ø¢HÆ ˚çd›5ﬁ?EÚ¯Ñz—ã—?‘SM0ñÖ∫±<Z•
+ïÙE¡˙µ¸G∏h∞˘◊¢æ’oo˘u§ùïáípåw1ãI∆ÿ±¶
+	eçb1R1ípIMïv/aV˘SNfÖ∫—\:†˛ÛÛ±x5TÓ◊øFäQ:∂ùk)0‹%ßT1»ı©?ñjTX≥†q|˝I®qG˝Lù	πnÍc&U*Ô…CÌOL?˛^—˛äÂ|∫q
+7)RZÖ˝®3òfµù∆H®Vè4√∆…´tv®´2”ù˛”∞æw6%dÄÁ÷ÓÉ7I÷N¬¯ÌàvHw1‚÷™ãY‹ö‚{)I”{\H¯©˙ëó˛7π4‡Œoœ 6EOi
+;q,÷‰ÊõJmßΩ≥\>ÒMÌh#ï‰vˇ±f˚⁄|ÛU,»œ~˝¢EAÚ¿a≈±êœ:}å¶>û¬± ≥ò
+Z™F§Çy‚H≠÷iJs-—'|‚û”ÿå“ˇ&upg≥˛æìπÏsæM⁄iæÃ§]Bﬁ)1Âk˙∞˜Ìe™‰§_üA-¯Ê∆¸¸√∂£1◊Ùpœ
+h•˜ñ–fâ#Çäk˛IŒ⁄Æg=˜ÓÓ±›Ñ+tWO¢c4≤mêì2[∞•∏©$◊vˇ…8Ú¶`>ŒD™ˇ˘#∂=ËàÜàP<8m™=M€∞∫onoõ~˛êˇ√D,/ zæèô`Œjï3‹e˛di2ô4°kƒYlîéÓ∆<R·ºÏÆ@fãbπ¸~U˘a˚·ŸÒ¡O^Õ‘˝¸ø≤;aêıy∂ ªGa`#Áñ≈-}$w˚:<Oõ}!ÓA˘}Çè•ïw˚ªD≠ﬁœïvøñcÙ—ô,≤ktÄáÑ†_}°Msû≠áù}Â∞Ñÿ]v;ïÇGrJ\ÔˆäÃŸˇ¸?d4ÀFòCŒ›ÎÅ-ıßÏMXB5≤ÊÌ7˜Ê∑·üŸôÎ˛{”s.ºù“óÖÍF≈quÍ™ı~#ã÷‘Ï∏xÌ.è¬}∫≠ÓÎ” ‹£KÛÒ⁄Ö	Ü˙=7^ÕÜˇ€üaLó°[É˙ãÁn8j§Ï-†d˚äp fÆªÆNœSƒC™f3Có§FA⁄'œﬂù©_¡›q`Ω$‰lx3EC†RŒÎØd¯ˇˆOp`≈`’ZÏ÷›ç€8	P§˛¿ZâFhBÂ3ú;ìÅ0ÒÌ„y"öúDs¬tÂßﬂãcí'a»–e5Åπ&
+°A≤9/9Tö@ì¶fzø’.%ÑΩ¯t¶ª›IsÛ>w¬Ç¸‹∑©~ŸW!Vº˚°¿*aÛÏ>ByQAáT‰∆º¨ép®·MR…»5ú‹ˆ3Óò˘/Bp*∆w¿‡¯j?Su/:~9@åÛvé˚¬v«a≤Nﬁû˛∆+x"wä±;9Œß E†Éy^@|ø%-˝D·œ5>ôÚá’ù)u∂Æ>≥$ÛEπ‡UÀV€^–Û YöÒ:ƒ\≠ä ·≥rÃAo6üJ>w ◊ÛºΩX?‚:SZa°lq"qEÒˇŒ%ùŸïä(§ó‚è!¥‚{1π‡º˝}NÃåØ’`•ôpÇ;∑)U◊vÄµpœDÇãè—ANYnï¨D@‡1;rTi‘¡C∞Éfç
+Í‚#x\<Ä–ém„∆ı∑, ≈(”πÉZ¥IY—p˛xdô'∞Q`^k?d å¯?ﬁù‡L†d≈æ].nﬁÂ®˛˘¸˘~èΩˆÛ‡¨ ?çÿòßcfÏ∂qå˛Jò%¨ı˙Ã¸ƒ˙q/bÕø¢4\KØ%€˝#Q[bùΩg·›h∂Ì›]^˙ÌãΩ,“ﬁ4(	∆
+sFıÁñ.‰…ËéyÓ®¥ìƒòê/ôÀ˙—àÄWÀ—Y/-ú	ô’Œn£NÇ√ † Kã&„&LÓ®bÙ∑ÍΩ“Sˇ<èaC%∏TˇXp†Y‹Î©&cfÈ¨dWWÇÉÍ#EXû≤…ÒcÔÇÃ/VvÿY'TˇîB?KÆõ*ÊíëÂ,ÈØ®‹ãê≈@»G·3Å‰_ŒAÚÛ¿¬≤FïÃ∫ü¯89‰J˘…–ä.?´ôWk∑ß·g¿‚AÕ’Û9Àªˆÿ=Ú5ˆE|ﬂN≥-/√ é‚^öÒJ‹MÕ_8uoóóí6S¥k€ºuèÌœÿ÷M„«=€t˝y◊CÛﬂ –}@˜Uî¯Œølø¡ü˚2‰◊~éíÆ›ªπ∂wÁmJ÷âËlwsÉ˛æµµ˜ª≥ıÊ&ªΩΩÀ÷ÏÌ¡≈zdæl∆xrÑeóÚ&√k‘¥(Ø∂¬)Aú•∞?ßŸôãg’¥‹∆€—»\˙îåàø?-ºj=Àùÿ*T©úßI[„õç˝kﬁF]G->´¶äK© `àπ(XY[µAı[	ìè0Óº≥ª«£TV¬röIË¨¨5W‹)j<˘iLä£e¶s&êŒÛ„L™◊„èÀ⁄´Ò∑˘Zº‚Hm%?v˝sRüÏ⁄ık˝∞ÛtÉ≤ñ€…pêu7«EËˆò®‡≥wqçí‹4îZó‡Å˛ìÙ¸Dsƒ˚ù¡™ßßDM‡Õ@]ï8÷ªÛ‘nI°É∞†õ≈“òÌOé—Pç⁄∏Æp£Í¿“É4≥nîÚtÈÑnôƒA§}*<
+£ÊÎBMù f± Àx`1Ês»_Ú€qB8ê∫ı*§UÒÍΩqüﬂ¥MpÿëuíôÿQîıŸÌ»€ô„‚’ªVão_;àΩñ ìÍ…&z GÌ¿tƒï‘[¥KËaÂô@¢G)].÷r4w∂…ïB⁄iO~À ƒÔi?âFOÁ¥T{•ÕÅ—6õÑJ˘ã,Õí¯i8˜p˘Qï¸Ìg]ÛNW¥¬œ!Y†Ø∆’ªD≈ N;±fœSX9nƒù0Ëñ"ÇiUïêD”ﬁ°ØŸÉh00Íüqıj≈âM/ØöœXÎ™c=˜Zqîx⁄0ÏFì≤√?5í§Gx‚ßÉÛCB!Â‘Ò‹ãuÆ¢@’ÌJÕÈ‘Z—.——;–Iπ¥ ‘°p†∆∑ª
+‘ìS‡h‘´Û†ÁÛÏ˜º.+R¢eßûDãı)PhŒì2é
+ ‰fw|â˙.ó…Gek¡5Ü•â[.µ€ÌÁ<ÊËåÉSœÀaTÎKVñ´U<V±‚Í≠∑3≠∂3Æ5ß0›KÇn‘v.ãÁÄ+I‚aÆÕ>åÇπh‘çz1?À‚‹2≈W[^<ø•ƒ3óÕØÊπ@ó∆«|ç¢¯≠¸ï'%ù÷∂• OÒe≠^9\+2•*p&Sdr«O	·°qØô√Y{åN£œüˇ‚Ô8õv˜òY‚ö<Ω@\£%¬ﬁì∞R^+[Í≥ßılnSÈe´8Ñ⁄æi8å,ë⁄cÛ–pÏˇ¢BB≠‘_’3„◊–π:µ\e@˜¯9ªm|*›ñ<4Û¯ãÎ∑jﬁ„«Rqï·t2$æp?j= ìÍbOxYVï•≥Ãñ_∆ò|I{c7CíÙﬂ)6Úœ~wP/ÀÆÒS‘Ô «Í;⁄úeÖVπbº∞G⁄Ù+7¡8{©´úgwÇQók+^Ω∑÷Yk)op†<û“®Ò5Y◊bUãÓ÷∂kTÄ3ãÈûÜÍø$öÔ•¯g¥¨/€◊
+Y≠ı&ãÜ=L3é9ıd)Mè`¢,≈]qüæR√¢j˛¬.˝"¨é9∂´sì˙∑¶gC…d◊LÏ»â÷@ﬂ"Ïﬁ®wﬂË«q™B3˛ú«_ã£ÿë≤CväGãú¿Úì≈Xñ≈c‚^t˙,Á€Ä&t®Øv…ﬁ]”-¬±®ËqÊ≥˝7ÁˇÌ∫æÆ+LéMı
+ì”ÒB+ÏƒüöŸÎ#*K/±qÜ∂≈¬:r>*ï·»•p˜Îy™4<≈tÎ√~+Nzq>Dò“Ôû√/NÓÆé˝Y(lÏ‘„‚»~ØﬁΩ–Áπ˜ùÿ£(˜(@ÑÀ_Z‘ΩuCÑπÉMÕ›◊R“ÙÒÇjüﬂ»‹ˇ†ÅŸº«„N~Ã£«ıÈ˚c∂·ı+Ù)K‹<±´ΩÖïIè-b2”ï⁄‹¸Ç178øekT˘’À¶øÚ∑ë¡pWyEîÿø@>I≤Jœ;sÜ/√¸^∂î ºÖ∫JYtí∑πR•G+TuS[µ˘Ä(-Ù–ΩπUÉÔƒ∂U¨\!wVˇ≠˛ÖõìSl3G˘£óX`÷∫C ~<ñ=?‡vB≤4{EΩ˛Ö©Çrõ9o”%G;ÈT¶!gÉ0¿ˆπ$œ¬2˚‰Z/¿¯Ä1ì«€Œ…Ûq»˙t-ã˚¢ì‹8ŒBdÜ„8¡ºCﬁqıtèràÉàÙÅÄPŸõ–wñO≥ k<kÇ˜ÜÎNâ“øZ·o>°àÁ˙IêﬁM{lï=Å)√·`oª±Œ·ÛiZﬂ›≈—4oË‰,=‘§˝Ω—˜Fü?ˇ˘˚äïüÁ|¸
+{M±ëÌ,âÜ–Ã˛ê5Ó˝Í Ç∆)>˙ù$CEÑ?˝|Ö—®˝ƒ'èE£n|‘é«·®˘§üe„te~>GÌ£~ê•¡x‹Óƒ√˘Í‰ËπzuÒÍï+W.\∏|˘<.Ÿ’◊N¬Q'ÓÜv∂Ú
+ç≤¶ÀŸ”'-÷xºÁËi√#z$¬"◊¶/,´øÚ∑◊Õvö+ÄfÎ0®|Oèî√Ç¢Ωr∞Õ!’yy<ªbßji*˙I,˙!(≠M≤‚{ßom<ˆ[/Ú√ÿu≥<\JÚŒbà˘ yH”ÁœÒ_Ÿ·`å<
+˚À´ãåV£%‰lòÉz8)GA∞∑ X≤}ò$ †V2∑¬Ïb¡3l˛¢Õ:‡[2¿k≈0'Ø™º L¢/¸ÃÃïiÍÒƒ¨ªHãl8-Éœ~çπû‹kB0â4HNÆbx°6ù¢ÓÍL0…˙sÈd¡!ùYÑöìp~◊ºìõ\1ÅÊdÁî›ù»m~ûmé“I"¡`Ü—§rS6¯ABÜ3≥0°éÎ NÜl≤øO–´Q h7w¬qVF)Uöhù+Ÿ.Ω™Y‘âô≤®`©èß$à∫ØSn„ï“ßæ¸éâkûb—cƒû≤¶ÿíe∏W J⁄	·‹√Öˆ’+èDÙ	ºR1^®Wê÷·ÀJ@≈6*>
+ª,_ò˛õØÿtŒØâÅQsö¨/X“∫AÑÃsí˜’ûAGˆŸkœu∞`ë‰¶cd„‘¨;œæë∑Ï"MπÔÜ¿—˘—˛ùCVˇë„—˛ûC™
+:(Î1x€jUó£Ü‘ötÉ=˘Ï◊Ô!"€± ∂ß<ÉÎ]ÿq∞{≤<y+
+•Õ‚C2;1=ÖäË€Pó@åÂ|P°2$‡GäÕ[ÅÊ!D"˚4E€n…À’m´hÀ¬vÕû¯◊VQzæ6èƒäˇV‘»–ÂÉ…à#`ÌÜ4w;ËÖMN¢8Ø˚8ÑB.Ìª¯Ì0Ω¿âí¨Ÿ‡úö(âj⁄ízÃT/y&Ê·£ÎÕáèÙ‰H»\Æ-=§ºhTÉhz£ﬁıfˆ~√U’F<¡lÄQõv›n˚!çºﬁƒµ:ïÉ0ø'~5°Å+õPcSak˚.Œ–•UÜNÃyïcæ◊∞wM`ï5ª¿ºØ0„x¢#c-IÇ„vî“_*:;keÏî£≠¥U˘È¬ﬂâé*´l°Ø`S;[¬∆á(…&÷˝®´d3ËÙõ˚†ƒ÷Là#ö¥£.äì6 "Ö‰û¸ùO√c5UT≈VÊOög÷è¡ŒAÉ€˝ ≈ﬂP=˛Ç>‚ØõGcæÊOµÎ|x:$ÂM¨Ç¥úisVîèúæŒy`€@t"J¿s¡a«ÜÏVòu˙T‚ ø≠4‹∑†bU®9€Œ˙ Ï”={ÂeËú¯⁄Ñ£^÷g◊Ÿ¬¨Ω(dqŸæŸv·Ú‰:;ùÕº‘F⁄¡\C‹C⁄˘7≥∂‰&¿€–ç}\»Í˚^ÏËF3·k©∞≈uÏÅ¯Z⁄YçÏAﬁ‚Â6[G∑Qó≠moYD@ÄŒS∫ù!çv≥ÅÇÂ<ëìÜ Á#åÀ‘\õÿ<Á6±EóÛŸó’Ú¡fñr…¬êUno€lpíÇsè[•¯`tw•—¬/≥≤sbŸôÍùÉT≠zl5r¥ÒÅ9AtÑä‹ò’Ô5Ûı
+ˇ¥QRE´xB‹∞+÷µV•…’v3æ◊¶∫î?óT’p±vv≥uØùL⁄
+π’çS‘G¥˜£XˇIñ=Ì∑ñC\\~¢˜6:å¶l≈˝∞|I°ç-ﬁ¿5I—@}LÖàA”ë•
+ŸD¯$ªTÑ∑jV(T⁄Y|Å\7ÇTç∂úU—ÏÊ‰Ü÷KÎâ∑‡RŒhœF¬zÙÜı¨ˆhÇ\Bç◊Èo3¶™˛cËµ7›#‰A3Â3∆Y0≈sj±ï<A≈iÍÄlb>ûf3h±}mOr2ˇŸèˇ∏∏xÂ
+ªçˆ¡BÉé0±|L©øΩ®-ñ ã¿Çâàê‡C¸|§Ã√∂å<] ‘ÁÕP 3B+Éˆ°¯Eu”ææz˘ª%(æ8´Ø«˝≤WÏ´WÏ[ØÿØı
+‹º∏ÀÈUjcœÒ>öÎ=0ñ˘ ŸÂê¯k8%ˆı{|¨â{≈÷ï *ÃôEÜœ8åT’esóÿxniÅª+Â
+™Ì.0Tc£º®Ñ∆π8D3ÜC˙&ú‘ (‰.'.–T„\”ÓJ4~ÇDÒ÷™´&ù≈F•BúÜ∫˝∞¯ g(Û«î`îÎC(¥uƒ‚®Yt{Âò†!~Y”‹\O;¢çÇ}8–&∞I·A∆Cd‚±åî∆/≈π5ﬁ¢‹Dø,Ã–DT≠a* VëQf~6,˜¢g Ω%©à0»'ò;ÅÆ8Ç eò˚-Gíi∑çfñò˜ DSyx]Q¯TÜQ–öÃ-._/ìÍJ˚‹*Ø⁄“œTƒ;Á±ERì¡J’¥œ⁄ƒÛô¥5†N≈]—íŒ'hÉOO5£eÇ(Wˆ™‰ûàó,ìπN,ZÚ¸ tS±1Ä•T*%´õF&‹£ﬂù†NPqL∑à±b€& ÛÔWoåyéç%à!–Ωe⁄’JV?2@&ãˆ-áÉ≈6	9˘‘π
+Í¬¨M3!«\ô{≠%(6L) TÅ˝\ïÏß•n·¡‡¬F{qA'Yrx•¸Ç÷…„t’Ñqr%◊‹˝¬¨dµIoâ6˙¬¸¸˘ﬂ˛©S?c∫NMgcØœìµ;wo›ª˘`wogksópÀ"ê§,‹2ó!î∞…†,H‰>Ì∏wÒ«ºªŸ•u~5©6¯ÄsâÒn84é∫»Ç·pqA◊ñ◊_p_ï%W™sf`D›ñúºL⁄vöúÂã§‘CKm
+)Ωcn¶ølQ”g√¿èÙåﬂ±Î; ‡≤Í<≈SÛ(¬ıv©:n›∞ââ!PÚ¢_zFÂıNòNñ¸⁄â!íu…ÈÏ‘Í*6~}iù›eñd¡‰∏‹¢l8è¢•ï/ ”\ò/’úøª˛˘Ûü¸˛˚W":–ã(ê…‚Ì◊^õÔ/k‘«’!‘ˇXF≥“®IYë÷ÅµkàFôÍEá?£áZÈl˜§‡´7Êå€z	~ˇWLˆœ±_/ «<˜J˝á©ˆP°ZÓïZ∫ÏÚ≤4üÙ … GΩ∏"¸cÄ.(NÿîµÎC-–Fk£√;Ÿ®‚D°ôËr3P˚,ÇAÌsb∞;( ì˛p	ˆí¥⁄≥Z·Ùk˚Jßﬂ‚¡‡ÜÇ)˙Ò—ÿıïêÚ€õó6._⁄x§a\„ôÙBCÌÒ√Ä= û=H|+ÚüeP#—∞«“§≥Í{ˆîÉlUËO˝]ç˜1!À9“y}Z Bø˘n¥;˝ YÀö‹Mj›Ê-Âd∏Ê¬-‚æÏÛS≥∑õÂy8,◊.ñ†SÒM?ßâFNj—â±7µè8“
+
+Z1;eqÃËj;t—YZÓ©ı†€ÅÊ¢¥xÕ∏HZhòÙSñF?¿√~àS:≈ò◊Fá)w;Öûíıúiku∫k#‰;nÛ©6wëGr-¥Ÿc:;9øh»-.˜YÚ˙∆òIF	µ’#äZÁ≥áãK¯“oŒ”˙ëkÍQsòˇz∏∑ç©»oäë)òÆ?˛˜ˇ"ç÷´!≥bñÁhK≤¯oò≤Uﬂå“åP xÈY˙k9∆î2÷95&Wxi*t)‹®˜Ω!3›"Ü¶ﬁ>}RΩÜ»C⁄™éÍÓMCd‹.Ø5wÜ?j¬ÇVÂ+≈?!L<ﬁN‚q¿QgöM/Ê*ÓtÓÙ˙pså
+∑òi»s ﬂ3gê-è3P:ı§Ø‰ﬁe¯,]ΩË_©èÅû-b3_ÒPzi6…∂èFá{¶Ó‘oCa
+∆˜äµäÓ≈πß∆ùë)òfÑx¶Õˆ`ó§§æ≈˚«,≈î´§CjZ°≥ÂTÑ·…”"ƒ5RÉË„Üõß-W_-è”A.-'tµË_ÖÊq∫¬¯ı‰ÅÒ∫q˜ﬁÑE≤"B_gÉQO˛`ß¬kÑùÍŒ2∞<^≤;p#lÓN¬óﬁ⁄BkèVÙÜêy»Ã≤Ωá∑{a∂ªπŸ8$ÔÒ«XŸ„®k8Ωt•V6ö´ùnÑ´=tá7|zDTÓ∑»V∂ã|ﬂN@…}hy@æ>f/˛t1ÇÉ1A˘8≥¶8ní/%ûBﬂÚ9Àˆp◊G˛
+Ç[YeÕpE¯fm¬îà?ƒgm´GÃ∏†4ﬁm±ÑÍXÉÌYAèóµ√ûººÅvx∫Hﬂ`˛VÅéu√±naÏON5á1ñ •ˇí$€-˙ÏíGRìTdt.ä™añãå∞íùê”Õ¥çŒÈfN,EÖ›‹µ¡Úlû˚A∑K√âŒ –ló<‡m¥
+SaŸ¿iDeI8∫zñ˙§ÎÇ◊	ß“°Ü‹ÍNÁ¶yX5wÍU u;∞Y&|∑›“.UpMãOá]¿È5¡Ow=ä+˚°‚∏ïvCÏF<∏ûHÆ†	÷Uwo/…•-}˛l“k)Çs‰Æ€uüSÆjÕ	Ωm∂∏3•øZëc%Y«¡¯Z◊sQ¡ÁÔ¶{ª5u77x≥ˆSFÏê “‡|π}≥ù≈Pm…ù8≥)Ua2Ú«‡õtó95\ö„ú…ªÂ%™ùÈ!—Ωu‘–k÷h•ÊoóøKy›iØ èù&πÔ‰>Y’Ú˘„|ë˛xÈYùÒÚˆ¶/√-Í≈j=Œy˙]r—”/¯ªf÷ÍÙ’ì˛yl_s⁄Àg‡’yÏ•ÂÓzb¯ÌÖY\Zyáæ˛y2—˚™ƒ*ñ>zÇ∂¸î»EúüﬂR´WıÇôÁµh⁄y”Â1Á™LRHW]‚û]ï∂˛ïMså™C÷Ó@Ò¿˜{ B Q4®Ëà(n¿Tl¯ÓÌã\1{0ß∂/", JΩ ¶pK‰úÖì·‡-7HË9Òé˜EæÌ¥s[HPb©1,ú˜‚±«Ø˚]ZjÓ¬.áG˘ »"ÖÅW˛Å˙†k*í¸™Ñ\≤Øk¢O‹oëR¯Ú‹±Ø˚›2óO≥mLS¯,b9W&}4öƒàëãﬂ¨ΩÏyAZ¯ú]£s[ìÌ·`ñ0π3z„t#éìnz£ç◊o‹ê7‡ó5ò£û˚1å¯…ıÙQ¿:q_†Z„ /a‡Öã∞ÆÓ˜öúù¿ÁfgóGΩYÉ+Ñá!Ä‡Ÿô†Fuw¡®6ıa¿ô¢36∂≈¥7Ê?=Øƒûﬁqù¡ªfQ¸ùñlfâgûc{gÎ˛Œ÷ﬁ€lÁ¡ùÕç~∫¸<Èêb ^≥Ω˚€˘£Õù`Ùî-œj‰ûæzï≠√üî˛ñZªõ˜Ô›¥kYö’6ÛNÿÉëM¥á®å·dJW^≠ìiŸ+^ƒ…TÌ)ﬁ	Ú2≈o˘Rìﬁ¶téwˆuú7¢™ÉºéÇ„í≥xlÌÓ∑"Jò"ÒK/›,
+ìÜkÉu–˙ò≈‹K ÈºF¯ÄÄ&i¶[±…◊`§«ú{ªXöÔÎ@ﬂ“™Óu(ΩÔ®{ﬂYw±4Ø{ü◊m“ã5'¡p]≈f∏ ZW›ÙbÌ%å5Éb¨È$#—˙Kx—∫Ò¢u˝ERsB]ö„o,£IgÚä¶m¬µ|˘÷ÁÃó¥)›ä=(áV*≥®£—\Ó·ïÖ√˛#6ûª‰â≈/°óXˇ©¿êY^0Ì–ï&˛·˛‹%”…¶≥àÔ6≠gv
+cK~≠øTPv£√ynØC˜üôÎ:Çsî"∂Û”∞{mæø§UUTõó©»π©nH/0uÂ{˝–@å>ÉCÕ·Ω·3‡nR‘©›RGÀê{µuÎÃm83TL§Üå‹A»|ÖfÚ$°˝ê¬˛(≥ààjœs¥µ‘4Î≥êÂn#t∞O∆»∆íˆØâ⁄MY€l B≠Ûcr∞oÃz‹Oçºù J£¬Æ5Û∏fp=FÉœ3-±«3=.›tó…ç2◊≠¡T€p≠Éß6¶F[`|KWÜ9åÁ.PÉài∏ bÚ’^æã°4}O‚#¸^Í¶ÑÊΩ∏‚.X{ÿÿX˝≈í=ëÉ ¯¸ût˙lœ\œΩ«Ú<ú|ë√VZ4⁄P‹LÃ¡È‹˘0∂5+  8]cWiQh Ü?R?O÷j‡'Ë|ÀÇNCO®czåçbëùö.
+’B†9^Åï±hÈíâ!Ê»∫Ωh˘…dı&A-“r$Âﬁ|8h)ï–„	Ê3◊f∆N˙ÇÚÊ…ˆœÁÃuL≤@”Îí®5™Ë¶ØŒy“.ASÿö¡5∆ñr%}˚Çk
+R|U†MA˚_;ËÜrËc…ü_6d>h1îç∏K`ÆkI ËoØÕÓ∆…~Ñ—9	≤f7√A~≠£À› N¬ŸØRLŒRIPéA¢^}xéí£OÜ§ƒÓ8ù¬¢8cÃNq≠¸y≈Ô¨›π√∂Ó›‹Zc˜Ôﬁ›‹Ÿÿdo<X_aw‹Ÿ€ö1o≥Ωµı]T^>XﬂX€€º}√,tí!ı~“ÒÁç…æf◊∞uÉya~-Siº+ÔQbÈ¢’Û¥C—òø√∏\|çv€xìÁ1]C∂z¢ˇ“´ÊDÁñQ÷≤é™ÅGUﬂΩ’Q9√@ö’>éØ\L±#¯a4OØ
+˝£jÃº7 ¡J∞≤àlòûoe–”~.”—Æã2 Ñ⁄‡¶éK≥è»ì†˘∏≈¢Yèc<è÷9µòe71“ƒ˛‹•ä®-Q3ér'…¥πI2-ß[Àµ»2cT»Ç‰<aô8‰Áå™U„·i¨˙√BjËÑí‰Â+`ç˜cÙ—K÷ºZıØêì“Î¶Û†•X(.=1^Q˜‘‹n‡âã( ﬁ’åãx∏îÑCÆï»·mx-Î$Ì"kÅ?Ë,ólõ”˚]IV’âÖÒò@lí5çD√QÊLƒi”u‚!∏ ≈v4∑åL˜ÚíÈ|—d¬ÁÜ¿z\Ç?˛—Ωªπ”·‚≈∑k¢å3(rÎ¸SŸv5|∆pù©ÿñP-F∫f]z4JípA¬YD¥≈wg/äó»[õ>oIúQLH≈¥]‘`ìÀ‹ª•IMÖU¯√0h\T(Ü˝†à¡–Lq/àÅü≤`˜<ÈØ©T÷RT,-‰—Bñ˜}EM}4äA#eyÅ*í^ñ∏ºW‰§2P3¢—‹QÈÚpK‡ég“Ôî†Húi^SB®òÖ“¡6^Y9_à	ﬁg¬ÔWõ»OY‡,ÿ¬^ãL™‹6yùs¸µ ˇ⁄ﬁÆﬁƒÕÊLé¬?˝KD£}<1°us˚¢I$°zfœï€ù4®9
+'v±L+
+À¢õ¿¡∂?ò$’yèÕ,4¶≤
+®áã-∂‘bÀ-v°≈.
+û;Z
+œ≠èÏµCd£$'AwΩ≈øPëÀNØ7JA.ê„∂ä][ewÉ¨ﬂ¶QmÊo≠U•á!sh|kï!µÿæ≤E©îf †TÎ•a ÆOÌ–◊áLe∫õº*◊ˇ…‚ Õ$t€ÁœˇÒÿ6–* mk4∆‹ã ;ã—©ùéÙún‹˝©oYõd}iôÊ¶ClıßÓ‰öÎí«7º÷ç—?˚œºO@≤ç‚å“¸q<IX|4íq#Áfæ"#Çﬁj”ÙR% @õˇQe‹≤˘$wÄúM†Ê±˚OZSΩÉ±aòı„Ó
+klﬂﬂ›k∏¢ö˝ü~àH±)FØ46Ä@dt{k@u"&	ÁàÔßÒ®¡Nß´|?ÓØ∞øﬁΩØÕ›«ÅUkû–S8Üæ~ZD°!D Om—¥Ïs:’ÍPsrì|M≈º¿Ô6ˆq
+$j©¶v:!Û‡t€@nÒpÛ…gˇÚDl∫àL°–»M§ÁûL’ÆRv•¯ôß(L"P¨7à˜É¡ñs
+–ê¶.¥√≤ò™ˆz$–9ôÆ®¡√ËúïÈd*<Hmƒ÷ÙuX°9rUóœ\≠Ì1+ÂQ>S÷x:›ß”ùEß,D‚Yv ?
+dyN‡≤fn¡§
+Gé≠œ;ﬂûÓH®O‚O9ç3y}Å#Ìe4ªn£Kíõñ„…òÿ˙r•√R^œµKKÅ,’g	0ÿ[l∫·A0dSn⁄pßOÍ∂?ã2TÛ?Ÿ·xÍÜn¬ ó5k¨ñ,¯ÁVZ{⁄ÙQ>"aü˛}Ì§GÈÄìÑ[ÿ¿R$£¥îx–b3Ö¢%Ç_ZX@§˘˙ãòß&÷“üî5®	4(∆ï™.ÃOânGˇîg∑◊?5ˆ√iIÆ‰i^ÁqI∏ÍÚH(H™#íVJèÌ,æ=ªÕ≈ Ó˘öÆ|^
+™·F0ÇÌá9HÈÑw—t∂äü#‘¶SOñÜ≥åwuôí~õ`RÖªï˙`RM%¡ÿõπFˇú8˝ú5“î™˜∫ µg.≈ –ÇYZ∞C\È/RÊ©]~Ê√p…?ü?ˇ˘œŸ^<. ˚g‚¶±86<®¸S9xJı¯p°ΩxëÃAŒ·t¬;Â]∑fDFU†Ö hÕì≤≈7wÀ•ôÁÒ√¶º`Àö’•¢UÒÂ2˘M≈ª›–S˘Áƒ;Ä%à0NËórΩy’Í´ﬁ|Ë6‚∑‰\©±ËŸ∞ÙùË;˙¿π±a^d0 ç%©1ßOüHÓs¬≠å“®ÎÊäeﬂecë≈õ“.ã†ã‡0é∫l•¬4@u™áÉe`»|?>¬;ct~—aÛPÜ
+Û∫∆F+ë∞p#£ÓÌU
+.g`(zÒ%k+π%•‘ßC√≥©a%t:)™lø÷πSbœ+_pÖç©Ï>ÖAÙlú∂X1Nê|k˝©+Z!Î3BÌΩ0^”-=Â™û22_Ú™©Yõ≠yÈÛéíL?
+›ç~hGPX”Øπ˙ñt+õ%ãÄ}VäST:◊•/<@_•«√0„ê€ñß◊íZ„}¥˘—ö’ö∫ÍÆ›ÅŸs+g≤$…y°7Ù≈Q∞Ä©e®ﬁ¨Ü∂±‹
+†⁄:Ø°„K l®Eoo/÷ÆÂ¥√µ2ëﬂ’Z´~‘7#‘4&p.wÁÑÓŸË'·ÅÚãË≈qoÄ‡©Ä∞T…nèééƒ]Ju;Ñ"Û<:{˛F0éVœÙï;ÕmSSmà 1ˆó¨ˇ˚K÷¥âß„ûûi≈´0‡ﬁ›´3<ãÆõL¬¡ÍHë·Aò$Ó‰≥/∫‹¶_”Víg≠’]`6T[	:∑7øÓ=$UJJUÛΩÑîBÇCÁÚ¶√˝”/ôà-%∞oÕ
+7á$XeG^ºƒÍ«Í∞qeg ≠∫ÍTÓT„ \çxDÅ∞9uÙ·Ö2Ò≠0ÎìhÄ|≠ïpÛ
+4ÊJkÂ¬Ô3]vLò„3ÖdÂ‡Ê3◊Ô≈ÏÆ„ìëYa n·u0Óÿ¨©/È©E
+ÉÕIÑ’§ááÖ÷x∞Hx‹B,tôà’œÅD0∞1·0‹•8∏ÇGëË#ú‰3"Å∫g∞Úô<>ÌÕ≠mäﬂüi[33._o¥ê‹†ÿ^Õi‰ù^˛¢WIy√Wø¸›øVI˙ΩÂÊù©}6Á¶˛©◊Ëªõê´œ\÷Çé√b≥NìU È6·/“›L>O@¯|“	v°r#„Ã”`T¢ö`2ÇÉ_C©¥q)Må…á„8Õ8
+›6~{ôàèep(—ó'æC¬≈›º+ÿ,¥√s"c'`]Lää	®8(˝ë\x¶OÜH⁄G˘VE‘|Ññè'74Õ≠.]xìòhTL5
+à∫w@]≈=7hP_‡•O, 'Zïﬁ>Ä´
+<@Ya‚îzª~∞_≥◊¢†ÈeBó,§≥Úw
+å>xŒ¿“ÿ-l∆ıºΩK
+`oúCmçQÿìÅPTIhr¬PH7Zl,P∑å~Xµ£´’Zƒ÷üE)°èÆ™Wˆ¨WŒö¯ù¯Ò∑Ñ‡^àM⁄Ö08n ˙±›⁄¨Îx∆PïÅuæOë´zíY˘ B¢Y·á8ÉëO·'Ÿ˝Iˆ9•'ù¶VuK≠s´öhÊ„ PuJ±Ê8«B∑1úîÎqÈ)B1lû◊i»ÒÃPÃ¡`ï¸gõN‰Ê¸˜⁄Õ·¯¬è¬˝·áÒ·ágõﬂª—˛ãŸØÕG®ü ∑R¬Ç§ˆ6Û¶ª}rœ 5◊É®*|ztÅ{›ø\ƒ¶9ylp‹∞-]W5Óªk‹ü∂∆5Ç [òc{ﬁ-JÓ{Kr;Ÿk8$Z¨ ìÊ≠¡÷äK/ZUSD≈¯Ω§ZY‘.πhˆÅFÄ‰ÌÂDÔÆe|ÿ∏Ê-˙-¬≤e7Ò–—/sÎ)ÏÎ=®’F"√7≠Áo⁄˜øiﬂ˝¶˝Í7I–)z’ÔúDú∫≤x6%© tx”H˜äê™˙¡”fUÊ≥E4¢ ;¢êü2’8hìü:…∫øl
+ı˙Ü˝«°Còß:'ü√9≥R4SπÁ’»ı{6úR∞1j:òd¶®RôπÆ®5€ˆk‡◊P∆V®:áQ√Ê¢+3’ıM˜t•ì` pô–\º1«˛g˚Jaúj0ö†ædíê5!˚ìc¯^
+F√AÄ}z*È)†©©,¨W¸zEå¸≤.¬Hyƒ$2¥%'yË˚‚“cﬂÉtå·IÈ;ì 	À≠gf‡{nK+Ñµü∫G©$
+˙B€ÎçE˚¢g4x›8¯Õ1.õ	ñßàlÎ¶mJ¢r‹˝πh&(Ds´_œ;√dÌ†Z›d9\—‘<∞ œ„	©}ñV§≤√◊Ç.áb^©˜íKpxFS,"œS§√j¿d¨∆õˆ≈"Gmµ¢g+<r—)‘ıΩpq¶¯>±9Wg¡émÌV¡a˝§¸Èx µ°Æ∆#rÉ≥lwà 3‰âÿ˙ ë¯äQå1Ô—Œ§πgs®«ß¡· ò#]ıP}ã1(Y<∑œPTñNÅ‚«Dê·√Éhä£å˝ y™◊»~s„êR cu"C_zfVu[
+ÇΩvd)¢K3)≈*∏xq¸ÏÒ2¸óÙˆÉÊBã˛◊æzqˆQÓád√Æ9ö$»ä`Î§Å±∞¨µ2Vﬁ∑OAÍÙTÚõÓOöæ@]ı&“Ãîïö-Ò≈t∆¯™™Õ0_G◊Å»Æ•ñ;_ËLf`Dõó4jõY^]4’‘‚rµôä,⁄‚9˚Çv/‰7¬Ä∞s5Ü 
+p#¿¸Aå3t8´Wkã{Ãã°øÖ‹Ωrã¿º]Á≥9àûÜiÓ±Ïu)I¿xÊ1∏ºHÉ<Ëó?t
+v÷·pf≥›!Jô?ß£[Å—⁄cNÖòJfJƒS¢K äD∂¥£8Ò„0k˚Y›ŸSüEeÛŸÅÊjg˝2Ôb÷/-ÈWKO˙ÂŒ˘5Ω=Ü{*àvn≥Ùåû^+\6™â«xÆ7Òﬂ2£çû]Îf8yíL≠egÀ÷^Ürì…ƒX7⁄ÿ∑-BœØ%a8ÿ2îÍYß‚◊»¢%Ù@d–5ÛÑÜ†‚êdu≥E˛Òf¥¬ÊäŒ™¸S‚˜l≈£ÿ´ÚGù“tY>¨Í÷î?_›$;Ÿ»ŸÔ‰∆˘∆z˜çıÓ[F?æ±ﬁΩ®ıÆñÖ,∑Á}£ò˛F1˝ıSL≠`˙ëÚgo3˜±≤|}≥óøŸÀ_€Ω¸%[í∏üÈÖg6|∆£6Ñûuú	S6wÖåL¬»t#˚»Åx˚JD=˘bî˙ƒG¥X‘}Ê3oL£⁄/¬tEƒ&æ´DÕÔ—Î/πÇ&-ìÄ≠Ê∑rü—ZˇoÙ◊ﬂËØø—_◊‘_õÜ0—ÙfBb'¢,7í)ù√®∆5S:‚x0kΩ`ƒ¶5M∑=V©ÕKWX÷á„sDÉr]∑}Q~r;£^]	
+⁄gﬁƒÒyò(∑√¥'?/`R¨kEî”öË/è6I•9ÒñD¸G°’Ÿ„âF“ÏxPÿ @ß)F»è¯»g5+Œ›èï˝%‘ΩÑ$øêG%±–®ü	ÖöÉ]‘{oEÉ°'ÇÃ2V≥ÔÍ∫µI«›É≤-
+∑kÏ…ÌÓ¡Fêt1 5˝q*,ÊßÏ0H¢`îq˛»ŸtJmËiol ]ÒÚø´ç÷wõÀa´qıTå£‘·)‰prá⁄πú0úkOëHbUÅ<jû&ÖSÁ+bΩ‡ŒßÃg≈ﬁU¢Kª†À ”;ÂÊ>\HL3WVòÊÍøªƒ Y“i&,kÜ”h]z9ñ¿≈KïÉï¶Båˇ2ˆ	YâNp,¥
+:Q¥˙‚yz∏Ì…˛ J˚$#Û∫D≈¨	ô√œîRæâ‹π2§Úô+⁄Ûà±"S°¡^ªóvA@G∑¬PêXB∂¥ﬂ)'î©æ£Ïõ`@ıØ:ﬁidYÃM+<=éï+Êñãïd^‘ü™ìrgæ⁄:ªÜÉÙã≥Õ¢	ç€fÈ≈^€Ï∑2uvs§‰8jM`˝$E?‡Õ¢|\ﬁ	J¡I˛ﬂ™cá›°Zw—Æ∆M±^™C9x¢`L9dk1u-TRX‘káΩñâ*
+π¡©fÃ5Ì,rDLÎ,Í0¨=\óTñêbõlÑqeíı„dktSAÌßU\C°NÑ´¢Å8©zKÚó,˘ -bS:KÊ/ˆ7çUBe2∂Ìv;1«∞©+ˆÀa€lp2˜D9Y”fî± öÛŒ9[íﬂ~UÕ—~iSö_cô(E‚¨Æ ,3¿[p¡ˆñqY·K≠ÁuÍì∂sE0ÂÃΩ26¥F‘ÏÇˆ˙ﬁR~…ù   Èêò?ØΩ±w˜›€ÑxjWªn‘ÉW><∆AÚ)‹„C8I†[è˘©@XÀ9x≤ ∆ -P5!ı^3†ëèÉ¡‡ÒYèIê*@˚2üàó›~rZ–;`{? øoôåQ≤eÑòíOlînÖÉ˜–y{éhz∑
+óçIŒ√+T5w'i‘±+1/ñW!ˆ—3-=æüÆÿgîZ/π√Q8B¡ÑÃêªÂøçáÒÇÌ/îW¬ªRØC˝4™‡ûﬁJpÚˆPºPG,˝2˙/“°kOìözF¸ÆxÍç ÌgA/?ÕÂÖíÁ¢tw“ÎQnÀµN>øÂ∏Q5Òª@Y3¬¸ÊàüÂè£—vu¯Cw≈èíÉgZyÒ£§¸Ô? ÷PÃ¢¯e>±?≥ÜEƒ`KªPﬁü8âz—(º	R‡ê∑Úæq…·≥vΩπhtWπˆ¸›¸wı√∞ˇP( 
+€=ñ{O](o:.¢52á‡!´u§]3ﬁﬂ∏:øx©kø±xi˛*ˇ2øÿ∏ﬁ‰7ÕQ∏´hÈeí”]ë∆
+T ÒH˚«ﬂ!èAÊd∑∂vv˜T˚ib…÷èoânE	OMSì	Ø£k)kø√”ˆ¬L>N±@“˛f¶˝òx°ƒ†ƒQÇä`Sî? ¥EæU0!håñú2jÍ'˘ÇÈ§J_+1“/iY∂ÈYˆﬁ ¡Â…r&QÆ6àßÉI7LÛ"¶-YV°≥ã∆∂«ìîÉÊ e!ÊÁ√È*ÕO2”7ó¬˙Ò˜GhB⁄˜πn˛á1OãA2gÄ¸+ÚıhÉ^,†≥.üfTÿB>:úv∆i•£-≤kÉ=ÚçÛ‰◊œyÚÊÊ≠µwˆØ/≠?∆§;ª5}K=)ïT√E”˜ÇØ§S•1Q_ÁéòÁ÷óåÌí"ı‡ÜB ˚„"πéKcÂß§˘q´wmµ´»âã¸ï™:›ÖG∂jòü‚=M’õø¯◊åpÑÃjû÷Úd};ûÏMˆCx∫9úı4 K€î[6}+ ˙ÕFÑRxÿÌÓØ4heòwë≠>;ÓÓb˜cÛ\`LÁ]7¸≥Qﬁ@ø	¸á√ßá?\ÓçL
+U„v_à4§6ŒÊ|J„€4{≥|ú}˜”≤bÄ ¬£ciπ†HTëîûbŸH›@£á‡~∞U∏j¥·©€µjO≠MHÕÛ"i{$ﬂΩJóÈc°õy•öÓÄ≥≥⁄π˝Í<TßÛH≠{fMqjùÈ‹2Û∞≠Æ˝SG˘"tˇ%P~]O©wMêqA†Â‚´s LÈDlº¢HgA%»1∑·k≥pø∏Il†Áº¯O$$Oü¬Ì3-yù&-–œóöK£a∑Ëú¨ÈÂK?*fÀZoø~˙s†~›Ê¡Pv.‘¨ıˇ  ˇˇÏΩ˚s…y ¯˚¸IÃx∫!çHpÜ êÿ|ÅôÒ,óÀ)tÄªªZ]›10"¥äX{7|ª⁄ıJÁ;ù#∆>S^áwœVËB^)‚¬é∏øÑ°¿˙Ó{dfÂ≥∫$g8í“∞++3+_~Ø¸π$0ØäÊ´>˘rçüKKbÂ“‚GˆÊÛa∆°«∏oﬁÙNƒÙUXd~CTO/ànûÉÜrgúw \üwÒ‡¿—ÚA\WqqæñrÔ0&˜“ÓîÔ6ƒr[˝˘ôÁÏ¡Ìl¨'ı	UügÛ˜ÛÄ'aªÅ¸ï—/´&‚[4Úô¬t™¯"£µ	ûvô± \j◊ LÃΩ‰^⁄êë%∂µ◊”ŸÃIﬂÌ%íπPŸdTüØuÊÄ|µDpp‹	çOˆW5DÆ‚vh[‹úâùà?H”! (ÇX<Ãƒ“OÍNCBπF≥˝^™¨(wº˘AÆÃßÑ»GqjÎUŸÿªSˆE>"‘]ƒ≤7‡‘Úiónûa'∞Ωoc(Â£.˝RëµmÚY÷Ó wBsÄù‹¢ﬂüH™≤3∏õˆÛ—Iì:6Œ{]ârZt.ÀÚÒ>ÄW»∫
+9 —`|;Ÿ˜u;∂ù,-≠ˆ<j≈!Ú–lœ≠+m ÁÌÓ55ªWÖu∫◊›´EWü∂'ºGß{iŸŒΩoV›¨´Â÷Q√0ÎÿG∆bJ± ˇH=üõÖ˛C`êê/Ï»h[RÓÉÛí†Ö∆≥	*Ó8ÕßÊÓ—‡»É‰…`ójﬁ/{]∑\‹qd_‡ÜÓû0•ÌpéA´»’FÑ<[Óß;o3¥6Îä=ZBÌ¶?RRq:cxl≠—BúåÙò¡q¥5ÈŒˆ∞”-‘¬hÎm¸Å”i}'œÕ∆B#0/ n˛‚L=™)QáÎÎ≤oóT…ÍÒjL‡€=À í£¯	u∆ã–æJ<Ê≈*—7ÆãSRMs˝QNY„F(ïaÖQ¨¬Å7ævÖ≤»˝öBë®D](;ﬁ~HCç2¯¡Ãq+úa['yL	|n»fœ=aÎ	Ã°1)îñ%88kXﬁ◊¢D'VzÏ~l¶ ∆BMãqq`^∫ñ1÷¨*˝˛ﬁ}≥≤á]›«Lcóãt8¥v2Î•l|QﬁŸ §±˝Œ‘9‰a¯F<˛5,[ rØ¥∏ﬁz‘ñ∑ƒ5b°¬¢rÖÅBÌ0]£KÃmtà3fëßŸnµ€ÀÖ¯"Âú……ºÒM)R›‚OcÁ$ã[ƒ›rc¢È<»£≠1–∫&uÅw¨rù˚u-ƒ·À*Œ%zy?.ﬂˆ)ÙÎFd‰1÷≈«ÔH¸>â3l÷∂lTö‹ •k∆£≤®µW3_nis–)•QÓ≈¶2˘Ã']◊ígàé◊«Lˇ<ÜŒ'tﬂù/vzyì§~dùîVn[∂‰…¥Ä94çN\_ˆÚUã~öäÛëgÉX„{˘ ıN>8d©ÕçÀm†g˝‰ )GÅ ¯Ä‡Qã™≤Ó+hä'C`ıû¿åû†ìF ∑ËBM]sÚ˚3ÔÙ∞9◊Ê§õÂí∑˘=å3ÚE¶ÖíNM©ª@çcáÜ(ˆ∞ØRÛRŸ0¿¨PÛÃ¿)o"·À{\jßÊ√®{2h Üv∆Õ,ˇÁd˙Ú‰Ω”R≥wˆy…Ôí6fMËCàpÿK:)Íî˝õ•÷„oø∑¥ ÊÊÊ9√"Oeß“(;ÅìO∆"∂ÒDÉÏwyÃ ¥w»[õÛı4Û°[iÙ∫ëw^(Aﬂíè¶¿¨™¥–ﬁÿ†M—  §µzÅ∫¥Pœ^R÷XUµ„˘˚π‹lIW‡∫ßÅ—)Èßp¶Ò§†:JˆÛÓ…Z9Ÿ—†’
+^Bª∆}M{T∫5l1!9æŸ†MïÚ	∞≤]èN.Ë√å†Ææ_~}4*1˜ö¢˜û:‚ ¯#¢úÅNÍ"K†ÒWˆEÍ‚ „t≥Úπ$Å„KÊ˜E÷C_kùJfö≈¥Nœ§ì©ÒJ„ia†„ÂuÎ
+"≈$ﬂ·òI"‹Ö'@ç®¸Ÿß˝fªf⁄~ˇ	Ÿ∞ä£¨ïk€Wi¸Åyg»øø{ˇ^ã‘A™Båx[¢ì√ë9E◊m—X©'<É z8Ù'áò–˜Ic>@ø˛ÚáˇYêÚ’»ËuÉBRStÍ]åÅ¡ßìÅ≤¡eMU>¢uŒ“¢%ÙRÙıQ=
+}}ò.4\.pä˘p‡¥9¡oî¢Sò∞√§õ¿wfÚ˜lj,7…X0â	KIì≈ê‘◊k'@Å F§:Ôî…e˛2T4†îAê∏;…≤au˚9ôK€§d^∂ÅõıAÙÈsòäÙü¢ÎôÊÍwƒ≥B∞> EßÙôI≥'ÉßTä@⁄]Y∏ÆØñ÷TVàr~À-±MAôıí	y$Ö¬n OîbT|Ç	∏q±ÔNz„l±@—I1‹	rvù»Œd_LÒ’eìœ	zb}ëv…X-5úâ¡•Y¥`ÖÛ%Ùoí≈/6ˇU{ÒJkÒÒ“·Çh<q-≈É’.º·≈“{ß,úXA8êÑ-4f`¯Xﬁ"6Êñ]≠i[ïóÉp)å|u”$48Úfúå Ïå‹ﬂ$âêÎ\kËè`O÷YÑùﬁ œ“ëd«òCPëÜ!†
+«Ç(2pb∞¡{ _ojYÔÆRìÆáñ∆∏Wƒf¥m{fúÄuˇ˝Ó‰î~Uó•u=)eçµI:q\+-fL3Ø—∏bIŒfònìaÅ’°_§ÑÄ}{†zËX∞`*•Bã„∏$eŒL®9èE˜'Vk6YΩò^¬'„kàkÎ¢›Z•Î¨ïKÚ[ÂgsÂ1§¡ﬁÄ/\æ·ˇ√£S#4€√»å«ËE¥mÊAõ—ç´+B@¥æuœ‰Ûv…æπ˝€„ù=@∏Í}ÙÏodA\C‘î∞DáPFÅ2µB0È|Ä∆'7˝êÿD©ÈÏ*ÒÌ¢†≠Ÿuw◊¸πìØu`ÒBÎ4okJŸj]í°íw1ƒ>…†  9WΩ∂õœ ˛FNÎÑ
+Â¸Xz„·ÊΩÌ'wÓﬂæˇd˜·ñﬂ/¶uzÂúo°¡I`OÅ©HŒK#<PîSßÓâ,~dúÁö±™\œ`Õöß˝:¸áπfÃBïóëÏ÷ƒç<GõkP˙ıº• Z∂õ<Kâ;€x=KbB°ÓÜ%èån¢»⁄gÂ«¿QwFyQ–}Ôê‚d#ã-”|ŒDô=Ò=iXdënw˝ˆºÀ∫ÖÀÄ®^¯Ê≈ÏÛ∫)∏/ÑKkn¬F'•ïä√√Xœl0 ´|0ˆÍóh¬ö[Q1∑2&d•i~ßË?ÿl/à’∂j: œ˚+>U‚È'2îΩcãjAlÛúx}i≤É-Ç;—Ü §[í-ëxwe_º;FpÔ‡u'ùqUÏﬁÌÉ'∂b» F¢lZJ7Ìîª4+ëá)hD⁄‡°∂€‡ëØn√(¬n•qL≈ÓÅ|”X(eùäöío,8%•Ç–¥7⁄ïOJ†√öÙ%˛:‘2Ã™aâ¶Ëi°0Oû∂f^?⁄\éØ!ƒniº>o•ïjdv-])…xO∫IV˜úX·v»¶ïö ‰π™≠:Ø®ç	p– ˚2<dÀÔ∑z¨XÉŒí’F*|,k˙p€=â6ÏÊ:ÂQç6ï’ÓÇµ®5˚`–s:êgä¨gΩQM¸7f6äé}ó}IKtbV‡€≥µlmókLJô¨◊aDŒ…∫9ÀU£RVPTJ3Ú~ÖJQ8`§qBHT6˜Û—xKó˙÷¿h˜õOXÔT∞›<JuŸ]+¡éöÛb˘C2O3,>dîè¥¬è‘vΩí:rrCΩ±¡Û;⁄r„ç≠77ﬂŸ!¨Êö90.*e sÜÄ:FjFz¢˛–-75è÷wä|–4+S∂
+¨
+<˛€⁄Áù±Es√\≥VS%J=–OÇœ_˝ü?õ;m–«'‚ˆ$uG√@ö˘±Ú>NÈmì
+uK3nŒ˝Í«˘/ø¯Å¯¯¡ù˚õ€‚÷ÊŒùõ€ˇzØü°u¨2—=N
+’;z„+âBkŒ˙Ä©ˇ‰„d-ê^æ¸©Z'Ω^Ú*B?SL[4èÑÙ§j!/ ﬁπﬁvôõvHÆ[P@Â)ßhÎùXÊZ¶‰Á†‡zg}Ø∫∆ÿcÉh°®Hô∏øÊBjÆ6ö;êOf!¶,ÿì
+n ªRèf_Ulö€',LÁ)∫µO
+R∏™‡®oÖı$?xBUXÌ:êﬁ)ÎÁ]eô†Œö,JÂdÅ¸°bÀI”R≥®ªMµ»&JêPºf-¢YAqßkˆ‚,X®H2YkÂOÔ=IÑÉcVQ—ñ,Œ’≠–ë-¨Â,WVH”áÕ!ÏÃ≥è√ÖrëÙ@1öªÎ\ﬁ [§m¿L<Éu9Ñ—c\Ä∫ôw˘˙”h©në£‘ﬂ∫˘≤õÍ;Â◊B˘Àıïv®¡UVl©‘Iö(»6¥m∆0UÖÂ-_xÃ÷˝ãµ••Û∂’Mk‘Wåç“›aûfá€ñº:Ö#ÃnÈ1ÄLÛ¿&Øh”]‰ÎëÅô∆¬∂¶M…•2ÃqÈ±øKbâøócGZ	ä0∆ÿ⁄o*‚)ÓPô.¥ß¸3VI£Ö¨´ç∞ÖîòY Mçø=ÎsØ;c‘ÛA⁄lêeùn—Z9†q°˘z¡AÓ˜_≤»Íå≤!Ayå>&dnÉ›e¢»BÒÏr∆ÅÆ¬®ﬂXbÎK¸¨ŸhVÛ•ﬂµà`m±ë/Ly-@(Ä.Kjê~ÿZnFÁGëê∆º=Rj˙$ÈÇ∞˚$ëùæc!ÓÏV/9|ò&núA¶FT‰##≥9¿¡w…•ªÅd—Å75^)+≠]ºBı◊Ωã˚ÅMKókkf, @Ç‚éÜ
+	û$¡µZ∞∆`-¶l∏Æ5	˛…∂ÿ „J†9¥µCR¡P’π¸Ëú€∆;G}DEœZO·wç-„˝\§}ÓàùÏL∆kk®·ï*ß>≥©w˘ú
+t•¯∂ ´UÒûqe†5ÜULûVûÚﬁ&l˙Ç7g:öñœ}˛Ç=Ãp»ÇÌ_Ûa¬lá¿WÄ¸∂Ö^£Nd‰”# \ê∆Pü≈âV1n‘ë7IPLúÃ¯ ,+≤˝¨óç±_B∂úPóÄïtÍ´ S.!2=e⁄ˆÙJòek5’•ƒö·Ö '!∫¡d/L±‚(œ`Tóñƒ›Õ{€õ{˜~∂&6â≈@√Ë,ax•uÛŒ§O üf'∏qÛ÷˝á79T0ÍFér ßõ&ﬂË∫…‹û:Ë¡…ñ@∆BÛñÛˆpÿ≥ÇCjä˜Ö2ÕîØF$h…ß≠}úq©ë∫CœCÊë˛.y¶±OÃU≥æÖUF^ÂøöALaû[º•Vp—íó>õ7ßåŸ*nLˆ˜{ÈÉ|H∆∏¶÷ï#ÿ8 ÍXïîñ˙Ñ˝…«[4~ıÉˇG‹  †BçØè9–5lz2| ëœ≈&Òê]Cû¶ Ã'©ÿ?Jø€píà√˛sîd≠≤´A:>ŒGOa›:
+L®ZÍõ1»`Ç¿¡ÎÕ1´µíû1èg≥¸Î/ˇ”`„FÕR ®†’5çc∆Ã°oæcÇ¿T´Nœ◊DG+-ﬂñ$˛K€P€Ø√õ6≠ª;àiù¢«ﬁÀ2ähh.*\®◊L≈ı^Ë¯üFÃO^Iﬁ√êë∏R∑J+_⁄Ai®GE§Nï>ŒñM-≤&«˝5,~£õz∆ÆW^z∏µÊ*‡†M;ÛG¨ÌË•–ù€Í)4‘åŒúü¡∞8‚åõYNW=Ã˜Ú{ÈÛ±„’á'ﬁå-Æ±ŸÜrè]ÀÛÊúÙÿdRYla1”Q|[,Gfç#z@U´G¥!⁄ë!,÷√b`v‡d?OF]1Hûeáå=–Ãñ‡ù:aÔ°áÌ¸x ›8U~‘{ˆ<xöûp0âM ±clÿ‡¸„˙Fﬁï«-¯}+EJÑ>∫ù$ìﬁÿDÈjﬂÕ†Ç:⁄Ö;¶èá°˘•O›Ç?òi<∏ÎM˜Ûc‘√>’≈ïY∞ó^ˆR;vzU7ËRiGI7èBä˚nê!éÒ‰q∏!ÂÓ‡ïü	JMÚ~<9¢dQÛÔÿ¿CGWÇü]*q°ái≤:Á*ã∆AΩ∂é'’ºˇ¬ÜwìÒQ+Ÿ/öË@‹'üÕ√qZY-7+–≥}3»`¬çÌ£X[ßS∑[¯˜πe£‡†Ïÿj‚RªA,≤ç‘$Z´Ñ˘1ﬂ_ÿ¯e=PË†¡Î¸hÅ«cSmÔ'˚î#Õ4óıSc”’Ñ≤0=Í$ΩNsπ›Ó>;Z\Ω<|>ˇìs/†¸Ú%*üö`H•0¬tä•’∂ó Sßß„K
+N”HÉ‘iFóæ%8‚€§fËÌHÿr¢]ŸﬁØÃPyç+ÈmEA}}õ9ŸFÈ¡˙©ôe¿»7á¡_Ü„ı9RÖ/}kÅº&ñæe¥6VêßbºÀÏ¢©ñætâ÷üX“Èq~0é`ÓtØù œ92O1fµS3oÃÒ‘Ø™Ù´n@ÿN˚Ë“
+Â©<≤ a”?\•rôÏî≈¬K˘¯›ë%‡0©k=xp ˙Ty‚Vû”˜eÆS˝ÀÀj∫b‰ÆÌü–øvÚXXQÃb™◊oq±†¯(M∞c;ëiÌ$¶_,^¨ì|S‰b*]LNáIt´Ûù∂ç|ß–ΩìÔtz
+”öÈKq,v_ﬁ¢Qo^í-Lhvîî©¡87-ßÉÍô©¸Ï¥§V^”~7êNÏ°dv¨Úny)∂¸Ùú∏„úpâèzëã›~û√?_tÎπ∏	g∫«˙N±ßs¶M;G],èØª+õ@„î¬‰:,$ÆœÛ·ù‰»Œút§]?’Ï˜ô∑˝ú‰€@Çcô‚ÿ 6éﬂ¢óªäˇ¸èzUdB¨ı”&TRy†8Ô≤ÎGÅ'kh."ëO(ƒÔ°b
+ãÆq—¢*≥TDÍO¶´[ÀﬁÀ≥@Æ÷ÑWu˝42î)ﬂΩ-sÁ˘©tøßR—€(ÜäΩ¨≤É‘¨âã+Ì—M˙√g≠|Ë&Ú∆q™„¿à[À´¬ü®¿åJ¸¢Ùy6>ﬂNÈm·=˚ç^∑  Eœ˜T∂&ä úoíBeæ1e∆È=‰ñ´ Ág‡º∂Tby:∏(ÄHÉè3•+\i3›3®Am÷¿ŒcË°ﬂÂÀ∞97ô¨Œ^lßF◊º¬‘≠ÏÔ;9ÁÉ9f?ÑØ®r1N“≈’v€…ÄÍìß£ã~‚ƒûëaæºBπ9íÁ7x†|ü•„kKGß§b,˙¬J)òùÉbË˛≤31È…{Ç6å“Uà<»èÚ„Qû˜Ÿ‚Cr—ò»QÊo‰h'îæF{Ω}È£Œ5@p≤‰Çµ(v*…˝…x¥÷ÊLÃ:OUŒDìW¬◊ıV´4ù3l¨Òï∞/óa85™*Ym[âÜΩß±óx/⁄∞%Y`s¬Ã‘
+û÷"-Jé*ú;W&ÿ‚¥πWV(•¬¶-]jõò√Å∆ΩI _ZåG˘”tÒ—≈«^2^‚‡6‰vs™/ü≠∫∂ƒ[2=ßOdßR›+Hclä#~20≤I(ùvÌ¥ù.„ö=ßt°ú ˜ã≈G+Ìˆ„2Óï∂ì)∫ﬂùA¯¬œä)o5ﬁ»ﬁO…ImíáLaV¡ÕE8ﬁUhH“`<9àÑcn]—Á[¥3(˝ﬁò§îSÏéîáÔCÁò@øór≤yg`ÛΩºÅ•∞c÷Z/mÒpÊÃıYB∏ï]ªlÂnñÏﬂbÜqéªÙØ‚Ä Ö≤7W¡@±é?Ä,Wß“äpbhX˛˚¨\ 3 5˛g_Ôô%ªÚfÌ’îêt…¬Ä‘ñVÙªí&©í¨J7;Ã©ÃBkjıp∞s—ƒË8´ù™:xÖ]⁄≥;◊dVº…$»≠:≥Ÿó•ó*áŒMêd1ÏæVÀS0.4ï&g4˝Z≥ççÂ÷J— V:>ˇkLì+y †”p“+“`NÙ»'¸zv°Ã›ÃJÉé¿¢8?”—h-v√»Éê˙qË¸∑Z≠¿êm∂#6‚`bh;Èz/•/.‚ëCÃŒHÛG˚lˇ˝~≤/∆…S…ãî7ﬂ…8°}Xºﬂ§ÎO1HÄ‹ãÔ$'∞ ≤!›¿„Ωk6hâ-u∑OJµß) " ^Gô¯Ø1S4Üé&N™f°≈Z:YZK·≤ÇÃiÄÄ7ˆXW}íó]ÓUøπÿ6‡M'±¥ºå$à £üÚí©	Æ®OœVZ»A‡Éc≤ vØO0£°Ó°!≠ÀV/üt)åàÑ≤hF˜P◊Å¬˘≥w<≤‘‰’ŸO[∑¨ÅZ|óx£z¿ı¢Ø'±≥¯Á∞¥!…∏ﬁ≠ªU?~√nWã_”[ı¬W‡vï‡e∏3®µx˘wvÊ/ê±9C÷çj9NsÔöw≤`‘F/œl&Ñ¥ôÚÚ8];ﬁI∆;Ä–}Üôˇ¶0I¸bV\Â´'ºî§ hÑ „πæM`†âûæ‡◊-+W	U6&∫‰…€&∆ú∑ÇØÌ‚ó∫ãÆ4å®ß>´ûéØmÚ BµF$≥}2H˙YGÄçHêe%ÖªÇ5 ¿üÜÉN?óRÑy…·Ú˛˙rD3®”Ô◊Ç‚b,)cdƒƒΩÁ¢ gÖ˘ùì≤^˚vG^]˙Ÿ—cu·“kuz‰ÏÆFèX†{ºx{‰ÖÒ;TmäÔNÄòÎQ¨ò£∞öú}ÓiœO?íÎï1◊öVM≤óŸÁëÿÊ≠˚7ÃŒÄÁÅpxB3rlÎs˝tú 4Í@:˚∫W(¯Wå:Îßvº¨F#Äé+T°úˇd±√◊ëBk6á†ÙΩﬁbáÓ8KùGpêΩ<Ü ˚ t◊OU‘◊#œvÁP˘B¶+üNÕãùA/§Å∑˘‡˘àﬁï
+:çíh?F≥î–[@élEv•÷jè¢{VU«LTœ8ƒßY∏&ÿ†ÂˆáÌ™6GeõèR∫a√FWV*ç¯H¬óƒQ∏"y'Sµk¢›˙`u~j¯i˜Oıp7ƒ¨H7Ñ™∫	6ZZéµy÷¬}o:Æb¡™Xô†.‡Ä>ΩÀ≥» ¬ÂÅÀbìûx≈°,‘í,öò˘áÇ~i-”Û√ù©?L>"ìÁˇÍú∂5±[˛JkòL(GOd,¯'≥U‡πË…ΩØÕÓ0[@È%ù
+˛kÌ∏ûzùç◊ïgŸ˛´zƒVÙ"Pı¿…„OÌ˚ıw-ÎÜæÔà‡ìﬁx}N≤ëat⁄·rÊ¯«ÿ˘u„dú˙ÃX9OFIo&Ãl¥3∞ÛîÜøŸÿπ‘ûπ\˚©çúP˝Z|ﬁÁC*m8 AÂ}#|n…Ù‚µ≈ﬂq#Ñqù÷◊ÚÕ2äqi[ÆP¡∆V…ôu‹tg9#BQ9{Ù,H∂Ç‘©§@ÎHfFÙ¡˙EÚ5‘Êı“É1˝¯Ô4Ù≠ŸáÅ[3[p,ı´RŒÁ‘±†
+≈˘ÂÄ"∆‘D“•j‹¨ºOµuÊ°â¢˛ùvl≈&.Ioâˇ5∆xâ,GŸ‡È¢{'oÙÁÈ9Fì˙ı©kΩe2sú€8çFÙ†ºl]÷8ãÈS¢˙˛kupﬁÖÃ†lD5ıæ®‘•·ui˝{∂òB*®A°´	<]%Py/eZ1ûÁ*¶û"®≥ÌJå®ƒFsÍ^Tr3≥j•¶<¶0∫ëè1{à+V¨q¡z√B`P¥d$ÓﬂªÛöd(yï°(+04l‡b∂8‹mÍèakÏ˝ÁK	DÜ÷M¿JÙª∆Õj}5gÖˆˇÿRõkÑXEO«Œl!ûY'MQÎ:c‰fjúmÙaÎ¢l√∫‚!\©VÚyC2ﬁ•Ã5åSJ≈6Ü©≠÷j„ﬂ,hÙúﬁKØÖ∫H$…œ	‰◊ƒ{!tzˆ9Z˛˙ÀˇÙs±ŸÌä˚9Ts∫ùJ‘™tÔoúî£-˜ï)ïnúÏ`HU2û]$ækë-*G 6b•§˛lk•Ø	÷ñÌ¨Ç6
+Á;i$TEºaMAHÍŒ { ûÈÓÉãÁÖ«ƒ¸À∫Îs—Õç´AÛO˘èPèK˝·≈ı+=î?èìgë∆uπf◊ÕƒÀÇ«∏•ÇW≈j0	ö˚¸†mB)õàïîÑÃO8Ûµ.B¸EÊ.	ö¸A◊}©¥îqê£êÖ)#‹¶9†±>¿¨Á˙‹2ö≤§C(hµW#;åî$j˝‘÷—Ee*§:(‰}´1ßÿæ2n⁄π®Ê#(ˇlCdK⁄˘Åq[ãå>q:…†ìíœäãNbcè‡Äò_
+](ö◊ñ« JgÑ
+†N‰ÉH„r"Œr.ˆ˘≥ﬂ´⁄‹(s˙!“DÜ¿∂Ö&Ω|˜êª}K¿“ê≤gÑ…ªeÀﬂFÄ4Ó’†1Ú¬[∏ö¶5n_‹ “^∑ ÄwéXn‚ÏCÔC`àì©∆7$Ö¿|`ÕOË£û¬qmaÃÅb}√ka¡∫óÏC#ìÚ`⁄à~¬6A#∫‡Q3∆ÅYŒ…Ê]P2êÊÀˇ¯Ú'ﬂ{˘‚ß/Ú_æ¯ü/_¸hﬁ”*0X:èÅÚAƒ—Ö∏,Jqu„OGÎsiÎ∞%.∑€œóW⁄Ì~_‹ÓÂEq{5»ä#t/-ƒ'ŸòSfà]
+∫°nÂŸ’y#∑UÚ»¶Ú¿ñ±:ú3jÓﬂLÒŸ¯Ä≠LéAÍüÇbí¡ókƒ=≠íR X∫µ|2F≈%üy.B#VË—x–n”µ’aFI√ÔvVÏÎÖbs î¡.…zBœ_æ¯g˙ÔO_æ¯ÎY¿?ú¿·|lîÎß+! ∞¿˜&€≠®Ä:. ÔtîxåÒ4Z}∏ –o6ù√2LL}(Vqe~#·òÚ∫}ëûÙÊﬂ0≠√eøOÿ'áái ÌG{f)
+Œ˛©q:"úî1©=¸≈/_˛‰ﬂ#rÒ%˝¯sˇ\Tú≠xUıÉü‡’ˇ£pÎkS8b˛´.F¨ C2_h“ÌrEt3B"bˆ.;z±˚Á∆∫∑ˇb«fb0Ä%rÇú*.rC©‰Ã?ô´Åc∫Àl¸µœhÔµπ”‘ã∂`FëØò".5∂Ø∂BpcQQã*C'æ◊Ø˛‚oÒli†‘9/T-lÅ√°ˇ√Cê†∞ïOzî<RöV3˛u?‹îˇ€Ë∏ës|VAKÅ—Úí˝ZêeÅ/M’√ôL∫k[[jFYCÁ‹äE.∫\ß@†Â›⁄rÖmlÏ>ÓbÄ!â™›vAÄzäŸ
+l≈™›ÔôJ=[p1—ä≥,≈|∫®≈E»U$ÅÏ˛7wÍip˝7aÚÒfï¡·ôÊâﬂÌ å£MÔª«*àßx∑üèˆ≥),Ü:°ıyç~#ôå˙åE†»ø8[πQFU˙ı!.)Ö˘!ﬁ∫ñ¥94„tùÂ¬ÿY[Y’ÇÍäRSE’ôôös_ù-∑Vk^…≤O∞ö6ﬁ⁄ÓuVõz]‡;Dx©_}ˇóııSÓt√Xn¸V78®0õ˜#íﬁˇ˛Âã‚Âãøy˘‚ü^æ¯Ñ˛)ÃÕp?ù€gjÂ\‚Ù æ{=d`ëã–z‹'éŒ»U=øzéá£¨+?xµ\¿ôã∫¥ƒ °ZËmüKË‚.∆tE¶	ê9+qé]I∏˚≠Õ1¥)⁄Ê,/≠∂ÖË!	>°ÇÇVË8™∑8®“ªJ=0”ROÑR«xzR'ÉìX•&ñ>g1÷5® V~j5((˛˘ ≤Â’Ë¿_…Ìa¸àü„)tw´œtxËa±òÌQ¯bÔ´>ó…ÛﬂùKÁ›€r.•£ÁLÁR9áû˚\Æ\˙›π|Œ%eR ŒËOê9B~Ëﬂœz8Ÿ@ ÿπ0ù≤!!¯*=ãkÿÎûæJ`â†Ñúµoºps7ÚÁsÿ…Ù⁄ø´’p˜ª≠[cnJ?gm|w<“≠·˜LÕdi'Â÷Ùs¶∆7F∞ërŒ¯s¶∆{˘Äõ¬è™ÜÄî	fœè &ƒÓbÓ°ì@ ƒê{˘·a‡R≥Æ¯z˛(gJ´˛*¬l_o˙8w!√ 8éÄl˙Åy?U¯Ù‡\(,†ïl-éF–Ω)0·Û%’∂FØïôÖY≈0ΩÈºÁQL€l'˘‰,≤RˆÔ!oıË’H^ß
+EP:·Ê≥$§M9f¡ˇÇÆ¨ø|˘ìˇ ò§_¯ÁÔ^æ¯ŸÀˇÉ^¸7êâ£b,cï§»≤œé4∏îb £<BK_I‰<+µŒbg ßŸ§i}¸?˚;˙ç˛¥)œ∂kΩÆSπ™æ
+ô4Î$ ï™e;Ö⁄ç√–4¿Iú—ÙXbûiß1∏◊Âµ¢ÙaÅcﬂ™¢XÒiéÿÂÿG⁄ÍRÜª5∞@Ëƒ;E>ÑaVyÈAXX	£'õ“J‹H¶«πAÍqé 5tìì}ë∆åEÕKñ24\ùp™NÃÎëäy-5BëSVÓ^Ycµºz…Õpf·x(¿ëÇè›‘ )ÜWí¸Eüæ"ûÿ'°¶1øZÆ5≤£·Õï∆¬
+(Òjæ!2{»3¢Cµ—B„bhü^˙ÛxÛ®˚%cjî1ÓÜ7k∫9G¸8«–‹Â@"˛§ß\á…·ÚÜNK”n’Äk·U†ÄhAEhN∂Â‰à.‹∞ú◊®Ç~œØu«YÅ˛2xæm√î±E^§UÓ6^Té|¿ÑFdÊË5xô°∏⁄UªJ‰CF2+#ùÇ^#x+t0Ç`n0m]Ñ9eöß[YúaHiôWnp"Œ¯Œú-
+d.ïî≥ ›ìOM#ˇ—£ÅŸ/%O≤æd%PÇ˛=ﬁh>zlv†åÎ—òr¡\,põo®à^ÔH+∏∫Â∑2Ä®9:öI$ñé)pÛææŸyyÌF⁄ÎŸßGeÊP∫§CCí€MFO◊JÓãtûÜ}Á∏];ZÒy›ûÀÎ2éw˙]mÀ wÚCJ„ˆ›I6¬£y¥bÙÔ)‘n	e®‰rtóÁ6v≥√Å¿x9lá~lm3 Jóì¶EÀ
+q|ÌN6x
+◊ÁñÊ\vÆ^:Ω |s2>"hoÃ√q™ÂXs:ºRÂÚ)W!'r∂8-#ÁÓE“(…5ÿ'§Êg‡NWÑ`ŒQÖ¿â∞â	Ï|hcqê¬ÙÈîNÊ-¸£∑Õ∆R2Ãñ¨UøŒπh◊‚€t^±gQ¥∆GÄFiA±Ô·ﬂV˛M£◊≈	,–ô´ŸêiaëGß≠2e{2ˆ‰◊ñæS‰És¬©â4ŒÆ˜M$‰õk·
+léF…I++Ë_™7Ôõ‰∏(ÉÎπÊ1ÿæhy?m6Ñ≠hÈ.PzŒn†Áä≈\¬&òL.@¡˙È¯(Ô˚‡˛Ó^0)Ä\OƒúiCµàôoúç‘^ƒpDˇ˝º{≤&~˜˛ΩVAπÖÅèí(ÛÀtÏµ=õÁeè€»EOö<c÷J†;mc>∑pjËõ™õO÷∞c›ú©∆Å(≥T…‡%àÑ1ÁÎ:QB˘‘4Z,†”@ªÃ€i%"ÎÙ“d§[©ŒÃ¨U‚ë:ßèÕl}è8r˘›t0ŸÈ]⁄4
+yÁÜ5)îôkl;•0¨pﬁ1{°ë¶¬»πó≤QøŸêu«GYa!ﬁÎ»„†ç"Îb¢D…€7Ô‹‹ªŸ0˜%Dﬁq¥:od=XƒÊ õB1`"ói1WÀ√ié"n>1^BsXDY–ÿëÕEiå%J(◊î^¥‚ÅLwê˜z˘1&„0VTq;∞®2Ö1-•Ó"áì©≥MÍp2¸öÙ;Æ∑-6e†õ‘0–L“[¥áü”bB÷bÈΩSªø≥ÎFN@˛ÔùJÃpˆy8√(rMà˝çÑp°ÃúÆ),z≤†˘„πÍì!,¬`◊ÀÛ©w∆œ∑Vì◊˙P≤Z˝Ó¸¯êX.ÕfùÀ\⁄LÛ‚ßVLÜ
+3N ÌpKæ≤¿·b iXbç“U≥'Ã.+∂pZx◊∫í—Ú˙…%eπ%?˝°ÕØ"ªzYÿL†a›)ıM˛ lé’ë›,©,≤ç ¨ÏíµSV¿o⁄†"Ìg5∏ﬁ1ÃÇhÔ!éºMèÏ†›ß6÷Í'C>®.∂[ZªËxÜ¢OpˆQb§)œ4∆Ô. 'p<0XˆÌ›Ωù{b2@.—Ë∆@¿pÏO£õ'ÿMÉ<áIbi„{íj¸ë∞KZ¿Ù÷∞èÜ«’8Bé^L\pä…ƒ√ å¯≤õZQ∞iï“mKyÉ'k®LkÄ‚í≠oÚÉm\á~xn˚?_üjíÊ1XnGl»ÙÈ+«_«–∞9ªlâuÜ°4¥DïXdH…i1jΩXÀﬁÈr◊ Ú©`ñú˙Ákn„‘†yÿÀPL∆.ˆ'YOfö‘¿Ì‰∏©áäèØ∞ c8tw‡tDz©}Ò“Ô1ùôf#º’`1,&ÛG'Qù*êáêô¡ƒ£≤ƒñPu4øæB†‘©m>Rã‹Å*].òÀí∏ı›|î~îè≤/06aØ>8Vô∞„ﬂi|Â"qBõ©≠ï»axë0˛2∞)v+`’y÷W√ÜÈo©’˛b—≥wÊ}pëûﬁÖÍîÜ5`…‰˜õa(96Bà·ù¥Ãñ©-/‘Q‡Ã¬Iv j5PCGﬂH_|nïª\q. ﬁä˙7√AÚÂ•Õ-/Úf⁄dEKa”!°VâÆ’"<M∂ƒ»⁄´œÈ•viM_#Ö©˛D{3˚˙∞DΩ≈⁄,»∑ËøÑÆ k∏<›wfBﬁÿ˛Êß[k pîçãYﬂÕûì÷d•∫}múÔ≈~õ)/¿Â  \v„¬"±“˝=è¿jAÒZæíÛv©Æ4Q[â£›j∞ò™&^û€`ﬁµTüìláŒAWd¡èI7Ãöc˛j67ª ı™
+@©ôâ&]2±ﬁ|(µ¯oGΩ<Fj'S1µVÙ>∞ó‘^r∏x#)‡ó)1Rj£Aê!ü¬éáÇ“iG‘›2ÇŒ∫Œó»Àgl‹h%îòH”ÂP¶¡õ]bgÍW#ıGÃî#‚∂àÊãúk»Û&â:œÑT≥Æ ◊OãÇÆ[Àm«ÇÍC PeW(π°qdLs+/ÂCËÎæ…√(%C$˘ $Ëÿ–≤KΩœ˜≤ßzÊ»ñË*≥ı9|ˆ>V⁄ü’¯T'Ô„,’◊Ë^gπmÊ]1øß¨™Ù,ıæ|‚Hœn8{∆Â≥˘MY‰}Uñ◊ˇnÚLVZvËœ gÛ≥≤»˚¨,è~vŒí:Bóî¶¯·†ıYÏÎ¿l„Ê OZv¢˙ZñD/`ôÇ¶Éa;És™¬÷ ﬁ¯çY"¨ø°Ï%„Üw{˘Ë›Âˆ˛ïóó˝—ªÌ’+ó/_yŒ“Z#˙∞èÔ•¸É<WÑò{'Hï∑`ú3Ày1ÎìraÏi;Ñ%˛—·ÿ˝∞êïé-)Ω°Eª•nf_∞êLTÉ√˝⁄µ:^fLüŸ∞ﬂÈ3~ßœ¯ù>£¢pf.öµÈé52¬ëghSAÕ<G?rπ ["¯Ì˚
+jﬂ˝ü.h÷Òÿ∞‹Ôm—Òèó4Œ1ÿ¨8ò°v+“{o>K∆…(Œ`ZJH·µ9£î1æ}zûògÑ1àß‚◊˘ÃılÏhs‹lSZ∑∆«çz‰®¶&éÉÖáucæﬁ‡—Ú*“ZïwÃ·√Î%I˚ﬂ1G"	Ø%·rÏbúá™D:B`2º|¯`Êê øç 3ÉmÄ˚wvÊﬂßT˙ƒc(ËLæˆ≈ºØÅITÜü	*SB'=π0)∞‰⁄uÙºÏ #ı”u–˚RÖìv#È∞k»@DπíåÉß™cˇ*Í¢ëÀ1i®ë9>≥R‹.[fÅËlLjÆ6´π"∞rjÕ®E—w˛ó1•,Í÷Ê6¬¿_„≤évüu∫r◊c_?√Ωèπ&;m“„ŒõÔÕO∑ñˆr◊8:j¡,cÓ£n˘MéZ*Ø#Vüüe»˘¯ ÙMç˜>ˆ.}∫b¨Qv®.Âà;å}ôaeøéÈF/éèdÍÀb∑…πm©‹2ß2TA<G∆OÆ√¿©iónc%è&fòŸ›»?£qı®•l?ûŒÏ∏˜MÅ`Ú<' ˜îÅïL{•çib5Øt"/«Ø⁄àI»iBJ"–ÅÉ˛"nVædj™ëa†R±Oó§¯tâ• ô…Ö{’2óÀoúõ3u/w|É'kHpˇa3‚„‚Ï,N´ËØ-#6Yóà\AΩ3á∆ÇÎàÜíåóñÉÎd6®ì∞1O›ôvIµÂªl;6z-Ωuö…Î«qpy«qŸÈÉò≥;LGtûõ»˘±s*˙3|ø;Í‡oÈœ√?wìgÈ;Ë£´Ø¡y†îºWçvkÇMµØñÌ◊§°Ò≥<Î^’}AiáÜ—›Å‡„QOµ4ÍZé6èæ»Û>Yˇ+¯aZ7óMgôQ>&ƒFU ´z€¨`íÈÍ‰ÉU˝T<_ÌqˇïÈ;e€¨ÿ%áÄòúê‘£’ætEíÕ∫PkSLS´mıTÔ£¥–”®¸0n∂M‡Ò⁄G{wÔ–Ê T4¶ëu‹ˇÇw≤4†ì´+WTñ®El∂ÕRµV°°ñÜ„≤4|<6ì¯ä`‘ÎyuWàÉ˜¨õÔÊ0ìÌ¸xÄ6‚ Aº TJf˚‚èd—^>ë6˝∆|≠2C…Ú':=ÙA˝CË∫1∆Êi—@Â/˙Ô¶-YÚ®˝∏•Í≠aæP˛ÌwÛYÕn>3∫˘Ï™¶	^[ı≈E°Äµıúñ[ıaº8ë;‡õÜ”2›pÆ≈ì¶ñoﬁ
+Ï˚÷-`	õ^≠U‘ÁñQæ∑≥|œ©*+WÙ„°„†dÉYy¯˝ˆàÜ:ò)i—#E∫™–·V“7ÊêÙYúÆ+‰Éì>©QV…î…ı†íùû%hlØYu(gÉD ÕWh8Ó&lvœo◊&Ωóôm◊≈%xè◊ñEB…`e.€˝d0HG™)}™u,{5æq’Æq§˙5?c†3~Ôe}®CﬁGœa>+Ü©>¡3‘,Yı1~éΩ›ÒIw¶Òn˚`˘Éï§q’©Ò)†=¯ü1‹k`ÛV∑x•i8Ô@âé+÷4WuI¨ÿ›`â’éh\⁄l*Z'æ%(_»Éùy®ª¸a€™]tí^⁄dÚâˇ5FEFÔ˜Ú[Æ+ı≤3"Ñ¶cÇÚÕëö≠Ÿ-£c&∫9å¥¸ú__ÉMŸ´”¬˘-“9 ÅKv©Ì —”b92®%æ-ö%^U_„N3˙LuP~«Í·ƒÎ¡ÿ	l«ÁÊ∑¿‚>[(◊k¡X
+{€”∫$≤!ﬁb§J‡ÁTÙN≥AvÈ;√Ù∞ €˙pUwÃÏò√å)*^¢íb‘°ma:]"¥J[Ï˚Ç‘B5DΩR@Yı≥“¢4†Ç	 Ê;H∫ÙowBheÄrY‘U¶Fò$S˛+]t§‰Ë*÷KQœ±´+≈*”õ# ◊®¥®≥ák™ÜÎ]Ì_C
+
+Ïõ·∏…T«îﬁ·‹uˇæÿÏ‚–≈Æûxpîès€%$ﬂÑDe-(K¡¬öº;Ÿôo[-√”ÈáÂ„∏óë≥65D__ucª¯¿ry6€Mt˙√[f‚Fåz˙˚*?lç∞”ø˛Úœ˛J Á√h5ZcN¯î¯È˙–1%kYKc)‡] èÌπ÷’JR˙¿‚Ø†˙‡hÒ≤…œª$3.W›≥nR•*!∂"¨‹r8Jˆ_ÖØE˚Ë
+2„IDí!K4Á ΩñzTÚF]p™â,æUÇ5?Zı>k›IßCø"âƒ2O#U≠5FñC›äo;yfGëBÈ‚ïÃÏjYËnRë4OÛÉ7îså¥ `óyQ¶PR8ƒH>ÎßƒËW®È…˙›¿<ÙÛ Û®i˙ı¡j–ﬁ:≤ßÎß˛µùÓqM|^≤óÔùñ,ŒŸ§G£‡
+ÊôgÅzx0œÊÂπÑg≈bûu”√˘œ}[Pòs*k¢±‹nˇ^  ﬂ›˜∂&(≤Bí‹W'wáCm*µÉûÖ{`ıbœfÌ+m·á'«ﬂò¶*%Àe&d2èÜs˜ÀÌHò£7‹œ[2å∑m:oæyËMLq[¡∫πÙã<yCŒ¡°∆aRÌ;aÑ/–Uå?õì”Ã Ûô€@˝‡Z$'¿‘8rZyNZFÃgèœZÊ¡dÅ≤‹ãERVB)==6Ø:Q∂∆ê^¨îyÑöY∞-∫≥èÿO≈x[âU}ºJAª[Ü^aÚ’ãÅF6VÔù≤LË=¥?^leﬁ°Y≤≠z60î€z06&4Çr6≠~ÚUÁã~ôWÇøl–º(°Ô€o?Ù}ª.Ù≈N∫w∂ï”ÇüÄñòı™Ã≥°¿îA‘Dpq<JÜuR «%>v‰•œ„gS||8∑°‘ÃtXê!êå]®LIU∫Ù,◊Ñ∆~◊Üø~⁄Õ&}'|5<Ü#ìo—"˚´œËı™Îsqıµ@{˘´\ù≈oÿÚ‹»aæ˝⁄+T/—H`ñı÷ó¢äà4%Â∏“ûø'.^n◊X¯ãØuŸWjÁ¨∑4≈&Ùˇ˝Ùç@Ì©y›\y•ÏﬁBás=æ°µïzÁ[¬F>+@WÖ-?ÍËò=Z°ñJ]IÑïπ≠=|5≠v~®∑?*Ps8HãF:≥ÑÜ≤◊yôŒûµŒ˛UœŸæ‘≠ö˙™û˙‘–‰ıÄ‘•åø,X_©Ωuî∫˚:0≤†[l≠*€ŸÕÌÙ¶‘€J:GÈ|Â≤Z Õ± ΩË/Ω„•Ìí≤\“∂J)jA^j·ø¯˙ìt@Õa|€•Öêï“BÏw°4Wöî¡Û∏íŸ˘u≥Ω!¯— ÷ã√˛¬À á√*‚{rDhÿvLΩT⁄0ı¨V◊ÿNjC∂∆z‘˙Ä.O¨N:Pˇ
+©£-˘Ç™áô˝íIz“Ÿà¸Swˆƒn~0>∆Ÿ∞√i/bˆó$ŸE„–¥'6áC}ãÒv;‚AÔà‚›¢S´í1∂åß)«©C{—@o´ß¿H≠∞`ˆäÌg95øëÂÅÜ÷oíˆì¨Gçn‚Ø@3™·7<N˜·ÄÒ} øçe-ø9ÏU
+¯Ù„˝V˘Ë∆®Ìw5>Œ∆ptUO{˙1–QY◊Ô'Éˇ&á£§Øz⁄1
+}ôı˝ﬁÜG ø≥M˛
+¥ßF√w(∞ƒÉQˆ,ÈúPNú¥M=÷xœó_8 ∫È˝ïè‘S‡K∫&~Õ≥∆√∑õ›Ó(-
+›ì|éÙ%ﬂF{ª©ÅÍ#ıÈÈ¶Æ`?∑e¥Ôè¯w§xc˜¿y'ó±8x%ÀûcÆÒy&ÂÌçE?S∆&#ÑI0ëå◊™¿˜‹UOÅˆT”Ô‡pXlÂ¿æ∏o´'/ûä^2VÅcØäﬁ‡P=à3zVb’~Iá^-Õ:”1¡™UTˆùny––”X,$âÍ<m…á–¢…W˛ºróS]l™ß–é©wÅ=É7Ω¸píÍ°aj†_WÙ¶˜sÀ,©ÍÔ^ê“°çö≤°Ω√øcÎ
+ÄÕöJÒ ëcÿAæã£¸XΩ‹ÂTt~yµôÆ¥WmvPãÀ”º∞∫≤ß7Hè˝>Ó9ÖÌeÃ„¿8/*˙…
+Z:X]l!!⁄,™^µÆ{¿pZä’ÁÄ¿˚P}bÃxﬂπ∆À™ÓWÍB·πzygF+jÑÙ0{'+ WW…¡…zäi˚∫59ÕöU∞c≤*∞aA÷Kæ&⁄a≤d…XEô)YÕ`û*&YΩ‰ê™∏"YŸdÇ™ŸÄçã#´H™•¥jÁÅíÜâ™¨†…hÑt™-S¥Æíˆ©èJJ'Ljä‹TêüÑ59©¶0ncr1"õh˛ØöÁ3j€ªÂÎå&ƒF∏7£6úî*.MÌ°Oïö^•¡i⁄ÛwÈâÛ:D* *Æ≥€äÙ/UDy5·’ëÂ]7ó‡…pÕF‹w+Æ:à·E*X)ëê≈˚P}¢˘Ú≈ﬂr¬>AI˘˛	≥ıΩ¯π ‰˜WP˙7Í·/Â¶Öá?y˘‚˚Û ˘õÆ
+gzòëQ*g k‚Rl¿jt}¥j‹OEB1∞·˜%ÅÅ â£ë[/ûwî1 D˜´óÎ—!ró€^v…˘SÙ9‹=ÆﬁO˛◊ˇ˚˝Ë√Ûﬂ”ãøÖá_™&?¶‚_æ|Òœ/_¸ æÊÔ(ljÒæÕÉ»»yIŒ∞Ÿ :¥§£xâ
+>Z≠VCŸBõπ¸L—æ˜èj5tˆB'Àçf˘|N¢wYh9`*òb“È "ÒS	»Õ∆Øø¸·üïª¬yÇ∫BæF˚èìbs_$…P$C@bÉ‰$-èóÂ3zöåDë<¨îdÉ&kò;C≠£ôè§ôäIj‡í⁄x≠L d«oÁÕìKÇéôüf„#Ï
+6ÛT¿ñ≥ÜO-∆ö∑=Íù]5zïVÓÅnMk˘K¶ÆpwèOn0˝"®π$ vcur@O5ÆäΩêi"å§R≥:‘ﬂÎ-ûÜæxìæ=QbÍ˜Œ%oÏùòÏ©sÕù)”WNz1øº.	ƒw≤g©íàwƒt=@8>H>j¶yOVè`≤€e¡^‡pá˘è…˛	£Å}4‘KG≠ÈX«ì€g@=ø˛Úø˛G°;8Wq˚¡ÆV∞òH(8EÚAí'O]p…Òj∑'©ó‡:j;Õ1m-4sO∫ÈU∑ˆ‡0T®êS›b	Ig≤@çd°¯£œi≤®XyÔÍ∂∆˘-ÙÍh^öñ·ÍX†|phñÓÚ»øŒkû÷¬Ù^´áÊmæ÷≈*°ùt±äáia˚Ù¶i†íà‡ÇêÏá$∂(ﬁg•B>’	´8gå∑{ ìµ@˙ÿ†cÌ°CÀÙåÌ‹=Ï¶…§7æCø“n≠^π¯A¨m˜∂Æ\^πRµπkFØ¨3∫àlzcg–ÕÒ—dﬂ€´Ø}/’bBàwÂdÑÒÖ:€v*∆Y?Õ'∞<∂€mÿé⁄qîmvÄH:'–êÑƒ÷1N•ŸêZ)”µñã»ë÷◊+x˛ûÚy]h+;|.Æ∑µ_’(À‹Ly# ≥&]Eq$©†i‡D|ñÆ†xØÎÁ”3Â>Y† 5)îW~tS¯⁄è=>T¥#%í3¸g≥Pni4!óÏòÎª©ı>ﬂÙ.ÂÂôWX¢Î‘Î_„-S1¶óY v_Ÿb´ÖuÅ‘YFö¿a˜†OÕ≈8|B…©AÜ|ñÙÄ©∞}ã∆—2è…!îüµ·Ë<±M˘yÀÂcπ·™BÕU›f≠E¿:∆R;}Ú–ˆp–!·F˛,uîí©êsßI¬èTK8fÆ;˛öì∫1û≤ëÛ,™Yï‹∞OûxU¯Éj2Ò•M(Âd‘≥Y{W§k]çT"¬A{àJT´öãÖTπ‘é4•IÇπÊ=ñæp¸%Å¿M3ﬁ' ‚»Úõ@U 5Ú»ôıß7}  ›ÏrÊﬁùÏ˜âÎvè-BØÀ!m°©îm3È‘AT∂`%´ﬂ§Zçôöçn⁄œü4Ê„∞Ù	Ãß?iƒT  ˇgq R…(=Ãäq:Ç5π19AÕ	j.v”^w≈´â˝IëP?'£-≈º©.–°êcCqæî∫™µ41ë}Hçs¡säöK"qR_.¡TÂdËDú>Ã%áìj%
+~≠‘πøˇæí¢]‡§hÉjIB∏ñìrNî]Y:å\ªïü`Ì(˛´ˇÂø¸‚¿ˇÀ˙Tlqˇ!t[
+fÚ≤O	c˝8ÃÛ√^z7Ï–^Í¨eW◊≈ÁG„Ò∞X[ZÍC≠7 ©ßøt˝ªÎ0"’ Â•≥´`pxˆπÏfM4˝ªR≥,¨û…¥¶ÉNﬁM?~∏≥ï˜/"T©ûø-‡dc(LÍ_?ï_—√¡5÷Jì√Cm¬⁄ö0 N·r≤RªÆ‰si`#–XF˛d#u^§aã¢uÜ°äÎ“‡D¡åi:"Àÿ D>(õ58¥!P \Öµr1ÙÄ’~≠	Ô¬B◊1°DwÆÓ‹’∑ızπ4Âm∏[f°¥01
+6Ì©îˆF¡ÌÇm>œ¨ù4tO∂*~»]^ê£]S€n_´ò7-äÎ„^…Œé∫.Ló<âHCh®~≠zòÚŸI2LFO«ÛHû»Æà|qÙƒ5k≤g
+ü“™µF∫W¸¶{u‘¥güõåM…÷|lr5ÁN?L:-wC2ñ49Ã9,Qôóõ9D€Ã˙8 O/ÀjÜÏÿÕP=©ÚΩäÔó¬uP%›∞zw(£«A˘*◊È#¿93}îœôÊª ’¨¯˙yæÌ|9®TU‰,¨Mù-PJΩòò:P eŒ«Ê`WDBâDÀ¥¸O˚]ÃA\∆AÈ áã3L¡åbE€¥"X√Më;ƒö6B´œûD)_•:vßm·^#∆IÃÆ⁄u”%˜0+ªWy÷Çu@‘dÉÄΩuÈì∞Í≈eÒ¬™∏Ÿ
+T8~åo,≥e+u`Ó”.◊ñ¢)ÇúxíÇî%>?9suÉ®ê{¥∂Ë /’€OFã„£Ãé¥É—pïMl"öÒà]‡à:®ÿéÒÌ˚b\dèQ;âÉ±ºë’8Uµ√ŒR‘~È"Ó.%¡Ω÷KˆS+Ôˆ›R„îW8<:¡Œ´»<õùLwÃÀ∏D–xÈ¸S∫ ˇ'¯w≠zl ågeû+?•F ÷Gc•QD<€óh≈¶d®@ÿÿ9 6E:2«Zh8'6Ò∑ÿO∫áxÙLí#5y®˜Òc√üFlª°€(“c6~≤lº«ˇíÂÁ∑¿˜·\MîJ◊)ÚOëYªV˝¸^´˚∆ÜP˘Ó¢¢≤ÿÒıé‰gtSäôÖÎƒ≈R¥√É{ì%Qò!4ﬂ= “^7ÊcÕ·≤ôK#ñ[Á◊_˛óˇ">!¶Z‹e+K‚nBJd_Bsâg1®:Â.öiG ƒm÷$ÆÑ6€°ﬂh0ë†ën0öS0ºx˛÷x˙3Ã6ê#úƒÖu'˛≈â*/U@Ç$≠¡ip`Æ‡ª	‚_»ù¥ó6K–p»˘©iÒœpË]ÒŒõÖ€Â·5®x“ÎMg:e/ó÷á“D‚_â¬‘ÏBÆ°¸gd5º¨‡êŸT≈«©We&≤xok¢ÇÕ•˙≥ù	Îë]+®¶(¡1w5Çfn»,Ú+6íA‚à˛;±0ÅΩÁÿ°1{˝úhÎ?aeCØüæ¸…˜Ê´r°ƒ3BΩô–Mì^:˙Ö9πi‡o˙Ñ˙'¿|˚v3n‰+üÉ]Toº‚ÿ¶u«W Ô/_¸ ˇ≠Çzä6"‰¯
+˘∆ßA?Áﬁ√~˘ÓÌÑ¸2o[Éˇ∑Ù #¸ˇ%Gˇà˛˚7LﬁÆÉ Ûõˇ¶5Ωiá`î1Høz;è Ôı`˛£|8Ñ∞ïå∆Øz‰∫„¯s•``ªıù˛√"á=πPtR—`Ã+`≠N"õ—D=!£°IÜHaqO»À÷ª7!3ﬂj^Ûû¡tt≤6<„@v¬◊§
+»JzöK§˚Ñ_xø†ÁÃ.∞/3	r.¯˙–√ﬂês¡ˇ¶]~NµU‡·ﬂësÇ|¯Gπµà›˛9[7·wDã[¨`å 
+Ê Fz∏!–ó—˜‘≠lËî1¯RâµÎüz/‘zí¡˛§£ıπ¥uÿÁt\[¿æı°ÄºˇZ≠Vh>~º Ÿ“FëâôfP+¢*Ç±—Hå<SnBä&»E¶®∂™+‚Mﬂ‚≤˘†+î˙$o!Xg™Œa}SLçCÈπΩ@EJ≠ S/hs≤9F‡õ€–ûUøx˘ìÔ”y˚?∞gœO˛-üπó/æ’¬‚YwDøˆsQ&¿¯”√€SÁ DÎä™cs5“(Ãjú2Å·ﬂW˘*$õ -Æ6V“Î∫0⁄è˝Ãát¨6rcqQHe˘Œ†‰0¯Ãu:ãã◊ñ∏v∏´”òªÚ+©¥Á+så€£?'Fú€8g√Íıà∞∏ßõwÓ<Ÿπ∑˝ÒÓﬁ√ùõª≠~2lfhTºQ9M /û¶'ÎßPñÚL≠[?˝¸=.ÏLo\ƒ≥œi´ı ∞V1ŸóÙ*:Ä„Äí™qòKN#Å˙4I˝ë>ΩQ˛¨^#Zß»B!9Wè¨p§•∑”*,ƒVﬁ^™ìŒm∏%¿∫P™–™¡Ü§sQìYÜ“CóZï¯XF©TÑ≤2™ˇ%qNˇ˛¯ÂãøÉ˛‚ÂO˛˛˘ø√Ï”í∫ÑCŒÏgí#r@\Ùü,03ˆKn˝«§S¸?®[<Ù˝Ô/_¸ø‘¥¸Ÿø¸S"3PÂKx˛!‘d'Sˆ8˝±@wS˙êŸ/3Üu8El˙Á¯‚'/ºUw@•F|n‰ŸÔ‹ﬂ⁄‹€πOÏﬁ‹€€πw[|∫≥˜ë∏≥Û…MÚ*⁄æπwskÔ˛C—ºˇ ´mﬁ;˜ƒÕm¿ﬁøµsÁ¶À°Ã1$r∆¸Ìﬁµ4Ô∏h\¥xó√
+µ/],oÇWº3€P‘êfëñ„*Ω±“◊¶òAhÇ‚ƒXˆ”‚á6m¬Ñ4lòŸºO«9ÈEÑ¿†ºåu‘ÜTÈA¥$ÊAÈ¢ÆnV†Lÿ¸Ó;NU‰ù(ô}wbdÅù0/aÏòøùƒÇ3n∞(µî$+Æj≈÷òî*=ªµ`7ü¿¶N…/KSOêÄÜÑ–¬a¨î“∑Œ2:^†.πöqﬁVq˜ƒ˜˙lS»óÉ cÁ];Ü%ÄêÂ∆I›Íe¡&éπÚ{4œCPRé≥∑‡–k%√wÇúu@¸EˇBWÙ5µdﬂõY¯ôØQnpÔÁÁÕ}péf†¯äÄÖú:ø
+h—V·5A¶Ù6='‹–õ 'π&˝‡πÈ.‰ÓxîÇ¸" au]e>çHIÄíé¡,ﬂ.0)_ËÈ†$öî¸ûø7ﬂ<x™ôí‹·úç§B˙œ=•œ≤Ù8¿;_®£í÷‡∆ •¨k˘≥7(≈,Á<üW.çvÛ…-Æ\27ö>ny÷√ë◊‡ßPŒıXÑS†+h⁄á	—(…ô™vff5ì1 ∆#ôÔí2w-RÎ _1≤™Ã8¢Ì’ıÂ‹∆Ωú˝v§πÚ·≥ÂûX9oq‡S”¬xa
+[2–uL0›y⁄¨N£ëÌSº|ƒT*lH©LõMÊ[≥€∆OâJÕ§Få˙Xt;I*”≥B«ø ÈﬁJ–é#rÛFQøÂy&`Ú(MËÍ,DÇ»ú˜O≤∑kî–œ€)?y_ßì“9ÔÌ∑ºnåiÒˆjî!Í¡˘‚“tT» $.î1ë¶®¬˚}QÙOº+<?9¶ﬂ~Õ© FàÀ(h-_≤Õ>54çJk§êè!ıûF=}’Î!^G¶dE®õ¿”ΩÃÈw´≈À”“ÔÆ±Íz≥Ú&øî™r>“Z›J˙YÔdMÃ5nc÷vÒI∂üËY∫ù:(ÃÓvFŸpÃAÕ
+ÿ∑9qv∂qäJWÿÌ£d¥9n∂'Ó¿ã∆«a)7ÑÅß%e‘(RXPJÄ6ÔÊ"„LU∫l'zê≈!ÌQÖY⁄#Ãœ<õÏN9xì\E#€hVÿ:Ü—⁄Ø®RáÊ≥ì–x–KNíl$∂≥ò‘ì |ò¿`nÅö~*Sy"€ÈÂXÒW¯T≈∂u"›¢ª]√Éë†ÿ˙zHw‘Vπ1ñ:1¬bZ°ïoIÑ"˜«d?3’ï4’¶∫Hsâ‚ Ë,C3 ÃWKy˝Ö˛
+HØ®Ì5ä^] ®È
+Â≥Á!€ØÎ¢ÒÜØ#·ó¬?|ãTéï"æ’8ã0÷“∞Ë‹FÛÆ
+&A>UL˜4ˇ®¨ø√&Oa°®FÇÇˆ(˝Ó$É9≈R˙Ñ49æ‡]KÅc ‹±efQúbÌ≈Ô”RÛuåñ –"T£ñ6=Í√Â=–_*nﬁ‚%ˆ9üú>ç•ï∫`ØîwÉ~Ìv1ﬁ	Ìº‹GL¢b3ÕX·^5æöûªΩª'd$ì%AIƒ^Ú\Ïlªà2†`âW∑ñ`˛ÃÕµ˚ÍJÜ S}#Àa2õ˚∞qj∆≥>“»VÖN~4n.≤Ï˚Y^„Ù`ÿıiáÁ\˝ \‚5≠≤Fië}!kaﬁ·sˇΩ&6LÛ!ºMhiÔ@›ÚPvÀ`˚vQ “¬h ∆DkGyw“sµN¬L'ˆSëπ|z≤ÁZ7AÁˆ‡uïcù‹9u´Ω∏jïæ‘R¨rúˆs©U9¢>'u©©T}õ¿zVùÍÎ€{éUø≥}Æ}ß AÒùß◊µvû#ËükÁ9Eƒl˙ÙoÚ÷{5IwƒñŸç
+pÆCèGaÿíi:ﬁÿ-†IUÛP%©s¯÷B˜Ò£úï∫{˙ﬁ ¬âæ‡ƒ[àÕ@ˆÆ©T.!ªêıÎ;0œ7oFÃ≥ö0gf†˘F√]ïÖ∞v*ûZ+
+Ñá‹“Ñ˛∑ãß',G°Mfä õz˚Fa≠¶W‘åÏEﬂhHìªS–‰Bi8cÕ–€iCºô®µ2èeÿ ˜o‹ÃHç5Œ Äıç9µMµaNØVâ›XeÙJ∂6eÅ≠ú¿;Bï˛T∆|±†ÓR‘∑"∆‘y,ã•AËß-KŸ·ÉvüSÔÑ-ÇŸ
+TiYΩï^b˚ÚF≥¯/ÿ1äüˇÅLﬁ_(«—øMÃÔGˆ è®R˝≠Yˆ/°™‰mßoÿÔ≠ á°ù¡Û¥Ä'Úc'çëGaá“Nvêu02Â8ÈåI]°ÛOptNêGy_¶RöÏ„-‘1ZÁJ‡^s&3úbÕ™Å",Ä÷0!ü”…π‰≤QEƒ^ @≥@˜“Âê˚j›xQ3˚≈B◊¨êâ¯6S{KCB¥ ¿ªõÔ≥⁄⁄TË¯èÖKöBB:_ ZA2B/—]«∆≠IE ¸|öÑ»æÇN:Å.w’ãÌÊ;l:ón˛ »Z“€ﬂÅjTCé¨1)N√Œ˜K+zŸ¸5 Ïf‘˙3≤ûËÔÄˆ¥YØd≥A7;Ãm®Uö“Ø>oF©1Ët‘©øÉÕolF„H:  1Ö,-Ø>ø6“ªœ ßò
+˜≠ÜRª∞ñaªNﬁ˘>⁄rNFË?µõé—è§6'I˝7WjõÍ˙…}•?HO¢ÇüuJ¬Áx#¥cÕX €ˇAÓƒ?ì…ÑcÓ°qÉ∂»MZ,(ñ+î@”ˆ‡Î¯£⁄=jæd˘ÄñevD	«rf˚µ”¬6^≈o%ÉN⁄£;wÁhÃ+ÿﬁ©Ò1◊|6z%Üëê¥ïŒ∏ﬁa
+fµlœ˝Ÿ7!Q·ˇdÿ_Æ:€/I{OAÓO0ÀY2'…ößò#8¡B√§@yêú$f∂‡±ì(ÿçãíÚ’ â◊˘ú¡*cóÌÁ¯O&O-#"Î•ißˆÖô§:p®ÁCâÈY„˛@±∏–±∏P¯Gg_CÎÃ„º±ÆvMÃ©ùöã∫Pæ≥ÅÙÕ±&w⁄PÚÁë•/‰a+7%‡—ÆËiD:˘∫bFU+Ö5Â√—‚ïÿc¡Â*b ÷âÇXÖˆH¶‚{o]µŸΩÙ<B&2../≠àE2ôßÖ<°„H^≤	ÇÉ±å7⁄⁄µö._x—¥-¬µõ'È˝ÉÉ*O£5™TQ#Ë•*ÄeàxáÈïüœÖ_5ç –WãGÖ∏óó»Û[ë5ã¢ƒØÀπÈ‹Îc8/s˝y∞€] ¥ó˙¡$ ÌÄ©ˇ}µºÁ¿g3†≤»Yx´@wK&Ë˛&Ä∞L&~^Bh}.P~ò—3S∏Ω%¥˘ÎÑÊ(fèRÒi\SoÈ J˚®∂-¥Cf™ù±˛TUÌHá«
+ì≠äπHáÛ·›´å\;“q®ß:†œ‘0>¯‹3ˇZ◊¢Ô°&*®èπí(kR‘ÙpS[°¨Ω1!úç?8¯¨åÇV¸Ç‚`RB",˙üt#¸Ç"ê…XiﬂüèπI∆9ê åÜ<?kâñ·ÄpD∫	"„wí}$nG)ê9íY¥‘¬‚~“MzÜ®ÿÚÓDP≥PQXUfg∑˘›e˙EqÉ"qd∫VGèﬁÏ@$=Lb~"ûQÂ‘S†ù™<≈≈'≤∆tSX8"á£§õa*»qæ8¢[p•>>πº‡Â,_c≤£Kjëu=YZ'0õã©CR;ü#yVMù[8¢ZTÔåßmu∫Ìfe»Ì®¬¿qMÁ:~é∏XF8Ö∞y˛h¨÷¨o≠ÒamÖé∑”±¿d%zöq*∞ô©Wç¬”|pòhÊ'·Ë®Qß€©n∑û»zjd∆ÊóÒŸÛ ∆ø@‘√©AÈå`tR¿_6ŒúA€ÇÑ*£‰ZjÎ(áI∆·)ÜË√A·≠˜&˛moIAŸù-)äÁµø‰ÍΩ€n_Y=∏¸∏\ÚGÔ.¯¡+èΩ5◊‹ª…«—Mz8ØV9¿ThÏÂR≥@*ƒ~Y§[ön5lä„ÁÜƒlêÍô\/˚¸’w`¡È˛Üs™àûªrkÎ˛«˜ˆƒÓŒˆÕõ≈ˆ√ÕOo>$ s0∞zYéA›Ùlèí„t‘<≈m…
+Ñ˛¸)œ˝ÊœTx'?VW>`eÙ({4J˘ õ√·(∆ã–ﬂÇ.ﬂJzùI}À≤áÈA:%ΩÇãˆÚ√√^∫wîˆ˘Y±ÿß¨ŒU9
+ô<ºKÌ”.´?c	à$€V·;gòVYœxH4NWç©/C¯·YûuØ™eX…‡‰™π^5o]"5xç"/Ìı∫n’
+,^¯Ω^»@{cUΩ!
+ªã‚≠µ◊´Ω◊y≠BÀè-áÙ⁄h∆A—9ı ŒŒ!ÜË[«eø'ü8w1◊xÑ2Óv⁄K«È›8æ•{4 ssä©g‰4ñ`0M®
+á`ßK≠wåÇÍ¶IÈüdÈ15‹‘èf≥kç~:ò4ƒâFÅ∏ßhl4π»öæRáë'añX„‡Â>t™Ïû:MNPÆª”ˆR5Ë†˘4@Éˇ‰Ñã·Î≥ÛeÙzπ¸®7êﬁù>ÇnØâV1™|ÓÓöÿ€ºôÎ=Ú˙LNaiI<§ÄÏdÌ¯ÍÄ*/u‡d¬ø|o§ù±\>Ü⁄ø¿ázﬁﬁsÈœp˜±“„y lm5ìiÆ@miØ-Oœ~Ω™≤_+^8Ö≠0≥]WEºRa¶d√÷√'ìú„˘âæÃw_8™Tå¨∂+Ó∏W€fFl;±	z5*h.Ô¶*NYÄWÙ≤.˛X$…ÖÆ Dw2"IãÓ.ıåßÁ›~«•œH3ô⁄âè@4sí˚≥¶ﬁÆëÿ’∞è¿àÿÆb
+9rh–yzBóHÀ.†Ùms‰ÛÂÊ8-{ùK∫{v3pÎãˇlMÀ Ωb_»D≥rª9∏ØméF˘ÒùÙ`\-IÎâ0'‘N‹Öq◊Í3Æ1¡4ÎÜHË%èù€®Xˇ#mÖôwTV9ÔI
+e¸f'Y∫g˜b∆=îc∏YqvŒ-ÙŸÍin∂AáFA^i]Vº"W{›ÏÏ•`SÛ¿Ñêà2÷∏ÏZ.˘ö1/¬d`ï˙˚ãóÊ6ò}…p»î\§DJ∏’Õ‡ÅÆ∂iâ‚˚ãñß¯™‘5©a_ÚC=Úd«SAF£ó=•nt{œw‡Y,!∫aú.Ã‡±∆OÇ¿Íòñ◊ Õ—Œ;òÀb06˚ﬂ‚"O+Ò Íè‹Mã"9Lúè.	ïÇ7≤¶≥ã˙Ù¥‚Ù≠pFu« Z˝¢l∏$n‰9iVÙTÅÛ}•P˘ëtÄÅå2ÎC7©c*›
+Ë.÷Ów'0£»b]ûÚπ>˜a~m;aöŸ;aØ|¨5ßE9Õ¥◊sæZö5>˙òS  ëÁr!PÊD2PßøŒ™I§K¶áF¶ÄÁŒ±ª§ÂáΩ\Ø13jµÉSƒu4SKj:6'æM}µhuœ*ìz4Ãπ¯Ï›¢æh£Uz…∏÷ŒSÀLSm£H
+ß¶÷Ñ˘//#¶üFîtHPGµÜÎ÷¥EsqQÍ±ìôÿNb…∞q—ç-älÌ,Y%mp)∑Zsı÷îµ=1îhMSÆ˝DU”+N∑¥Àyæ∏J≥5K‡£0øÿEÁl˘)ßÈ"]öÜ7OåÅ%%jdÄõøJe
+/™2Olúò˛†M›sÚßæòÒo$‘€+úÔ&`∑j‡á°DAŒR5/{<ôÓ{µÌ}u‹ÿΩ‰öq·¨µøUŒ˙ªˆ5[ˆ¬êö%mÇ_∏õ2•äTQŒMqÏµm!Ó*ÃÀT˘JÖ‘l,I∑–ÜøÖµæ :'‹oﬂ«Ì€rÌ%ﬁûeâAÃñ–öçœ›0!-ÇÌM∆[•U∫‰ºqó/v9U∏Ç[v® –[∂2Kà‰hÃb7‚±Ö¨É[qrãN“√ec+ü!Âõ‘∫è±vÀâzÃÖäÓ¯ö{kvY3®t]Ω¨Ω‡r
+ßï1ík¢ﬂ©ÿ7ƒÀ`(Ÿl∞xºË¨Î∫'Ωvt©B‰&e⁄dÄÈï¶-F<ÿ/NËRÿA`“Î¢™Y›•ë %á§dé◊¨r∫7` ;d´~»‚≥~BΩZn˜‚è"4ë´q∫9%'≠¨†eBKï‘wNU®˝Å⁄ÆUFK¶x^∏ÄwSIPÙ´Ô˝_jyQÉIow ˇ%®Æ≤z|g6 3*Àè“z¥NS9ã¿ú@.*Ô(%Í
+v/€∆,kM)Êq fN=cçÎ¢Ò´ø¯ØëÀz“⁄‹•·?ﬁÏQ¶—◊⁄*ÀsQ∞ÀH¡VM
+vôiZàÑiepHX9ØàSü(y∞1ù&MEΩ”ÉÄ˘∏πŒÔ√–ÌZÁ=l;BwÂáã~•Ê~nÉyÆO2 •˘(å÷¶™£"±=p¯çÉòDë&£Œë`mYË¿◊L4htô=o
+%ÛÁΩ:Œè[›Äv‹9∫˘∂∏âf•úÄûüxÀ¥9—ÂacﬁÎßäˇ7L—DÙ9û≈∏πÇOiáUZèî5>(5¢∫^–¶ƒCjê†àÉmÒX3Ò°√?ÚñJ÷Ï Í‘‹Üá;°§ó—†6w»à/˛3Ú≈ŸÏt`.„ÍÖQ(2çRPˆ–ÙR.Ó¿á¶\]íÉ—®÷π¶û-uΩÎ%[©Äﬁ§H≈Ú¸4;GGÂ®È}ëP£¸XFñà∆æá∑.Au–+Jc¶Ø˚°än•q8=k˙NO6&¶"du¬√rªûpÌìº7Èß+uÄµ6«;ïíU:œm0P9˙“(Ωàqà¥kòt“´Å»Ô&L\ıÒéyk¿⁄ç1¶«°Q¯ñ@Q√é∂4\9«y	ÿÎï˝¥4øGßT7Í”£äÙ24˘ ®“W=F∆ûæM'…É∏7|ä‘áRäπ^,0∏¿Qﬁœü´‹tãıJÁ≠À¥ˆÃ±+'≈ôoJÒÚüöó&p‹€∂àçÏ7ÚÃ·_ÿ º˙Ï)5oÖX ^·º—–¢Ÿ°¬¶ÌªÏzÁ.Tu Ÿ≥†tõ˜ùÀf}∆#»·¨å(Ë%í/©√»Ë6RÜbüÕ^=ò˚w«Èı'uª≠œËU˙çïõœeØH¬hx·-o«yz•/o¸ÿ…TÛì”q…J'„¨üûÔ†Ÿ•qœ∆ígiWÏQt‘ºüG≥(⁄Ö≤Z7|õîˆäÙº∫ÖﬂJ>ık;‹◊î-Õ[≈ù2º2®æ$≤»ﬂ∏úG6l˚r5≥(c«víäntıTr=Äæo&£ÅX^º#<§øÅNd|1Úß„Ë0Ôz>4’!%o> _’y´ˇ¥Òñ∫6oãMN*0¥Çe√Un5_ÒıÖ≤ÿ6Q“«)ú»‘√®2<öP
+»Á≈´ å–ÌDâ†∞ƒÜœx}Daå“;r∑3◊‡ò„µ)Éı}i'˝∫∞GÃ´¥µj&RÙ©-ÈS≠ÛÈúÀ®'x0y„£+ÚzÆCdlÑ°¢>ß±ÖÆ›&√a:Í$E:∑±,ÓÊ4†Y÷Ω6‹ËÕô◊	`ßO7úÖh~`\|[gœcÃÚ√t¨≠·ñrêΩpéªè(BEˇ[}˜¯Z–ÁW◊ﬂ
+vDG€/uŒ\Rjù˘Ÿ—;s·´≤$QGˆØï+ô¡[ùqâ!ÜA¸[t¥ñ£æˆwÌµM‘Ü◊ÔõÚ¢ëæWœ†‚Õ!ã†ëÄT´ì˝Ç“U„"{…ÄLTÁ∞x|1lJ¿HeNqùt‘5äaæAﬁI∑üBπÿjPZ\Y3‡+:r ùfR˘v„ùPî≈pïF{û^ê¯∫)∑ßıTéæ)L˚MÎcπKÍ•†üA7ÚZ0V%§∞◊v˙,Ì≥?*+Ï⁄w·|>Ì•ÖÊÉ¸‘
+‚[OaÙ1í≈∫â\~d ¡<îƒ†^úéêÜ∆◊»¿w“dÑ±sEìºÕª.yÒ§ß∏™˛ÍøÖ|ä◊ß,—|äaIRBÜ,|E>Âî„`úÀ›IÃ®\ﬁÕÛÿÎsZéæ™~≈Ä>ê„√
+»7x¸Tÿﬂ1áY{Ÿ0~*πAˇ‚p≈Øø¸_ˇ‚Óê'4ï˝Íˇﬁø¸‚±x]Ø$c»¨<ñ—Åh>òG”¢ø+Ûw√¶ÒIq2Ëàò=Èlös<hå8ÛÛÅ&D2¿x≠t4 GÕ∆çQ~å◊°›êˆ 6Ê£1˛6—c ÌﬂsÊ‡[Z;8≤Ï`DóM≈‰-Ódÿ|Ö
+¶q≤ú§‘Ha^oJè+ü«˘∞∆˝ÂˇL®âÍ^Ä,hkût˝ú¢™1ÉCﬂ≈Ñ‡)FX(Z‚A/E/e.ÂÂBøRØ&Ó›¸TÏmﬁ@A7`T{ÂZØºt„—Ipäá»r?+
+¸∫HéìllAgKŒËÅÆ≤˝„56ªBñ˜–¬8Ì6¬+¨÷∏òt:ò=W˘áŒ…‡È^üÂÿ2†<É¸ÊﬁI—°¨œáâ^ƒÍ¨TN∫„Î‰LûÅˇwQ.Ç‡∂z[C;á€KW5˚r$oÄƒ„£¨òé76nkQÅ‹9MR†Ωï¿‚t¨‰⁄êZ.Fp ÓÁøπBƒ´
+_ã…\î~dÅπç{„ú7Ö«É˜á¥=“Tééπƒ√≠¸£ggØ≠‚Sˇ≈êZ(h^mÖm ñxñu“OÛ—SL‹é4ç/Es≤7“-´b´√È){i/àhK
+†Ÿz4hé»,ò¡ƒâfΩFà2ó´Ÿ∞U,ËÍÿXàˆ%@¥Ô¢k˚bC¯t«8S‚v°Hà·º–˝‰ıRíÀ{„∆√Õ{€OÓ‹ø}ˇ…Ó√≠ä˙eqñœ≤}ò?4y«aA¨¬ˇ·«„H˝≥ ~èïKzŸF‡p^aπ_ˇbáózñÈF…òÊˆ<⁄U ï∏§Zu{˙=Ù\◊˘Ü§‘Òo”Ÿöı≈â`f$ÈRä:TE5$≥f«π∂ãa¨|ıâÄÙéƒ’ÉÛLè¡+£I‹XπQFîx≈+√®£sîå´˝Éø9åƒ7œxÿä÷Ú›Ö 7Q/ŸQUﬁ¥	1Ä" ∏ÒÒ»H‚ Èåï’‚˛‰ ^I–ß»5⁄2”µ◊4"Æy‡°çí¬wzŸp?OF›÷1»©ÈL]âø*«sfzHó¨⁄÷j©OÈ†ìw”èÓlÂ˝a>@+rVÕ∫ #ï<z}∑-iä6=úv'f,áËÅp˜oØ|14Ò=k§@O6F†¢◊ _Pl•∑P∫èŒó-∂Ú·â8N˜bT).ú:Ò)`äbs8|Õ*{∫+xê“ûhb${|ˆ¬◊ø¡+DÉ,sØﬂË{¬W=ÇMü@|‘ÏÛá%Ø„¯°e¬[x¸6QŒ2ﬁ?|IE*Ü¿⁄¢"w(M5üql˙ÑùTœ!‘óe˛|òˆs≤cÈû]Ôv•⁄˙(ÖÉü®£ÖèèPÀ¯å…∫7å¬IÁ‘ÈN~(ÓO∆B≈Eq–;A°ZR‹⁄öÙ_/Îˇ  ˇˇÏΩ€n[ñ ˆﬁ_±≈s|2≥öy·Eîƒ#äêHÒ∫–"Ug
+*YäÃ2£îôëëIä≈"‡ø¯¡Óô±Áe¶ÿ5¿ ÜÅ€„'ˇJ°~`˙º÷⁄óÿ◊àHí:óÆäÍ÷aFÏ˚^{Ìu_¶ÿüÇ©˜€[òé“Cq›Ã5Çá◊^∆#¬Jb°ü¸PK¬Z÷NÙ–ÙŒÆ≠ßÆ≤∂¨miôOÓ¬ˇB‚î[ôSÊ˜
+ÿTƒüÃ√¬Z– ˛\y"ŒÃ≤é=≈»$z5∞Õqr6e ı,èNc8¢hÓj⁄›â≥±”&ùΩºdá˚?ìc2ˆåüUzπè”Ö=LAÑNv›T¡qP‚wP;ád?>ç„π_±„â˚Ï+ÊFÜoŒ≥E|Sç’à[Z°	YZ¯Z3Ê∂∏«UÙ7ß¶âw≠çu®	˛´ú¯‚à«
+ÒÆ—Zœ77π|<˝ê9›ã¯QaıóFì.ôß´x˛IÂ£öº…í8,)À[≈j$7JIÁtÜùi”j¨<—œˇù!πá=j øﬁ‹èËö˘w¿pC>AHe5Nr“CﬁÖ≥òUT2Zﬂtø2UJ+£K$yrOv(%ú«&>	π@òé¬ûWVﬁ
+ù 
+ıw“ *x_»E•xËFëg3Õì¿”à"Ô·ˆ◊—äM∆¢’ÓÈ…3p
+À≥f∏q¯Ì0é⁄<Î¶l·¢ÛIúÅi	f@Ç™dYkYäê÷z˜µ3	òXÃõ
+ë ¸3˘ÃÛÿ1™$>≥oÄ≠–Ï6Í©
+#~1˚„k⁄∂9><ˆ ¶†‹¡≈9V%ãBc#ıá–avÙ|~ù9¡çÇ±≠,\ Œ°©z:‹ﬂµPÉ9ü›0¸«îÓ©çqÑ·à:£yöëG,À‚èãÌ¡R≤p∞p iª$"|úœ≥Œ˙6∞Ö-Y”ﬂ∞ı∏À}≤k„œ~ÜiË_Î©„H€Ê∑”/°9äÈìÑôK[ÜDM{1√ƒYÄ„à¡^eYè·?≥,.¯B∏'JÁD˙D"8y_¨£åj¿ìBPo–œ˚–ÊbË9â¯6Œ¨4ùô.‚Yy2à¶hA÷èIßr∞fû≥RrBºY∏7êëvŒâ7(Z•≠'k-∞µM·VS„uhÒZîxí∏e†µ`ÍJ;‰∂ï⁄∑ûà∞úØ_◊A]eÒ≥®eãŒÆL2kü¬=4aWäí~ õ?®ËÈ∏B¸Zπ˘ ¢¡√·I*ÓÑfÎã<qô˝H∑ˇ¢n»tÖ˜s:; ÷Oaºq6b~H°Zk|<O≥Ë,Óú¡¥‡6o6Œ	)}¿*¥*í∑·7 ‡êòC-<êÑ˝∞wM7#¯ÕÇËˇ *$YKü≈÷‰VŸçÔãm±0‚'‡Ÿ‡:Òñ˛^eÒ$J∆‚˝Ω åYoÛπnÖ3N„˘`‘¸ÿçfI[…ª__ôC∫ﬁ5Z‹˘˙ £˝√^Z◊q¯ìx>Jáòs‚˘ãÁ'œ–π∑Ô˜µÌ<<Ø∫]I]†c8ègé˙ëö(Õ—‹.∞Û$b∏–îˆÀ‡ku‹@¸m6é
+A8>Ïñ:|◊˝¢ÕRÎ=Yk‚3‡1ùã(õ6jRXO“,h˘2à∑´L∂Ë‘ªÍûó∆i…HŒ¬áﬂ5X≈†?‹†ÌêﬁºÊádxã xoQùá9o,wˆS/∂√¡∆\¡ŒœÈ¯_	Ù∫m£Ÿk8|ﬁ◊Î)¿õÙÁÈ–R˚ˇ)Mõ1@_(Asè0Oü¿8‘˘0`	]õ§¡ß$@-”5ÆXR≥Æy3C∑X«»ZúV“ÍÓ„qçG5`•-Ä∫M1pªa“J7÷qúÕƒ®¢'rÆX*„J≠”M¨ªƒ†-á/ÙBA
+Í—oE÷+*nΩÿ∫ai– œ¸ÍH.xn	˙◊çÕWC¸ò1æÕú2B<êœí©WÊY¯VÚw:ù`Pâ∫ijãb’¸JáˆåÕ∏/°zâ—Ÿûlï°àçü⁄—ÔÇguV9ö˜“È4Êi€Fì^Õ Ä¨›ıFÆÊø°3&lSËÎﬂ(”´X•<^9åµÜÙƒ∆n˙cßeL
+`'-˙ôçåæp!ÒãtÚÒ®∫≥ÊBR‚é–≈ﬂÚÂ˝+vπ{“Ò8ÖÂL§ÓUø=sZE^®e9qk¯3…Úéê€·ı0çÆ¡ÙòΩ6K˙¿“"7Æ∏£·ên;AOc@µß¢"6íÛPjx˝˝ãvd2Zähç_˛7j3· °ä\∏|‚£h:«º§H6∏√$ÛWÏ<_å GG|^"◊va˚ó“Yâá+G,ªºR‹æ∑ÂÆª¶]k-2Û¨cºkp±è*∑±æÈZfcì÷†ÊvŸGUîác‰>¶˚¯v*w [D¥Nˇ ˇ!ÆY‹ﬁ´∆pn 5«˛Jgí·uó˜˙Q∑«WL‘—Î„Õ™~DŸrsƒ¿Ls«tr9ãP4öÕ∆¬–ª˚ª4µt}‹§ˇø>~˝
+ œ<Üöπ®‡≠†Ê‰
+Ø
+ë‹6ã'@ò`S˘C1v“dﬂÚ<√MΩ÷ π»
+hAÀD®ÖˇƒøÅ3N«ÁÑ€û“ÀÊ¢Â…˛Ï—⁄ïß‰‚<n¶.Å†ö'†¶µ®°$±È=9ë]G/Âi¢töpÒQ·}TF∏^&\´∆1ÕË˚sí‚∂ß≥m÷[
+ÌÑr=Êì4ùèÜ˚≈u@cTùƒŒ2µîÂéJIÂäuA`ÅgÊß§*“Q9ô®nëÜ •ùìî¬hãR‡
+u1Mt”âWQ¢)µ∂¬ÇEÉ™Ã—T¢◊)—#	4≈}Ω–Eö]t …põΩR/$π µ≠ FÛ(∆…L%]ò8A†›3Xùx £{a√Åx#äÄ7cé€∂æT‰îíπNΩ
+/-ì‘¬…ˇ$”?©‘Oe‘L"èïÓJêã⁄∂7Xã<Â≈7ÖÑLõEè}í¬ë.Å£/Y±>WÉ©y¢VàÀésÕc'ô«“™LŒßê?NÔ°Ö≈ä)>’H^[8â)Gk!π0nS±É¯˜ÓÓoîòQ:
+[À∞≠F®NØåZdŸöi5-çV˝A°Ÿ6m∫˙+}ÌÄ∞P?xû.NYË(œdÍß&Ä”b÷ƒzù≈ÇK#…Â“∏|G¸‡$π‰“xt,üg?ã.Ù˜<H_Ò[Ö7-ò:ãÖ„]<ú›≠üÖÛd◊ÊıQ>™!ZﬂûPäÙÄÜ#ûÌ( ¢I˛XæÜ™úld◊Oö˜'I^Èï$TtˆÂ›L„Ç-BGg√¸üË®Ö7R¥ÉjiÅjÁEÒ€`4•0K’DÉQ<D˘,Á¡xa@î©¡fÍ<ØKe˝Z#.âkï $ﬁÇê≈Êw9MEÅ$ÑH6LÉôıïYQ+ GÉa‰í∞Ωb%a⁄∫‚òÌ%—j'˘Îã©Ù™ÒØîä‡ãh^å	µÇßÈåA§Ì—X)°LÜr–„0v([)¶‡]∂:s“Ñˇ§/Ä[Àˆ¢ÇúÊ≠M.uÈÜ3!Ìh4Í¥D‰HI[í@qøXÙLΩÓﬁJöß§KÉ.™’Í™Àö$}¢¬Îª≤/µ˘≈^Y@[uõb%Å*∞æ„Îñ(¢fÔìüdQ>%∑Ω◊"9)î]68‚1‚ ∂Í.Çqæ∞‘I∫ü‰òòUCpt∂j5I+° HXÅò2*{NÅ<qÄ∆µ.w4[DôÛJòªñﬁ…Ò∑ÙñÖ,%À˜P£CçØåˆ{T≈*(»‚Ÿb."%Ex˝¡ÌÉ±{ä÷˘Îß@é ÷•∆ﬂËo<c7vm∑c4ÄÎ“”œø#S¸Æ€4v&
+ä∑F_¸6F_&ïv™€ñ.5÷¬,ö∏Qì∆Ó≠gÕ™∏Åå¬‚∏»Ì‰ç≤1Á¢ºlî•”‰˜®≤7H6÷æ–ƒ ∫Ë	rÛ¥%S ﬁ1ì.AG´BfÃ9ﬁ˝1
+LwHd™â'ÒåI
+mãàQCƒ∆™°\Ï‚È˘ô|MãB/˘Ú w∏∂◊ÍÍZÆ∞≥mà¿¥€≠Xnd´v
+∂J≈àµÊl5ó&¬±∂TQï‡ÙtïHúO≥]€Î∫¨DºV{^®≤–ãqHåWÙbc&êâòçAîr™˜›˚'Õw˛Ó≠6ƒõZmê<X’õ˚˙˙AU{!hnÇÊÜîŒÚ∞=∞‘ë)äDX4SPcÄ/}0¸ùÇ’&—•r◊jøå{.L®DrdDƒcºÛRÓZú≥±õ∞ﬁV5"#¨Óë Jk«˝Pﬁ:Ï!∆~O´“‚@Ω©«qSYm˙´’π@‹¨_º´j‡MåÆ´∏∑ˆÇzæT5∂ó•3ª„]E¿W')÷‡ïãﬂFEì\·ÑŸI‘_-íµ¬/„»êŸJﬁ`@ÍêÌ2˝ïÛ†¸oÃ≤BaÜdh°Ò§)*õç≈íÒ\õ«≈o≥øh<∂z£…Ò?g√”€«B÷ 4/‘∞\A„eàØÖãu/ –GP#∑ò9F£hî_°DÒŒ$áw´Ÿq6	TeÓl†ÁS »!àÿMÜ>ó7;ÄÅ #≠Qè{∆+c¶z>¯ËL+¨ 8ûûÕG∆Œ∆MLÎ‚ÿÛ°§#áMÿæˆœl@RK∆VŒx>U¨ïUCª%Á†®ãê ı¥≈·!·qS·†<ij´ıÙ¸.«êó≠´77≤ﬁÆj¬¡‰√¬¢#dﬂÀR%’çiW\ò,˜@sj,≠0∆Ó◊W>1≈uw(aÈcaF∫—yˇ¯~W™øëæDõÛÙî·{/|R–ŸNê”¿°hÜ3èÖW≥ˆë·]<É™ e†·¯M|
+–ı&Ü*(Åüèø?y˘‚p
+º„Û1•v}"˘(SΩlmÎN8‚é1ÚJ†üA¢Õ†ˆäöoÂØÍäg„¥çﬂp7®˙]Ò˚ˆ§¢∏ˆ¸ïú˙	ƒDÑòlrˆa¯S◊lõ√ÂPsJWhsf√Ó8F·„Øìaú¢P•É`ÀaÛﬂ5èÍoÒ∫/ë¥ââ’jŒ:£(Õ£3˝‚W'ô∆ãaú7_QM”2íÑñ¢wü®≤‚ ãA<ùøÃaò0_ªôYG±O~ßQ+e@>Í‚€)◊‘‘åVœ¥Â‘Çá∫Á™lª˚N√Û%zñUÿØh‰KÑsKûhÀ÷(#~Eãe,µmΩ*vÙUÙ
+éÒÑ‘ëX◊\Ok3ªï@êM•ˆ(hFõ'c@®8I&^cmpºühØlàºà›†©ææˆ¢`è$î
+Á@»ZÃüä≤Ï¡ˆpÄ(™˚Ü†ÓıFOŸAS¡áí(5Ë/Ä5¿úBˆìÊä¸≤ﬂª"£ãC´r8∆ü5˛¿˛‰!ËÄ‡¡fCçüúç∆Ë¬o7m~Xæauÿõñi8…≈|i[bç∞tﬁWˆØ·˙»N“OÒ‘¶Q=_ √kÊ$ôèπ®ˆH˛*·Ù∞Ü∞pSuƒÔäZ/ìÈQñäÆ‰ã™z—g´ûxQQè ºù&≈8’≥Ê≥Ù≥S˘{q=©∫ÚEEßœ?œQ2∆∞w™Æ˛≤¢>í@™˛0`ÏÄ>ì’èxŒ£ÒŒ#˛*ÿEú‰#(§0¡°ı≤R4¬π,Õ°¸DÆÈ°ˇ[iÉBªÇ"zf¥"|äù/®æ‚ïèz+WHÛ¸∞ïÙG·m§“«Êææ≤U4öi†∏xõÜö^ëû…“lM#≠ıN∫vüé⁄≠¢ç¯G4Ê˘R%J–Pœ^Tây†<î¬‹Ùó≤ä¸m÷˙u2¶gòÊ:∑QGl/ZÚÑâ ˙€ãÓ‚|A+ŒÒÇwUßÎ˘Ù ¡‹ëÂ∫_JS˚ª≥≈Ys1ÜY<oÒ Õ=O»1ö[»¯zn§ ÓâÌXÃ´Ã®¨ä¥‰Õ§p≈Hú‹Åo"WπqBä¿<;£;[ÎË R ì1µ	/§‰ÕÁ≥|ª€Âí»Œbä0°MBw6JÁi{Ì˛√µﬁ£µıı≠áÎ˜€—V¥›è‚^ÔbÃîå!Õø9MÊ;É,ù}Ûw;{ﬂ\¿?=Âç+Ê,”∆Ì‡	Á¶Ù·Ìõ™ÇIu÷'G√”bJªøß€∑œÜßÆ\≈p±wM´ÑN\»…X›ñW=J7ÉX`ËJ”à†≈=4˘Î
+v∂0˛õ#hl3ÖQ
+>X ˙¶∞áΩ"Ê¥€ﬂﬁ%A1Ÿ¿—éi&ˇä˛ﬂ.ÿ¥ø8<~-tÉ⁄ •Ê“c`ﬂf•W‰pÓ7¿ü2VˇµπàBZ3FÊ‰_”U÷ÈtÃ€ÔΩ¶b6/¡¶÷Ñ⁄!„~ÀÀÓ∑E∑tÀÒAÔ≥•¸UMˇnªÂ˛¡>ª≈(?öâBÆ∑pÓ∏w›($oÖiø„®a 6Â•˚Á¯è»Ía‹V`Y FîCÉ€K-T∑vÀ õµx-œF‡ˆ,
+‚±.Ó2ÛΩ@tŒg/q`8∑˙s#<m˘DåﬁPçú&@eè/u°∂ç∏ç^ˇ∆tÑ·◊wyÙ‹^–!ûaæë∂Ÿù`xX≥f#÷H¯	S˛(5Ö›F´e\<.çiiÛKŸ]sPò´†8ªı|–±Æ¡uËƒãà7?ê∞Wx„6n‰L\ ˜¬¨ÄqaRòàﬁûË
+ÈJ\◊DÓìòf–ïñÜ3ó%&Ä£p <ıP/ÿÅJ◊Äîÿ>œ‚ ≥ùRx+ú¢ŸŒóÛi$…úﬂ. hîÕm2å'ÈáF+8È˚ø√∞')ùD9Üæ‚D—•íÀ…i•	ü«2ÄYßå‰¥ÜßEë–|ïê;≤x~1¸5æ¢ºå°1@†DD:È≠IÅÏ◊ƒA…∫‰C¨GÆœ9g8åUJUã∆xîˇTÜDÉ“D9wπ:¢lB	ÜN…#ı.º•¨ì2Ï∞¿\ä≥‚´Üé6û˜ö∆„4ƒ˝4˝Ñ‰?7ZØ(ﬂÔ\ ÙXñÒœˇ˝ˇ˚_˛Ûﬂ„Ò¢Ü≠	-XN—–)È%úø˛eQFfƒT  çO˝óy»”
+Ò¶ÄU†Ïòs ä:Ûñ∑V÷å^r+Nrú§T/=K–#ÂOZVÖ™À◊Ó›9LB-Ô2’:˝ÿ¨”˝mß9ôm˛·"ÓO˛0Iœˇ0Ÿ<o5ª€˘Uk˜În“ô«0gO√í–„ˇ5¿5µö89ú±2ë kÆES≈§5∂wTj8≤ºH˚ÇmhÎmÖ3xÊ@¬û(5‘∑ﬁâu„aùPjvïNqõ5mL5àÔ87Ü|:F5ÃÊœ–nÄõeB„±P*„x˝QêÜXÔç4n^éÀxiyﬂö#@up3¿àX:·ù"úøíõñŸ√4<∑=_ÍçF∆C¬“f^∏‡pﬁ–Âdv©yb¶ÀÜ±‰¬\ò`Äˆø¿ªﬁCØmø.NQaõ∫]ˆf1eOŸwã(fh·+.(-Ü6Çâz©‰!‚U,ÍΩù&Ápm"C—T∏ñ
+µIA¢c˛E™Gƒ7ÌÛ~óöp˛Q)ƒ◊â<&€Ê©ëﬂ=í eÙØ∏;Êw‹éá[ÊÆ‰G<âá¥øÑ•πW,T'¢◊RÕ),7íÉqtfN+È6±ÀöZ/à{áı0µöƒÒ§%"ì‹M˙>6
+ﬂ+π’á–3≤S)¨Í£õ8ŸàMı&9{{àÙsti@U—îéöà	L“∞◊÷uØEjX/≈≈4"q∑¡97´»‚‡]_fâîô•¸∞Feæ‚H†œ£~}’_‰…8UuÜAÇQ¿;€∆πVGãI
+,1ÉcF÷^ºÈ`9∫¯Wuaòdœ∆ß0°Qgô
+ ào(@OSWZí=ã¶{lAK∆w_K—ÁeZø}--`Ã5õQ:N_;Ö8¥±óNÄ)¿J∞F áÄÁ
+ÈÊyí'˝d4!îú!U7Pﬂ–f`ëo{OzC$¢ãYbãF±ÕÙÒe¨˙âjûñd∑løTì)öB"€ãÂgKıáÌä u€d]!?ƒ%øÌΩnåCC˘âÖ/IØX¢¯Bæ\SÎ[»Ñ]1ıÇ<äM©v9falZéWò0ú€ˆëv!:8•Â≤rÖ+*£:l+J›d¢UÉÜ_4Ó^Î(ÙMƒ∆y„7à∂π`H2k ØâR
+îZºsÒ8âµÒªT{÷¢»•ëfEœE°lqpúœ˝>æüc`ùt‡ÿÊ—íÈi™]ÜúN|EÒA	‚˛¸˜ˇ'{&.„…©Ómn—c‹íü0∞˜%FŸß‰2bg¸3äíN!p2Ã§,°’?˝„ˇÙ?vgúo≥ƒV(Ö¢»„–Ôv«√¸û.á*Ç.Ì(`bÃ÷päâ—0ÿ „È»≠T∂%ÖÏŸ¥qﬁKLÁ~(œ˘†püf”°> ÀŒ©•ÛıŒG[‹Ì⁄TX_=ˆ<#\∆(À’\Ô∞WÈ¥Mº:™êµ¥È\§˜∏Ù≠M§
+êB%·PLùã&_2íqWƒ"ciÍ°)ÉÜ˝∑){ïzLRí P∏å_È^=¡´›˝N÷ñbïL{A7TØn‡Ib#b˚\+Cs4ú`Á‰ﬂÔcÚQ9H≥#IG l®˛øµ≤Æ5l’l"ï™=*ª1>.IJ˛Z}EÚ'<$¥Î†≤œ∆iø©¢ä˜ˇÈπ3ˇZHáSåê]ömÈîè◊,SqÏ9,*{º√zù˚d.∫æ)˛„™Z`úVH¿´_Ò\9,Ω	ÄÌß)∞Öˆ∂Ö∞$±ŸÑ"≠%_ﬂnDf√†∆	¬Ü/Dﬂ…Æ”Ø·©ò‘û»ΩâÛ≈òLHúòËû`ËÅ-1˙‹ËÜ+ßÏJÉ9Ã0†`Ùs!ﬁhù<êZh„ãuÅ∞Ï·}kı„%7w≤X I;íÇ*<`Æ[G!6 ˜Á ÷Ò1Lòõ&«Ê®e´.˘÷Ú"örågœI∑ãw∆iÄÀ£ø›ê\Å^s€Y√0Ÿc3V¿ZÎ\™ô8ﬂç∑∆<ßàÁÊL5∑ì"µàËb“‡Ö\HrmMÉmÉï÷Vá,‚Ù’ÇœÊÓÍÚ ªY@#ú6üÊÏìßÑàü∫ôπ,Çí õçiOÌËóï%	AcµîQ\êXe§d@‘®%(kèÀN†5?ãSUèI≈—Ò÷C~≈ÆáÔ ÍL$‘T\dÈ∂ú%VAﬁR/Pµ‹ÜtN¥±ÍcE≠f5I©ß9)à©l ªvú¥Wèø-L¥ÖY5EC÷∞À%:ûqÁƒÂ1≤—àÅX‹:\Ú"Î»éJÎ†åETP|ÑV„⁄ôèK›˙˜£°›ÁﬂÜQ‡Õ“¯ÑÑ“¢Ì†`ü*·4>Âj|™Ñ‘¯î™eâa5≠öévπcö+≤∂‹√∞ò)IRñπJ@Ü5Úo≠bN<ps€}c0ùyò-&ø•D‹F8OÂIv@‰:•‰Ê*≠ÆnﬂÇ6wúW-: l('Ì›‰9–øô¥+Ôó˚5äéa¥†kÍ[\xŒvf÷√ÇÒ˜0H≤‹ò/rÆÆîBH«ÀØ∆>ÈR√˙∆µÏmTÂåb&ÕcÕßôíõ*kÓ¿™1«◊Wn™ﬁ£;hUM¢–kM3∆2∞&¢7qkﬁ”l¨Ñ˘Ù˚≈)B©mÿ7'èIè>„•X∏DÖÆ"6 Çùå™∏%Éíçê8	U≠èM◊æ–Tp™\ÕS}ª◊Œ	_,É,·r≠\€Zøí¥"øI=U≠¢ló[◊Òj0v2ÕûzÖÈâtG±·»3õ∏Ø°Ùµó|◊3l,Áe –⁄¡bÜ±1.‚§T@g¥M∂πB}J.CÄ÷®¶¬±8 ª,w:ıI«ö≈$>%˙8|
+≠d±`Úù6rüNAøâÕ oÑRøDE†kı’—K¯ÙxpxTW™ﬁ≤ïLQÉæ◊z)ü
+24¸∫0äÎ	P©≈aJ©"ã !§Ã¬gIÖüí 8|¬
+9Ï i}o€ÓQ›TÇ?√v=uÙ´†™πD[≠⁄`w'≠Ü·2–¢^a–4ÁVª	åªZﬁ/\_Í¿ÿ÷ù¸¥†¨avëA»Rh•E¬H€k◊ÃÌíŒ5bÊr´–<®›V˚¯4ö}ä∏®œ´ÉÏè‚ﬂq•Î ã¶¶Ò¸"Õ
+3SUK„xÁq4·fΩ—"ìL+;ßprÏSÑ‘Fv9I&D‚ôE∫‘°–†…¨»4RÑIi%oCô˛”Ø[\~w˝ÂÛ ô—Zã≠-¬>[!&Õ∏äØI∂IaÌòMVP…bºRB˘sŒº§º„å8ÿ•!u\üû°à3j¶fR‹(/C6£2JË.ÒZ<RrÒ„‘ı]Ru≠-røF®!ùŸ	ä&uä’nt7ç÷5äÎP‰ú4Vµ
+|pπ ´Ä#∞Ä™GS^øzH◊+„äÅŸÅA
+zÕÆ ,«"`ÄOí“PÄá"œªTP•‹´õÏäh’èñÇo© mÕµR◊ﬂô∫;gZÉt“"8s‰@1ZaÆh§F&Í6gµ¢N1(¨®≈9†⁄˙0;yö¡ÓFpp5e_ÅD±Yõ5#˚ehvÊIï≥‘Ô0Ø;ò[ı›{ﬂ≈'_‡$—∏Ÿ¶√Â™ïïPm˚ÿa@w3fÑÁ•r94ï=¡{7ÄßÚ{a—ƒ‚⁄·<πº/O'qs¿]'r⁄(P¥ßhn˘ÇÈYkªÍÆ¨'— é‘„îj˚°:ÿß‹´T˝Üv«û?ﬂüb{~íy~uÇõ˚Æê∫
+Q´uC;∞ÄEìú˛÷ˆŸ¥ù”  ?Tl⁄"Á–ªjeüÚ{ƒ*≈¯ù4dßÄ∂ãR˚J^Œ)©(1ÄØQˇâÁ™îΩh:¿†íCSâ¢›[?¿CX)pw¥¸	$‚”Æ∆]'˙Å?aÇCÎyè-¿Z|√	!.çèàºwxAæS1Ãk’£Ç∞ ]3ª“vJR˚µÆø—¶Fe=. çÜëˇØ∫“ß$§ˇ%LP\≈≈ˇìÛ]-Ï5˛G[⁄S…Ê.µ∏ ,}.Özâ^!Î^pœéPñØ,ÖaV≥≤d'Eb¥¨F• …∂ı|!˛—ºÚS9*∑ƒ3@€…nyZ—≤t*[¶ı$?°ˆ9◊Óo∑p-&qM£8Éb4¯iÕˇö◊–§&†‡∂+-|ﬂ&Zz†ôñÙxV‹»ï˘núFÕ¥=3S.Æó∂«i:∑ì…ˆt¿Â⁄ŒtF{JÓ.ZWŒu¡ñ-∫H-.lö∂âû,QEÃµ¢XR’òQ®f£SßQµòFª”%⁄≠jÔfÌ,›àyÍPXl¨yŒÙ}gÃxeïƒëh 6˛µ’
+∆/◊ﬁ‚¥_*>+¶e∑oƒπ?–=Äs?Îaú‹ãÅEüè‡E<≤1;x7»nª3ˆtó©∂ (‡®ÍIø$;ßiˆ<Ç‹¬2tx]$äE”⁄§©ÀJVŸ¨òÄ˙ÀDj5ªp1\¸9°pá¬ö˚?≥˙oôii	◊åÜtLÈyö≤}úÑèe,–πP“lñ¢bë˚·å/EJ,"≠≈Sò4®#Oq†XhH|ô∆Ë`0Lr¥{ä2Fë?NaÕF%ƒÅÃøïÖ‚&
+ghë©èˇ¿MRúÀûÿ„√ﬂ—ö6¬'™◊-b˛Ì6p6óe„^“ìÀ2kÖ«bYvä&Õ0é‚≠∞<zPWùNGõ9:È=8uˇ˘M™iπ<°S(£ñ`≈{3á∂ÒÀ/É‚(π¬…∂˘ÊW5÷∂ò∑˝ÂÂ[:Âé¯D≈ÑAú4är}πFu0≠¿O~3¯€‡ŒÚÿ¯s∂™∫iŸc|úã4÷£D9NŒÔ!◊ﬂî√:è∆Ñ´’≤≈è6æú'ì¯)Z¨Ò¯ÏQ(N˝ÆÒINËH.}Å–ãæû}ı√}ı˝}9¢S__íh°Œ⁄|Çﬂ∫óïS¬â†ä≈ë±öæß¶ C…F≠B˚zäEKF0[a÷#UCÜ§B|∂ÒO	¶æqI9:πC<ˇ•X„ vÎ©·h˝M]Lƒ“zcWõ‘≈ÿ?	Î˝•Øõ£—ó∆«ŸòKÁõh=ﬁßÂø£dÛÅõ ´zu)r.ë ‘\[Ö™z∂Ù õΩﬂâXìÌkÑ⁄u ;ŸhHh#k†°_Äﬁ⁄új©éπ∞Ä	†‰*m3Q◊∑nÖ —J9u£Fl-≥≥∑7—û˚—†h1Õ}ÙÎË«o‚håkR}:I=rÿf&+p]´ëu»ºáÒöl≥ÆõèË'ªÙ~ˆÏM®Â/!Ê≠S:Ó≤¶)Û¯œZ÷lXoø—az7`ÒÓDœ≥Ö3;¸9pÖ’rË©’˙Õ•“V¢˙Yëò^∂≠^¸åƒ›í¿˘Á/˘÷é≥hTÏòj±(ÒKó]õWœÒvèÏ	Î9Ü5Âd°r∆¨!vÊßãYî-	ûÑƒÃv•ÚNÊÆ™… &eÚáõò?È]*±Ûﬂ˚Ê5ı3MtH–2“ïQ5oßã)%Um¥Jä€We^XóÑ,oi)j¥zPuI“Â≠'CtÈÚvî°ñîEe©aöı±∆™YtïYD°ıÇWõŸ§«™C8.e›©≤≈:]£À÷*AS–˙¶pY<&√®|îÃLª ∞%\·ƒJ{d›FCˇOe4ûÈdUb·]âKˇ¿ì%j+#t≠6º´Y[œi_tçïﬁπÅ_Ù>ÌZ‰’Ì©eàoÉÓ¨“ÍJÓ·D†±Î/“˝,h◊µ»·ä¢â≤Û`c«TH4Ê)/©p˙QJ:I}$¬Õ”ÒGa€—p®hûˆÈ£%I&SÚÇêû·:¿òÃúl¡q¿kãØ@XOáÕˆb,∏∏çÙÔÄ∏Zõ∂Èø `—U<i’ê.m∆‘-öQƒÆﬁî|Y—ú÷ñ7Ñ±n¥&°°„^¬&µ<&∂T∞ äV¥0Öõx"æ˘æ0^xûò:R3ÆëΩ]w¶lS›è∂«πœˇ≠‰‡∞§±§•Fûb[J‘ı≥B∫≈BÑ—≠D∏P¬≈∑“ îºøÔ¡C¯÷áq±xMÑÎCπEıJåÎ¡πFÁîÎA∫FßÅj◊KÏíÖZÕ‘^›`∑À4◊~K4Á±ü÷ÿuè='°Ä÷µw„˝7≠y◊“]‰ûU1C%ê±ßª–º ⁄≠ÅD3À!˛¯PÑË∏CßOÁñÿÇ?∑≈¸)áIQ∆›… <©µ*C"¸)E%¸©çPƒ†náV¨FnÜ\‹ë,Åb‹‘F4¸q7™Œ¨úÛj‰4ÛwiÅò—≥Ø5´∏H^VTp¢◊™Àú°*PÅ—Hã@™í#©â&Î≤#AYç {UΩS&˝Øzô=ZjálüN˛¨Ï“æ¨Öhêî}ïöãG˛V1µ˜Ùñ,_
+ÄŒﬂ#‘†Ωç‚ÄÄ«?ãsñû2ÿoª[í?ãbF¥ëì@ÜúNèß—,•¿∂•É¶2¨‹ÔØ2äAóç1∂V÷¿⁄éRJºÔêÒNﬁÙ(ûÑóá,8¥¬2ZÔr≥'¯†‰ïWúE$©|©+√	´JÈ
+ˆwvv¸”¥Ä[ı%Bú∫–·[T¡“%ZÁU·-biììﬂ7jÁ•…/Ì∞ %^Û∏éîã˙î´bMëê»Ô∏}äÏDY˜DÖ úgæ„ØHvÂf1véôPî∆æ5®<ä·}◊{_ú S$}Èê∞ë·?π^ê∆t“)ŸœmcmÙH√h÷'È^ñŒö¢FF1iYîÀ‰ìÏÊXV%z6Â◊VÁ¯üßπÙ{Z%$√§uÂ1 QÎ˜¨F4ÚTeJ⁄aÅ%.VÿÔç-cèkE#◊˚\eõΩû¯ß◊ypﬂë®¶[ˆX’ù3ÚYZIC1’b„Ú—≤Bò√ì9%åŒ5|ìNπöê•Ë!åM›¸∑i&)íØÿ=¸¶GXqK’¨‚f∑˙∞PrÙ"Œä\´kùÃ≤r&®®«òpP÷∏ß≥S6¥,ï≈¥±÷∞ìîÍ<’[õ•∫+`°ñù@2‘?AÔvyœp÷ÿ
+π'˛{;¨uíûùçc∫íπ(N^`ëÎ>ŒUì2n¬ F® ‹≈øœ—uªx˚≠NÊî7ŸÊ∂ÏTÃ±‰4ïû$2ÂDÏÒ“`CHÕ EÀ=±&înQ·õ¨ó{Mßo,d∞(YåÎxî^PùóÒtaàkÙp;‡ ˛]{íªc˚ê˚a9«~ê|CÍ3æÃ!Á˝AeÚhÆÑ„ﬁÂ4néâvıå5AQDﬁ/éZ)ZØ@Ív>‰bh“◊›HÜû[%Åˆ†œ ÚºÎ§ÓW÷™÷HÔn‹’~åxmAB…∏`:e#í“µìs6Gyé¶);+ß„¯3KÊÒ$obJ∞˚;∏a‘ÚÁ$ô∂GÌw˜{Á£˜+O‘∏Ïv.⁄Ÿ˛øüf∞vÌM˘Gºà€˜{=˘{ﬁûg—Ód‹ Fa∑‚aì
+±höL r⁄˘,ôÆ<y‹Öd⁄öˇµú=9◊úÛ$˙‹æho~≥…Áv¥ @º‡#òÕ€k=6Î∑◊·ﬂœ0	L *Bü;ÆÔø0gø∂”á®F>u∑z™˝IøΩπ¬∫Z£uΩ>’Záù∏µ˚ò∂©hX‘Ï”6˝˛}2¿{ÿ‡˙ 2D|ïŒŸÆ„„Óh]ÎaÊt¿áı∞g7∏…‹ZyrÇôÁEj6â.AJÈ«¿ÒÀÏÂòÙ7çÛiC8ﬁtwgZØ˝≈|ûNuΩ]:›ÉÛiÁä£¥itûú°H£€hÈÃ©6⁄˛áõ-ÿèŒ∂|Û ﬁh+S,◊Ï≤Ωﬁπèª∂•†
+÷ìÄ-¡”⁄§„4√¸ƒ„d∑]∏?ãf∞¶j@O¥°=˛>f◊ÿÔMÿn⁄RˆLH—‚xX¨Có/D) N}…9·Œ\˘IM+a4îπ`Ñ"ıC9Í≤%XÂûı™Mi‡∏∞	ú≈°f÷HÍÿoı”s™jÎ¨JÖ0…F‡s°F•y“øﬁërè≠ª©ê
+áFÍ~vG™∆ô/ŒŒb"…≥ÌﬁzIıŸEr+|ê1/lÌû2“;‰1ï
+›µ˝…ƒÖ∫hﬁX>Ya“EGÚe4u‡†SL÷ﬁ∆‘N}åi‘Ä›ËÒï1êÍ2(uìMÜ€ﬂ-ÅYÒWÆ
+ƒ∞
+´^u≈Oí@ Ä‹1å$I4MÁ#8†8ΩFÆdNîzÓW]âBÆÓŸ~ Õõ`•ˆZ)0·véìÚ	GHy<I*p¯Ü¬lvÁ-3∞WÌYöPßF†,¿È≈ã¯t~+º’Rb‹ Nªq.A0‰¶ø¡ˆ”yŒêb”vƒÜÆ˙Ç˚DÄdìÂìÌQ˚˛≈®Ωµ©p7^Üÿ€)¿p{îáp¡%êèëB¿0E¿ﬂ∑«gÉwŒ¥Î˘ √∞Ò¯‡zÏıö\ù^EL…x√ gHˇ±v–3-ÇâG˜{¨ä[±:∑¿ò$~«1Á%
+Åü©ãzbµÒ8ôúŸìR<ÏVÚ⁄-çÁ;+<¥x™œ∆ãl≈-¨≠X‘Ív1è1
+q<o˜¨ïK˚øã@ÅQ√@ dxßß≥hêÃ/Åla˘ 8 —∆∑£\'oO”ilØU˜ãOúNq“ JÂW†Ú{$9≥&(TU;˘Ù'¶“`√ìK46«bQz˜+¿†∞Ò°dYfœ
+-≥>ŒÍ8ãb ß‡÷/=uÎÃ›≈±1VOO|`.öÀÈ≥Ç≥~ñèÜ,Â<Ö…ê^¨˝Ó´µˇ˜.ΩıÔ=KB∑äMSdc;‚É∏¸;AÇ•Y_p^hï ÁPO)Z sˇ‰ú„+œÊFß˙ßç’îõÉ$å„—¸ˆÍáÛ(k∂€ÛãbYÚy:À[≠˜|e"§øpáª@9‡‚ËÏ#≠`ÒS2ê≥≈8èWpç˙Éëg…Ÿà#†-º#·ò@—;RÉY%d¥Òy\øõ~
+Îz√•lwt#±ÜO˝ûJª5ÒÅ˛É4ÉG+RÑ’ú:¨#RvpU”ﬂ˜üJ†â91m{é+àìåìYãrHﬂ"˛¯ãŸØ˜¯ãü»ñBæ»
+3ÿ)qÔøÎ}Ë}Xª?˚¸!;ÎGÕı˚k´kè÷V7∂V{ù- ˚6«
+NΩuΩáPO√4H_*åß≥TåÒ04å«°±≤ã+Yπº`¸˘:Ω[ÎÕ>øWÀ¸9◊•rëﬂı:Ò‰=[Ãfq6àÚò◊- ı°gù¸”›hΩ˜L…BÌéWﬁ.kpˇü#` ¢1Iàè2†x∆π•Ümm„[	ÁÚÅû√|Ω£µ…è÷Zwùq†#bÒ3Ωêà©g@Ü|ã•∂Û‚u±˚ﬁ›wˆ8öîD¨uÓ3íX1bT⁄:Àì°y¿ıÕ◊6sùo&óõIÒôé=#båÓ56Ä·dK??ùq‰Üƒ~4ra§;?∏∫€d\ã÷˜ñ¶e,›ŒRdº!êÒ ØuMÃE5@π<>÷M/Ë|îπüJ¡˜ngÄEö-nıù%Èíâóµ÷ÑTBƒFy1J:Ì›∑på8©°Úñ∑8	6®7∏>lbár Ó¨PÇá;B˘ªY–Ÿ˙=D-sn¨˚Óùgqç |òÔd˚7O€>GS‚öÙUnWoÒS•6ﬂ)°‚èª_ÿ5û‰g«‘ûÒ˘Ü˜Ã›5XÀì, MÒrhﬂB;w7G<AÉsK—]ogK[å@üÓ\Èá”b%¢¡ û/ë†Ï°˚+´∂6UNıZﬂä»EÇëcdÙ÷5&k,Ç&ë≥˛û†ºÜ∂∆—lÜ$5ﬂÆÇ¢Õ⁄“:LÜ€Ù◊&£[® ¯ÔC!ó™]L¬⁄†ø≥ÙBÄ%em√˜¸'⁄ø Ú§ˆÒè-¡z»ß«’¯Ï(ÃQ—Hb~∑¿-"¨}æa¿3q∞¥8Ö‡åÈÚÖî%”Om5w˝µ%Wa}π^˚ÜÛI_,¸nŸ=rªÑæ“Er~|∫!÷Oá∞´¡‘∆^å≠ Ò
+GlùÊ?r¡¸ft—ﬁ.¯ØöªÅù,D°÷K‡öuSïaS¶à‹8Ó"¢&PZqM‰-ôsŒ”˘ƒC˘2X¡ïy˝ûEmÅ¥8«fÌwÇXÖ?7·Oè∏É¡ØLc£SyΩ®åÌÿX≠JbU c¨}Q∑6á\â≈ï‹cÖzÈ¬+«‡Z$Ó€˜äGd0˜BÖ_@%Éìî^´-ÁéLÁÜÂ˘;S£∞ ;Ú≈[:RkÅΩí1˛ê¸GFã˙ûI1c‡ùzÑe¸A°–ï	©'“7⁄ΩB˘ìNü£ÊC‹˛4câ xî¥˜#ªEºrÑ›b´≥áuÕ9‰∫pÌs@H$ÒÒ˘ô¥\‚‘Cô◊`°jàp¸DÓfô¡>07b∂4
+¨åV ºæz@ÂâõlÕÀyâX“ÅpDΩ≈ÒÙñá4¢Í6á'PT‚z‰ï'‚.§[–œCˆ ⁄Qì¬€i‚e~w3Zû wP∆P2ãŒËi∂æﬁÑﬂ˙Ä∑Tæ%%i∞H‚›˛Õ_Ø°‹≈^|˝ıPüõ2¿≥Pπä~ÎJ≠∆Úfj=Löˇì‹Ò+F7¸¨Aü?ø¥l	6¯ZltêJﬂ‡+Ç?äY/Cπ/)SÒPÈ4À•éQÎmÂ”åîíÏ¯TëÌ¯¯Iw›Ë‹È∫[ÕÃîê™Ñ‡÷tã ¢P}Õ’ÿ@°£M‘Öü<“ÊŸΩ©(<W˛ZŸJ“´∂¢öE#Îº˘ã,ö…i˚'(⁄ﬁ“{õU–»¸ñH(∏¸úsÃßW"y§saïÈÔSÃúÃ#@c∂¥+ 7	ûﬂ∞Œ˝æ)Õ'å[-º[ªO7åGºX_óWÅ⁄D=3≈»Ùíö?A¬⁄{À«≤9É´-û>ãÜgD
+Ú|êkk~Gé∆—‘¨—Ú˘ê gW¨∑&CWk¢DâÖò9DD·≥-∑Nf-)ø Ü¸cuh˛‰ÛK@¥WW‘ÏA4I∆ó0à,¡ÂiîdL,@cï5ˆ£È 9Ô„AñÃÊò.◊~eï™˛#®l≥G0¬ !∆q˙ïKé˚ä˚ÖsWá*õFzZı|î.∆C¥~ïpC@`m6¬“c£ Åù5Ùkñ'øá£üO‚√7‡˙?Db=èëæQdÌPø1gmvêfh	≈P-ê≥¯3¢x∏i—£Õ§l}°wiH•pèÏ,D≈F¯à8íÑ(ôˆÒÙ¬Ë ç‡Ñúí«f%y<FÇµ‚∆°üó¥(îœ∂™›5∞q∞&¨€ªµU∂æ 6VŸÊ*ªˇæ3âfÕ&ŒºÇï)¬.¢Ö>Yz”x≈n‚⁄£+†lå=6?o´∑‹0óÆô—∑ßP
+nÛ üÉO)c©ñÖ/•e˚_Ó\·`¸ß∂xçÎwÌ
+=eIt√èûemÂ7ÈÇ¢È4ù3 óAÊ˜È≈TRÖ˜VJK>nˇSµÆìQËqs¸˘,Èm≈Î.Œ2„¡~Íƒ|∞ü;âa?ª|úEÑhr§∑Á:îÊ˚ ø±dÿ@dÑ”\úoD	˚ÒEîpµO˚z::Ã2à`áÙ?"Õ·>•≤tSñ=¿æ—èæjß>B4&HËM—ªö9)©ù	¸à8›ÙÒœˇ«øƒÀpﬂ◊É–}ñﬂ˚X≥áZÖ∫]vlÌ\9—4_ŒìA.”€0≤D´’L˝2û^ÿÚ:
+`·{t¥&Wî~·zÆŸ$ÛEí∂ÉMÎ‘Co’h+ÏXgº∑^’‡4cÒ§”ó)∆f¿Î\*"kdÄ˝ÔãKñﬂ‚5~GÁq›Ü)4EU√´ˆë3îÂv(¯ÊRí<Î˜Å∂˙m;]Ã…°Ç»©ØØ,LCHaÜÒi¥œπw§!òi\,mò>‚œc<ÿïõ¨œXâZ‡ﬂØØ ßc{(5⁄√R¥7´äxˆ¬¥€∂ÿ Ω^£U5	|`I∆;Wä&„ãÉ◊uMKÉãËòœÿèWR©≠áW0d>%ß‚:<^)¶˙Ë5ô4q√±JŒ¥å66ÓXÃWîw∆¢S;ÛÙ ˘õk®ÏkÙ:Ω∆5k^iN¶…rKW¬øâ±¢o√‚nâÛúc([˙ãõQùDg!∂©YaäxŸ¶œ¥Ô&—4ôXÛîS.$Tö 5Zé±ªπµ’ööRœ™5gÁﬂ=“A„›©ÈÄc[Gé≠gõov ®÷û-≤Ÿ8∂Ì6Ë_Î ëI≥$wÁGA˘xîƒ„·ﬁ(FK*]PªNhc]äf9ú¢mX¯L“‚=y˜Oˇ¯Ø˛{∫ˇÚÎ≤É◊o_Ì?ÛæƒBﬂíCÄQ0‘7⁄L%q)LÄ	7¡—˘jÛLá¬‚Mo£◊_€lÑÔ«ªábÍÀ°√ê‚Î¶ßw)ŸyÏ°iÖ>Vä•TÀıh3^èÓ„r’Äñ˜ØŸ≥∑øπå¸uˇø–˛?[$cÙ≤^ˇRõˇ˜ˇ+;~˛‚≈Õw?xÌGtñfótÎ“û∞Wh®}í22I®wd3ŒÕÚ•Ô®∞ú¶p}∫vzˇÙë◊kÒ˙£ç˛›¡5¨o˛Ä7æ˜»∂R¯[iîbŸπD+“±wv ò ÓI©®∫&ıF—å4>øèWû\π>—.,Ji˜KÁw¿i4QM@h1 Õ;"∏p(ç√vúûŒ/ ˘∞˝¯<ß3ÿΩ„(:f/”a<fOg3ûD˜Ezñ∏øàÛlëTÂ9˘◊7Fna/—÷7Hî*·œ…a÷Ø(t# K¿óŒ≤ìxàÆ¸52Å`øåfG…‘÷™ètÕ∫©UØIóüëÍø'∂]3Ø†’÷·tòDçí3"%înãœDÿeR`'ê≈Cv*Sñ®Õ˝8ˇÑ÷˛Øßc8.*∑∑Z≥´Qüo≥Çüï€=ã◊˜!Ê«Å’´gIqæå◊Ù£5Õ)æ1¿CÒ€˘¿¬º/Ÿ¿®ËMl±º¥VWFá§°ÏRúEˆ∑lé4iR&—gt®ß◊m∂f'íµM±n˝iÃ≈º4fïpPÖÜÒÏ§Ôk(rÙÏ~àÔû0l:–f©l!¸ÕéYE+¯±aÎ"H¡˙ñˆ„€©àE1*È5¯°€e«{d¯,≤»W‰ÛL∂RIS_%„Àyw›ÂKRCQ≥úäÊéï3µåå-R7VwÒîÎTñ2 º>=EÍÆÀ„#üäà…eÌá!?%Hcñë¨èÓØ=àÍ$Î)=µH÷€∆V¥Ä:I£Í·tƒÕÌ˜à¡+=pëî:¬Ë\öi*˙»g¿.ü§@’ –EXÀm?-ù!ı ÏèÇ@ydDEÄçm^Êhå±ëΩEBªeu’P?à:‰øb‚B˙{´ã∑Í •ÿ[& +Ïù !Y±häè«NWÍ4ˆF⁄0†
+ˆS<º«û•Äã	≤…n¸~ÃŒeüdã´ˇ:˛Í©Rµá±∫j C˜s£S›€ zt˝¶ß˙£iß˜~ù”+le=1tí5ÅÎ◊W7ÖÄiyƒÙ$rò¶sƒ&xë{ÙDf*éÇ¯Ê£}¸"ıûsÀDè¸KÖ«∑@ŒØ≤JPŸBLûÄr0¨ÎyÏ·lBr¡eô@€˘Vµ≥z!r˚˘0ô[Ò©k»]å{jsiHØ}OùINQITË˜£˚=Ùà0c”≠I1ã˘˙QØ◊ΩØ‚“+[lC/°ÌD†;À¬r£àzÑ|ÙÕd5GÒtêåÉpYWTÛ∑Mrûı ‘˚πÜ√ähß≤∞•≤€‘Ñ0∆tå˙E·L*=†Ò6§Ò∑.®â“¨©8∞Ò∑
+⁄äü∂vx+S”?>úKaIgA∏+TæeÍmzZä›-¿*Ö∏_XêôN^é„9ÍäÛ˝,	to°æñkA§È÷∑îL8‡$™«ÿ‰-‹∑ÅK5°IÈ¯Ö ï~8Up§lûä0§rùn x≤jÏ‰|KÒ]¯¯™xE≠u|¯ºn`~πﬂÀ¥Ob?8ÜŒ@üf…Ô1lÿòΩà.”≈ú=ãÅ†R"¬√ÈiÍJΩ∑?˙+s˘†/Ê!Áxé”h´ÂÇ^©`È˘YJ"xGÚ¿e§Å_NxI‡ù ÔZ
+ñ–¸¿¿Î%§K ˛™$?í‹o©ﬂù ¸ÓX‚W&Ô´/Ì[^÷îÁyﬂ¯;ïÒπ.åNpÏ€	Ú,wŸ[ ıXπ|.‡cµÑŒ√öóH„jqÂú¸¨'ú+”ñpDı.¡ÚÎÔÀ»Êæ∏dÆ\.:p5er78ÅKÀ„iúv≤Œ1\F"Á=í?w]‡hˇrÑsuDsa¶¡À˘Örı‹∏◊CT85±2YNwÎÀ¶JJRÎ≤˘Ÿ
+ÁÍﬂh∑ñ«-#ç+ΩyjJ‚n"·]V
+ÄÆ[‡—õCÿœ\,∑¨•ﬁ›H‚–’íøïâOÜ™ÀIﬁÍB‰2R∑ø0ô€R∑∞]¸Ì•m¿‚øa\%-~c≈å–ì#ƒË¡`u‚ü¢Îëä´ı˚ˆ; ì˜µ¬Õ"Ü√ÿ12Œy2FuHˇ’=ıVjcaû]Ì∫⁄(4_pπ” OÜv¡ÿì<∫ dà¬F˛7∆g∏0,üÒç
+áX‹Eõvå≥ˆDπÚÃ¥°%˜ßœ/0e|ôı€än0ÁøòHiZè“´bbfÍ®‹€Iø≈,/ºèª‡Âä-´*ñ˙é6\Ωn·2>[ÒË{ÿ7Ï©Ù∑~‹m,È•W‹Ksï◊l[}•ª‘Ä:Vvä‡‚¸ãeV∫‹¿gPL_,Ë·óZj¶ÚÚgY2d¯ﬁ=9Ä∫ZXÕú?ŒÖ®ﬂô>d≥‰a£1x}U?ÁzÚæﬁ,y∫Ú‰$EMãœó´!ΩÒÎV.#¬Üƒ]yruj(:ÛÙ (c!xGèYπ±Ì[Òä/è“|~Wªc‹»ÒPﬂBPùq<=õèn∏Ú·≥xªPIåK8f‹ã≤!	Âá;W≥"C´ål‚Àí⁄˙ßÖÙ‰5†H0±]£ænÉRò\îB‹îñ˛Ñbƒ3˜∆A∂2G™îÛŸ3Cæ)‘„ÒÍ`ƒ¨Ä©Ëõ8∑Á…$fò“ú¢„ΩLP‘ä2Êßx!gA‘ÓÀ|Õsë˜	“y4ùè/Y4»“<gœ÷ü±”8rw§!åÊ>§@ã0ı≈®ûÛxûAì	„⁄1
+x$C`¶Í\¢qz∂àÛŒr∑r»?©ƒ?FÂDæﬂHœ¬î@QÊ∞∆Û·P˚¡(~Æ"€èºB´Ûp3Ó˘]fıî0HZjb‹˘-!Ãj§ ê‘j(Å»¶√ﬁ4ñ§ˇ∂Ø¶àº@¯›0m÷å7ie‘µ<–*ÌC⁄Ã/∂—⁄¯¿#B:X›qqÙá‡}»ÙE"+≈äq%º±‹ß”ıÖ^[ÜC<%·=æpXÃ∆ØÛÙËÈˆÏÕ·˛wœŸwØ_Ï?≈~˝¸Õ·¡·Û}Ü·%‘\c´ógÎ{E˛áˇôî(!8Y c∞hITñ2Ÿ€hÛK†Z7ÜÚ`‹ÔéO_¡%√y„7\3}≤A*ô(a‚6˚^ƒ„á[d/R≤ÖdAO>Á·aàx≤îI£dóœ9XÈ± kHxSj÷Ω¿À∞	§‰!Dä(Iej§ë|ıàSLA…£,g”JÚΩíöâƒÇîıBÆúO|qÖÉaQ4_1ü^!uÙ!w.B&pŸÜM∑ôÓ0úN”π™œìÓ…⁄r*+√∏õ{›{Ÿ] Œ'≥¨9Y'-ò\[_À∑ä'*¬®q+O ÖGÓ$˙<ã.„,4G‰?0F§t"ıÖQæ{o√øøˆºótw’«‰:NÑπDIY:aGã˛8x—©Îÿ{⁄d´çañEä4Öm@('CYYéæ‚Ü¯ßD∑á˚xÈº~√ˆﬁüº~˘¸Õ1‘x˝Í≈oË•º™∫GO˜ŸÀÁ/üa◊≠¸¶<´z’eHø–övºÈâoeM≥∏Á√Ÿ,ﬂK·‰Á≠–µ¥®Zw¨îqﬁGT›Qq¯´ÿW6¬ÿzÅ1—«[é0ûD…8‘√s˙∏LeqZÏ-â12~ô¥©˚®‰¨–9HyfX~éáFπÂﬂË∆áÍ˛A∞<ﬁ|y~‡çT1LrR∆Xñk%|}π¢ü:SCﬂ<}ô√îv¢ë&Ç±)B~ã–%ïÒKD®¡E≠Ao≠Ö√úTŒï˙‰÷à¯€emsa|møD©È\eˆ∑Ã˜qEÇhc›(N»9†É®?éÀåÕßA°Œ]ÏZìˇ¢DÜj¨ôäÜ„ôÉKxh1ƒÄ¯êk¬âê:´Rs?*„√ñÍ‰cg'ZfΩòAƒ¬™˝◊Z^ˇ‡™É¥÷öy≈˙U∂Q¶%¢Ú¯Œ#J¡cÀH“≥qX0«Q{4üœÚÌn˜‚‚B|Ì“IwE∫yeÉQw7ö%;kﬂ¸›"Œ.wææäßÉtø}s∏óNf@XLÁ6ë5ïIÍ-¿¬Õ‡uWRJ≈M¬(WÉ©‡¯√vV> \L?ysOèwV¶i:ãQÃ;Ma≠b∏*≥≤Ù&Ü V*(∂z∂°≈n»*ı≥$U0wÑºÒùZilKŸ‰/ÌIW<˘1!u;ïåçL8àl]æ#ÿaZ•Pï®@ ŒDH∑t3iè†§+»†“Ê;^¢Ÿ—$˘…|‘l‡k∏ëÁ‰∂ã#hﬂΩ¢H‡/ˆA†/´‰°ÕLSKéóøÍı6lıﬂ€™Ø‚|PÏ:
+'
+ÖHô¥§U{=⁄=ÿ•»ıªq⁄/ÉÈí∫Å-œb¯9àõ›ˇñ∂sw˚∑›ﬂvª´à∫¬7A…q÷≤ŸâSËµü¶üB7?Œ/í˘úß‘v¢éÔ,ã&ı&Å≥Åõ∏ÅÎÀn‡k≠OµíÑÄ”Î;¢Zué©ﬁe…Q’ä·qµœd¯‡πb„ÃàH˙k=}ÀFHià—TRAèe…Ä“πÇÑ)¡Â–ULo∫ØEu∂UÎ∞dWãR∑€‘¸”%±ï∑Ÿ”>ñÍ-‚’ëÀç˜To§ŒÆùñÏ´^Óv;;CÍÍ∂[{(áSΩπ™ËèªΩUîôˇ√“k b§úÍ˙D›Ä÷6^wÃíÈS˚Q8úÚj!rOóT˘≥;.AÈ›Ç¡d≤'Ë˜_CΩX}"ºÚ1π!Ø$ªü^L«i4d»ÒF”KåëŒã∞Ê—˛A´éîÎKp>ÀÜ‰⁄¨gáj¬Y9®[Kv∑⁄á™˚¢Y‚j™ÁC.‘Œ™QE˘âßV¯˝‹Ñ(ΩÎW%x™!!=R˚PO4\™Kß›QzdB
+ì1zﬂ›J–Ÿ¨îsr˘fu ºz‚ÕJ·\–`íj3g®jÁW6dπ¿πXÒJüCTÄ6$ö¨…gËÙ2¨|èZ‹Ñ˚"Åp©•á’,m°]$år^P÷XΩå±TŒ√ö◊ÅÅJ˘k‘JÄ«:÷w´2˝≈°≈óëÌµlAG2&gi)“Í›R|Æv·ØH±Ï˘+R¸˘#EÀødXÌ‹RßõTuªb∫GY<¡‰ 4XB≥–≈TÖï9ObÙâÚôc˘ML»ﬁÿÎaÇ¨Êiªüë]ófZç
+7e¯ç≈D¯E@£’A‡[∞Ñ5ïΩä|)´ãÇÜ_åò√(≈CL7º`äÕo	%î8Z“ƒe£–}Œk∫Ô]¥a\£∂68re¨P°W*Ø&ü€—bû÷¿´a7˜¨ëˇ£rû-∆y\‚Ü—ÄÀc¯⁄3› }
+4Ww3|Caµ0—€èÁÄrâ˛Èˇó≤‡¶Aπél∫]Å±è‰ﬁ÷0Z±Q%ò1çeº}%√ÆÉí—îN% 'çyä•+ë–Ø2T<ÀàM0·U&,´åò§UFd¡*π!	N›ÔDTrcïÏªAøºÀPÆº≈Z!\ÀÜu$e„(ƒH≈y‚"≠DÒRïS*kÂ≥Øπ:Ü£õJk38ú7Í€çB˚„¨;UºFl‡∑3\ºÉé!ê2tÅ#ˆväë n&ÿW≈Á’zÉB„ïSœza¸4çE–XÒJ˚`Vœ£l ÷⁄/a;GÏ ãcˆ.∆ΩdÑì[a∫X‡«vd+4á·Â8ÿ”8≤hú∑òı¬NKOi»Î•9Oµv»øa∆5\ÁLWå≠™√”]„7º∫“◊ËÜ/X|·ú)|ø.ﬂ’’[≥xÌ#;7{ö¨Ìç∑—c∂Á¨cÓ!èü–G(@ÎúVªí”CﬂƒYqfx¨Á˜á˘ﬂí)\$ˆ-Ó°2÷ê X≥]É√Ùÿ¶çÎ4á»JÚCŸxãF≥m™úû?Ìπs>˛.9ùóQ"}ò‘¿%E|·ùm⁄‘ª|ı5e	⁄ºDK·‡§Z<È"ó∑UÂËòc* .%ç˚.û≥5&p÷õÁœ5úuØ$tY≠ã¢∏%1◊zE(+?iU*%∞@Î€ôÜ‚x˘–ÑüÏpm
+ˇª2$FôƒÃª2às3€¯Ω$üuFQéë‚akW7@…RÔπñ=AŒyV–∑]~/¬:¥ÍñüV-2/:#8aGrAó3d@_}Ç˚à˝0äÊ˘”Ÿ¨ŒÉâLb>PÄƒLxïWﬁËvÈ‹°"Ú{Œg›5txâ°J)¡*+Dé]]^·ghvE6«—F‡¥≥á”shﬂ∑Õè˜FÒyñNﬂ$g£yËLÍ(ó:§]˛LÎEºÊ1-#ä
+ΩD““•}åŒ∆E@÷$Ê˝\LeêÇl˝˜0Ï1=g«Ò¿ÚÒFƒ¡0[⁄BQ◊™/ŸPõy:5\HJC-÷Ω¡RzkùBom==oÀ ‡wö®ˆ$Ø°;ró†h(·ht°5˘	®€'¬¶,>ÈñNt´∑á:¿¢_q√5P}õÅÉ¸L¿’T´âóöÏÔ•¿é‡ÇQX¯ƒOå¡’>ü“;<Ωˇ2ÒÁ˙Æ;èÁb pRsb/N¢~≥°V ?ö‚ÇŸã8¶nïÚ¯U∂∂°ÖeZd5Ìπ·F¿YJ˜8"T¯⁄§ÏœÍÁV H,ü∞ûWEeœa+cÃê±’ÍL¢Y≥π(»ﬂŒÚú—y°—[tä_h+~‚ﬂYúß„s
+ÜÙî^6ﬁ}π/J<≤ÑOÒÂŒ’BU¢|p«”I≥¥™ùzÄÒ®Ê9TpÙè]q°πúñ«’c°º;‘µ·ØVi˛\¡”ÁÉvÓ$m^œ6€f∞o˝xΩSƒè|í¶ÛQ£$Y√upYÇûä∆5†K√âÍ®83¸	JÇ\ÓÔçµMûM|mã'áˇòOÌ)Äo[‰ÕW∞2öVbÉá»Î˜◊é˙‹i·(´sÍûØbçÀÏ~äÛRÆD~úLŒXûvä◊ÄpÊÚ2◊Ê‚Òÿàbç˙ø
+5yò2Ÿ^ï˛ënz≥”-ËqKg.6+L∆n¢Ï
+≥ãkä],{i_4?$≤òÛ:¡CŒ—ÇÓvÚŸ8ô7¨—z◊{Ovk8Âr€¥∞*Œsa92ÀZAÈ· ∂q |sgóí∂*Å5!µ¡•˚#& Yü-XUb›¶@Ü¶Ÿ'î¯ÊpÔ©õúç‚,Óx’KÑæ–˜ê(Â(~b™˛NhzEˇc“Ûe1ÙÍD.ÁÙº∂Mﬂ∞cﬁ.$∆pI‡€¿qƒ–øpÉ9∆√z∆íè“ã,Ma≈ ®]J∏
+kãlã[Jhhg˝ˆ„˜w?¬S[–r’Ùì$ú‰ö\‚2∆C±ò@xäás_ÒÜ∞*e_¬ñ0[f∂ÇÒ7Á§|¸0π¸êÛN¸T∫†÷r∏Ω(ø‘…„féòÏù'¡Yë™≈ÆT¶¥˜ﬂ:©fÆ[∂:Cy D]Ç1ã…c™µ¶ï œ^"OkïaIRq:ºu∆)÷j^æåf–*L‡Ø«<{ÍJ/üx∆gç¨§√Ûh0jŒ¸[C9ÉfîjeFÃBŸx¯xFQ˛Pq„yñ¶„8ö6gDŒë†∂gù˘h1ÈO£d¨ﬁú'√85yˆëwê‰8À◊Ÿõ8Fb⁄ªúâkT≥!zQo3(Ëº§uoEìÚ5„áIçÊ—˜`/~v‡è√8o6æ¢NZº	ﬂwﬁ_´%äê…+ÿ6T˚ø—ÜÈ~=÷∆;‡©÷xÅ∑3¥Q«â…KãÒ©~StßÔüü¸ŸâßC·z”ôÃ6ÂÙ|ü/‚˛ƒ˘^Løª†ÓÛ.ÆÄª≥c
+p`Ê√ã{Ãqmõ"æ1ÅcÀüöJïû»(ø f>"«9ÿ˛”6íóDq¨üfz¬‚7UßÁÙy”ù™¿%v3U,∞Sû¯ﬁÒΩ´,¡ò{x√Ÿ√q)Ék&>ùøƒQÔ√ﬂùiz·‚π ?≤F(˚√ïû2≠4á7>"ÚÈ—ø=apªã'úTÃ´V?ê¬ãkëÀÜ√π{8 ∞ØcgÈë»™ÏW4£å#ÎF…x “≈˙ÁV—∆÷Ñ¯fB€	‹¯ØöPó¨à±s˝ÕŸ¡˜Pk4ç∞‡Åèën’°∏à¿åÅ‚•}íLb?ƒ9ÉÊç—∏EªeCÁEñÀÁ{Îıπ¡îüÄŒœ–xœàtby Ê£¯í/ÅKÄ8_2b˘DËd¯»÷7GBñKù≈÷Ådm}r°„…Î=Å. ∑zÚ\"ƒ¬¸Ûc<d!t Ω7õ	˚ØÿVöC]ç”¸ﬂ≤Õ˚˙ÔÜzWRﬁ‡Gq6âPÆƒ/£∫v’K:(>Â◊…å¥èxª—âÚ*uwÎıXÎ5|iË7hL6E˘Úé;ò]\R=ogm_¡∫Ñˆ®≈∫¨πÅÚY± ﬁá$ŒêË÷á–¥’ÖÓZº©p;( _‡÷≠?$Ÿ ã@c4ü£C¯ã◊Wåî~ä˜ÅÜIOO·˙Ñ®X ˙ÔØú9‡¸i∞w.(ù	âdRW8
+„ÂA—;wlÁfR7•X@å®î≤ñÈ) ,4∑&™\6$H$)bu(ò˙“Aï®,>r√Ág˙®¢~ûé$w“≈uÌ,ùsìê2Ì|ñ~ﬁYÈ˝≤µ	ˇWÓ.ã`4Ö≠ª≠m¨WÑÂπ¨.ìÌ\qx/˜r–u∫˛∂ Uº-Ñ©hEBqiªº⁄òÅ}g˝7JJó˙¸"÷Ã2≤¡Â±-–ñ*«gô•c“äêﬂπ¬ı*øçÁvÆÏ7uÍøH¶Ò ö¡ÈEÅ€˜˜q]…gGÎÓ>Yç‰5¥5+Ò„-‘å]Y\~•ÎÍJK0&=ŸèR@¯óË‰ﬁÆæãqçÑ9§
+ü{∆µíG±∫∫Qïuk)9*<ÚK—…‡óí|b≈K>’®òTæ˚€Nÿ¸? /ˇáIz˛áÙÏÏìÕÛV7i’§!‘€Ÿsïõ_Ωu¨hd˜jwV&Ò<FÛ®™¬nªaU£„Ë2?$ã˝[Ó‚œ‡\®Ì¯eüâ2qÒ´"y⁄˝t>O'2§⁄˜"ÖõÓ,ví-Õ«ªáàØı(¢Î&ˆ.,ÒLº≠+Ö4úçä!N¯=™™E ‹if1≠Î«ßÛõ-ﬂù)AÉQ'sÚ‡4†¶2Qá…YÆc“≤!ÄÓ)U OÆı(4)‰†~ïB>&tlÜaÂ…˚Ô2ûw¸∫Isx®ê–èÅﬂP“PO˛7`ü(ì,ŸIñ†ú#gÕ#2Å≈;c£¬√ﬂ«Úi›µ£ì&–∞"⁄‰ÊÏé‚/‡àe€ !Ys°,uD‹nKpè8yÕhÀ5“∫{˝¨0€5Ì?(‹πÆπ≠ôú⁄ı:,◊Æz≠}ë</∑ç)À_’ãz—p›…_ÂËI)ñN~#€KÆßÂªE	˝¸vkﬁLÊ7óå¥)?;pQ·«~π‡“Ôı˙TÉÀA2ˆ=cF∂ï“ÆN7cXÏ*R\7F»n	êR50˝7l?…yN¶Ωt1Hk>[\¬äwU¬"”∂úÃı î€õBèº€ﬁ4àﬁDh+w@5A§êîπŸ”*”fynÁ]∂‚ßÃÙùvéY- LÛÊ”s)∑=™sø ≠Ê¶‘Ì$û?”¶_÷±Õæv–'Sû#∆¶%lË);U˙Ω”Í|<JgpNœËî‹,xõKD*∑üóóÚ¯âÛ‡ßÒÆP-F∏Ω;ÈYΩNﬁNWF".◊µF˜˛Rn” >‡ãeå¨nR(«$-à°Z‰,)qˆ∫ŸK∏Œ‡pMc∂7éí	k«„Ò]b*ŸªË¸ü7∂∫wcl•Ï˚—áX∏ÃÂÛÍ“0ó¢=ﬁ∆röÖSr-¨%S◊˛à(KÕ‚6¯ E=É(úÛEyT.ápÏ„∞Ù†ÕwYs®ïŒ†Ô›è\ÂtnÂ‡.ÈÆ}≤«UJ›ËÔlãV„Ω¯ÖË»‰\œáÙ, l9’åæbﬂÎö≈”Y˜o≤∏'€P µºU§∂√≥=¯WO˚"∆éu£ñU™ÎK,µAûWõË4&⁄E!%§Œs˙É8à.πˆSaâu3±Z@≈Ç≤ì@bèü∑Ö„"9°tßIÿ(övÇ∑z∂Ôöì©{” Î¶'t§Ä€™öÎ,B˜e€2\`¿“;™{≠∞Ωhªeúã0˜j{®“AßûwO›ç·K0©øl¯‚ì¯ãáØ ªÎ.2ı√’ç·IYRˇ≤!JN#SöÙﬁãÃ–é¸xwpUå®\q“j ÷ç]$8¨IsW›?æËïÀÅo"–µ@5:èán¶ï*>‚g∞¯ÿ@KÚ)¡
+∞Õ“\CÖÍó¥Ù“ÑYı™dÒYlÕ1îC≠«≤ƒ¸≥4˝4Å∂| L÷&‘0j
+ÀéHr ﬁ|Œ˛¸Ôˇ¯_˛Ûﬂ◊%á≠ú7ÅTÃ®ˇsÇU9•rh˝≤7>?˙ÂçO∏÷ª»©(¡‡Sæòı¥Z‹Ÿw®Z€n √xO)™B:’ˆRÁß˘›xpû([Wä}´ êØO1“”I˙	”≈aVä.7’+ª/¸Ê¢>©ıH÷8-/òô-≤ŸÿQ˜KF}É‹.∑4yãöÛˇïJûj9bnYÊßéÂ7¥X)’êÒCÜ∑<‚Ütˇ ?D~®,ƒ∫NdÿÒ"#πú«(uΩV\ü2[/¶˘{8ë>?–zë—¬A… %6æ ô∫X4mÆK@"≤†CèØ7Ò6>æÃa¯æ·.Õ'˘™.7`Q·›–-/íœ~±∑¿±Kh ¥£˝œ†jÜ†·`˙∞∏ﬁxl€ÒôwLîdi:_≤$œ16ƒyçYJ√À«…,Á1hIÃÀÜrúœ6GOÛhéõ<ß61Î£0w#’÷ég„∆õXGÀu;Z"üÍzèT5√é,ù∆â/q("¢ÁÿÜRZU≈p0-¸⁄á<—ÌWfzºpîûıâh“^úc"Y¥ÁÌßxú⁄Ïı´øaØﬂ∞Ω∑«'Ø_>slﬂ@ïZHÓüXyMÖ\÷Lóë£«ä ¶5Â¨nΩpF.ü`DÎu¿cˇ)ìßhy‡¢;éZ¿Øœ˚ı#õ˙BªÔ≈Í8I¡Kë_ÜÚjºhØ#bÖ`∆“°[ÑÈÍèÖ≥ƒ$k?ÑÁØ˜<yèû#◊≈b8jCË7€®§ΩiÓ’_≥6é7J—k˝◊™KkÁüjõ|#Ω
+dπŸm‰U'IΩﬁ_qZÕ´≈L¶ÂÏ Ú∆˝@°( I_∞–[>J≥9#ìi_p3wü°±Õj™∞mC√$jΩ•
+≈óñ‰Ñ]H -#àR(◊<Ω%¸ú[ùY4<∆ƒéÕıU÷Ë˘sÂñ–8÷⁄Ãú‘Ön«çÉ§Ì€Vhj%˜WY“≈ÄzØvo¶˜·	xÊèõÒWå_ÅÒµ¸?å)yCåOımåœ-¡¯áOAî_íEÚ«G˘4‘/ÅÛπ˝L4ƒ91tÅG»ì3
+È#˝¸%`~B/>_ˇıp_˛‰ó¿lx˙◊+‡&WÄn˙Û∏ä©mëØnq»&ÏÎ@5]Œxr˜jóÇn¨[† ›zˆGøéˆæƒ≈†2„-0Lã	¨xé‹A ñÏ_¿ù ÿÊØº@≈KØ¿Ày·23ÚG!€ªÙ3™v(‚©NµE∂H ë'%dyï⁄≈L·œ‘^.Û˙ëc”◊˛€
+îY_”†ö„±±úœÕï°@ÙV ı®¬üˇÃY6§ï8◊∑–vÈˆ:” ‘	\ ÷™vÏ`¿˙∑i˝∞¿¡(Ωeé‘ÓÎÕWﬁÖÀ¯JïV1sJ¡{£({:oˆZ<po„ëÜóI?∆ŸËãÔﬁ,Kd∏lÏ÷‡“.È7(#SXàƒÒ–óƒìª\“üíTêæ+ûæ‹"†+œ=#£πŒFÈ<ÕWuë#)˚*#ße$dƒ»@Ó¬eÓeü‚iØ`¿ÕÙŸgﬁÔS¶ª^è˜˜•
+Õ˚†*cá'3Sçù∂∑N
+¬p⁄úÄıãªﬁ=8/j˛ Á ≥HÄ7{„4~xõGˆD–˜˙P¬A?ªËÌ ÔﬁDLG:=^Ù'	‡·Q4é„#Ófé÷D;◊≠©…Ø±¿1G˝ÿHﬁ«ƒIûƒD1 ˙U‰Ñ 4ˇÙ«ˇ˚Oˇ·ø˚”ˇ”ü˛√ˇ¯ß?˛?˙„øÒg1~‹•ëFùLgãP<~àpx°3òE<ÇI≈ŸŒ sÇµ·8b®≈›π¬Ç4ï–U gtÑÅ&vÆbqFèdïf‹·…2x “:!œ.TRﬂ ëå
+Ù•BiáUœ6µ¸=¸Qæù.Êîï¢IÒW»gê…õ˙°º∆Ω3.£œ~–ºÁÉ,·!, úˇØ?˝Òˇ£ˇ”ü˛¯ø›ñ±k∏è¢@wYzëÔ\mÑ`≈ÄÂ2"ÈãÆ¬-óbÜFï´ÏÔ—té*˜°HWúbÍxêw:ù`/’ñ|QÈØ†ø<Ë{>¸¥êˇ¸Û3ÀåŸL‘◊eoﬂº`M†
+O˝xU•r[Âñ:gY4Ye?»4—Ò|–˘2ò~ëçó@Ùe√	3€Ã“˘ÔÄ'∫îÒSΩc"W	iπ≥¢◊¸ÎÅ˘“w≈MRkî‰ôøõX¬ü~ØÇ‹≥¯Oê-9Meº™8˛(>$ /ßVï˜J&)êtEå◊nîppm1®4 Áù8À“¨Ÿ8«h™á,“»6<∂⁄≈«NìH˜íX÷¯ÑR%OY<bøégg1¿…ÙL–Ê∏7°‰r⁄î	5äá˚•ﬂa—EîÃYŒ˚íÄÄ°˝ü6’≤Æ2}MÀgN!œ°ç™•g7…Ny≠Ú∆ÂéÂ“∞6˛áˇ»û|&ÃKá˜™v®l˝ç4 •≠ÿsh|≈ìÙ≥ì≈~5I≥>∞™»Î5ÄëMí¸ïG”pÂPgU„¥&¨O µr¢◊ ØS
+Q^9ë»ùF„ºÊ¬kÈQ# gò‰QwÄãıvÆV√¯m6M?%}∞}>Ë√Üt>!úê)ÿ9ôÌÿe ÑQ[~ Å˛ˇ   ˇˇ =#ÔxúÏΩ€rIñ ˆ^_·ï›b&∫ëâL‹H¢ “@ê¨¶Ü∑»ÓÉhUÅÃ √»å¨àH(4ÃFkz—ÀÓ√Óæ»∆lek-ôÙ"ÈqÁE˙í∂˙Å›O–9«/·◊àH’S5]YV`¶áªá˚Ò„«èü+cÏ:)éggqQ&≥≥∑yvö§ÒªË¨`èŸÓÀ,öƒ˘:ßQQºé¶Ò^Á¢ø¡Œ·ˇhñL£2ÓÛd÷akèÿ€=öG˘«4.¨˙É-lÀ¯≤ÏG”ì8ÔoáÿÍÊ¯ÏÛhˆHåå]$Â9€±ªF•ÅFªk'ã≤Ãœw◊&…ß¿£d6_îÅ^À´9Láﬁ	‘òß—8>œR ’^ÁŸ¨åsvÁ%±ŒÏWeÇ`˘’4ÀOˆ´ÄWF˘’Eî«+°^?EÈ"ﬁªûgE˘;—[ZŸÏ‡<öùAÌòÌ=bE\æ’Z¡‡egq9†.WBΩãv∫HSvr÷/R\‰≠!õ¿“Ó@¡˜…l‹0Æ=≤ì,á9ãD’ı°¨ÀK©˛}(Ã≥≈lO˙ó)õ_:ÃØ˙Î'.VLwËk1ÂE' ‘èº'˙M˝å†ü”lº(v≤Eô&≥∏?Àf±( °CÌ«	Ló0Õ;„52,Ò<π^˚{≤˛ÑΩÕìqÃﬁÏyßìÇ˝fÕ”]ËIÍú&≠Å†©6√⁄»gıh›Ñhı`c»`?å„> r∞’	 ∑5å”4ædIOã˛8&d˝áÏ˝”´˛I\^ƒÒ,–èÿízW¥0«£—¸ÚÄ}&m1ü«˘8*b}√ﬂóx°ïmBYôC\¨ã'ÔéÓ,ö˜G¡Ÿy«u—ﬂä≥©`-ëŸ )çCº#ç£	éaS°c5ùŒ£˛Õ?◊FàÒ q•±Å"Ω?ˇÈ?˛˘˚«?ˇÈˇ˙Ûü˛ƒ˛¸ßˇ˝œ˙ˇ¸ßˇ˚œ˙‡ÀJêí’“9ˇ:<.Ï∑u‹mCˇ¬0·%<Îµ[)É7Û2…fQzã9’—f}œÚd¬Oú•EÑÑ£˙πAËﬁºøTJ£ì8’ﬂwíf KÅÈ√
+ƒ@Ó5Bµvh”* õû Ãk`∆ÿ´d&•ß(Ñ(`Õ,pÂ1PÂ‰S\;°¢ì"Ke„¥Dp≤2É]∏∂Œ˙∞_gú“_QÅπa,®l9PAj‹fC5 ¸√èÊŸë3tåÚœ4ôÌuÁÄ¸e<á©œÆÍ´ß=ùÓ£≠Üûµ£ñõV;Ã¯‡«†À∂mt˛ÒÎÁ@cÕ3˝·ñzz0Èo≥yNòtf$yΩ ^|Ê±^qê5˜ûÓ¸SCmö˛‘àGt˘ÒÍgC<÷7ó —ÂÌâáh˚Ò¯Öx¢@ÑΩáÀËg–å"N„q›V”ò0ﬂWáu~¸UMóA‡ø˙^˛t0∑ñ$fƒüãÂË<….;èﬁ¬Ñ·ÀÓ∂DÛ£ÔœKﬁ}Ω]Ø \ıﬂo—…€$«º˙zã.˛Êå∑ˇõ≥[4~óÕxk¯“‹.⁄-∑†¡GaâEò‡¥x°0Ñhy|
+˚ôã
+ü√ˇ/∞∑√¯4¥£Ò8ûó{ùdù≈køY˝W˝˛Ã'ß´—|û&„∑øCÔ‘∂Úy2ôƒ≥PEã|\cúÕäí·ÿSDè«√_[&ß¨áıVjzgíp!ÄxÌpáFÂ∑y¸)â/zÔ_∆ytËÕ…? “¿oﬁOMG°∏Ò?XÛ‚cD¨µ±∞«¨Ws™˘xF]–ï}äÛ”4ªËÛïC"Ã	‚4∫Ïü˜∑á±èJâü≠©3 -¶W˝ıö£OÕÓÒ qùÌÌÌ±ÆÖÜ]ˆ«?≤™ﬁÊˆx0ç ÒyoÌ@º˝ıZ≤Rhƒtﬁﬂ"‚iúGÈDÆ ¢á[√µM¸É¬çZÃ•ËäˇÆ=˜a`8©wP››hc	)ê 6g&Fù:¶à:ıJ•ñ8
+À|1Éà	+.†eÁ—µπ7ÕåXJIî;µ¶ˆËÌ”ÁÏ)ú¥SÄ€/Àh|OÿˇÙÔ[‹4ÍX>∆VÿÎô¯6(Ä‘î≈íÚº◊%Rÿ]AlÎôìe˜Ó1@µﬁtæ˘«ã¯d˙«iˆÈè”M¯ˇ„ß¿æA•jCMVVV∞U˚ÕK†! ßY4ŸÎL„2öDe‘aE>ﬁ≥)¡íÕ2œ“Ô2W≈ã2.l
+˜Ωâtµ≥“gD¬ èÅ‘¢¨ˆf7=å,J·åø:w3ò˝◊5’åîü£ºZ›e,†<˜Æ{+ı~ÙCes©=Tº«Jc´¿Y¡?æ{>^Ô◊Yûúù√u_wºòú#Ñwπ◊ˆ?…ÙMaÙxëYﬁüg	ë∞€1πÁ—‘.qΩ“∞v◊°j≥÷’lNÙÁ/èeÓm ê√ÿ∆X≥◊ˆf•¥Ñ£°´&¨P¿:≥Uπ∫SÖOº–Í:Cçµ2(cJ«S3ÀãÄNi›B∏•.Ä∑ƒŒ» ˚4UbÓB]âÍÙ˜s$«å∑Xcoœ≥2ª5œ#˜}Áè@øcˆ%≤=pª,38ªxp‘“›FLlèãwéçø‡cpöy¡i%Áã|û:Hy«)‡‰Ôëq®eçö∞2∏®uT◊´kØΩ;ÑXrœÒl"`?ß£ãµ4a>
+\3B˙ˆ⁄ç“fã¥f‡tQìù~Sú«≥ﬁiîu∑Õ%xàe˘á Ô†€A\vµÿ7Üà”⁄∂#ˇ∂}¿
+¨˝÷Ü±·ËA4«~ïvÉπQ4('”$hV4IäË$ç'{◊IÒvqí&≈9Zh¡r¥ 2@‰,è&	–ó~ôısvögS~¬‡µäíŸ$9ÀËbU„æ*´ÍY±Z'XŒ0‘#Ø8è&ŸE:iK%v≤y4N ´~H’Z?vµ∑°›⁄”€k«â•cWΩt0‘ú€°÷_ÉÍ«yÑdÕœÀq1≈mÜÂGΩ∫≠ ÂªkßY>µÀ≠˛ù∂∆s¥»¬yÏà\œc∏Çö¶X^‚Ø*àqõø^ ÉDù¢$P∞7'ÖÓ’Éd≤2òFÛ]ªWY2π$
+m/‘.vê€ôı«¯ä_\°+î¯Ä?vüi¸€ûŒÃπ5≥æ˛iú∆%è:tå y/Á€õÅÁÃX¸…ò¸Qâ˙áMü∏FQ ?˝≤HËˆ(˙OÓ∂_œŸ¬ßjúñÓ˝1
+ ≈πHKdÈ≤á´ewa!˙äUA√Ü4ûùïÁ$+˙xe«⁄Ô™?⁄6åÃ¥%ûH@ßÒ$YL=åƒÎåêœC†©0OVû'Ö‰ìŸ‚˚U\⁄î≈≥◊åYœçü™‚uD{ù–l;9p{E«ú≥=[iÜ∏mÃ•¡vkùM'éÌ7Ë¬≥`…ùIúW›…µ:$«’Jq6¢0)àë%—€@YÏRwÚ◊ ∏ät1âã^ÁW‘0Sê ¸I$`ïEyÓß8?¿÷H‹«˜∑>õöbébÆ„ák£Ìï1ÔC”¿-≠{dıJûµÊ∑æ£ g&Nˇbj·û”•|> ÇÇ?Ç]yæòûÃ¢$}ü”R!ÓßHtŒÀr^Ï¨≠ë÷©,f≈`s>g”µ9^ßaÉéF£ÌıÌ—˝Õ˚õ˝≠ìıQ¸‡˛√x4⁄x- lO®®ºwöî{„<õﬂªÿÉi‹˚˛v<«∏ ípJçÆ„´Á”	8ÇIùw¢Ø86Y‰§£¿+_í>Á‘äqµ—»√yNsß œ“£Û,/Q‹pOùDÄRö‘8 ÌV4~íeiÕz´Íhº(’∫e6˛xTFÂ¢‡⁄ñlQ~ìù~CÂ›ïêÏ¡¶ñƒë€±ÔQgQg‚ö«$Î_{(8Xn ‡Vc[±®&nc'hØ|ï&Ä»)ÁtcÒ[,+ñpæÄ€XËÆH⁄Ö˛óˇıø˛óWkÀù!ƒ˙Ñkx-ô0ólöÃQÛ¢ˆQtâøoª0R‹∏2¸4|`o»ãF˚µ©lò7›
+Ä˛áÛœ◊∆‹a™˙‹·ûÌØç7}˘õ◊∏˘xt£∑…o±Œ∑ÔÁe∆Ï∆5bœ˙π2¥…éå>iı‡	ø%ôG»=≤OId¸∆ZbA:èBl{”k5πÚ&gí/Y:2o¢∏¬ïuøÿ≈UµJe¶çr¥˘—÷›ƒÔï‘yhª4Ùw⁄“hM@º-˘ìÆ^”ä ›◊ËË°è∞PÉæ¶Ù&»‘Rüøã£‹“;+±†¢Êöì©4˘«©„+Ç!_b˝HzÂ£Ô∞ãn91`IPı|˚πyã}∑Å∫Î@ò«÷Ï$∏¬⁄‚™ª8ãÓ-∏Í.q’]d™Î/XüqΩjoF·,±goè÷ëÆ¨£MƒÜ˛Œı°gëwÁè‡&G®¿M/qªks≥aùÿ√æ≥˘/m]‡¨Ú$.∫∑π∂]˜|Çgn.5Ω:Çû„…ÔüÌ1oeD¸ #r‡ù`≥4Ü{ÅΩ38ãI\“Î~∫ä‡0˙fzıçúÄGê«Â"ü1ÙP˝Ôèﬁº@ã"Ó(2;v¨∂nÄm-«Á¨á÷Z≤)T≥L•nVz÷õ¯P«—líL‡¿Æ&|<zIÒÊb&Æd0,8íïUÜ5’ñõ˚ÉÔ58€´WÏ66ã/|€-HóÀŸ’#gl÷®p7xçœ˘vµ¡éÊj_ŒÒı_rYáÇ)>ÿ£Ø#ë,‚‹∏WÕù´◊|@D¡¸Â¨Ô.8’79âΩÂHKUHRá∫¥©O5zùıÍ®Ô¬˜úøÌk¯@í2#yÀÖﬁá⁄0›ßG⁄x—ÄŸ-™¿5jÒÑ∏3Í§®≠∆ßzØzùæ:|~ÚÁ ûMÑï—`:ﬂî”Û=F˚"Áy5˝µΩæXÎzsà]
+i`Ê
+C¡óπ≤=]Ë∑‚3†TµÅü4jØ≤πÛr{˚ˆñ µ’ﬁœÛËjÄ Ô©óë9o—√È]‡ÏÃåÉ ùÄ†0Ó≠©Â	&Æ´˛Õ·]ùj4øØæ{∫w+ÛN‡jœ7´Öıﬂ∫¥1ƒ”RÆSñ≥ﬂ'õ"7[∞øèÀ›µÛMÔÁ>´√f`r3√"ƒÿ…q‹c‹@ÓºÃBÓF∏÷]eãúÀca¿‚–b	¸éÊs‡uŸyú£M?<<œ.Úvy	M
+ÄÂQs≤óÙ=uü™»ax°á·≥–ﬂ∫50≥QHk9ÿ2€Ma∆$d∂∂6?◊÷ˆ!·)Ìª<€HÑ∫√∏VPQë∆pìÜ{≤_æ¬M¸æfŸÖ}4Ún[z«@µ
+kcU<X≤Sfµ‡§óèå)˚˘#◊UÒY±∆g’ı+ÃÅ⁄«ç‡BAﬂ ÄDâõÔñ’ÿohºü1Œìt√vÔú‚»`Ø	pŒ2ÑLàKI 	_˜†=âû∞ü:√ÛPo4ù&€b'ÇÁBÑrãúÈªd˚±Ã8Ôê·ÚæÎÜœ´M)ºÂæR_ô‰∂ﬁ∆˘4ö¡9¿â⁄ZŸ2_êÙè?E’S<yé	-ªÿ¡›™ÜŸûu±}◊7¡T"≈;åßQ2Cè≥=w`èŸ˙&pÕØ¢ÚEdΩ·`¥äE}÷´v:¸“ ∏¬÷XoÌ8^˚uëáÒXÉÇ5†GﬁGÏS¯eª8úﬂ0ÌÖ_˘ÏçÇÁ?~¸
+!˛!µêÄÓ!t±&‡ãWG§Ã:ëÄÀRz¢œ’ô1KîWXÔXu,´ë%>8ç;J≠…G@”$?§qr˚ÙÍ‰ı@≤›`5ªıT›⁄~D—p´ﬁL¯Yûg9`V‹¬Ω:fı;»ófë·ÔÄû;¬È°ﬁ}
+?±¥}«ù≥`1	ì›◊¿◊Yç÷∫◊€Âà•ı\\%uîóPs®öë„÷±≤ñ¨‘;	Gçv∏*_πúw¨…Íê≈ı©©L."uùUÓ$∑\ñªÿ„
+nˇ*˜wù]WàûÆ˝ÜΩÀÊÏ	◊˚C]·g	eÌùy™”+zLµ”%Îg9zàÚ_KhÑ„ÆèäáäÅü∫kìk!Ì"1Hp
+gyœ‰aVnŒ	∆®pÏ*>†[„¿‘K/dPM#§x8[ñ}-`}‘®◊Ur¡˙Ê∞FQ…5+5£<‡ÎÙG˙x¡œÂøåj”?∏JTËe⁄;,≠Ôîàüû±ä˙xMNºÑ™~W–ÇÛŸÜÈl£;v*<M)Ñ≈Á„®Aé'§9e/fßŸm"§xmP´ä^ΩR+›mDx√“ö)‘yd<‚ *§≈tIAó:ﬂxH5„–}e96≠sl“≈èr|j@J éC‡s˜Úd˝§v∑â{‡≥un;>®ﬁ’>ÀÎ÷–∂µÀe›ö»—¥’ôB6+Áß'Ë&qÈ/ÌîÿÎ’uÌ≤è∆ll~“±Y÷/∆yñ¶'ÓÔ<ô}ÏKIËÒˆ÷˜¡UÅrÀÓ6vädÛ˚úÎçªpqÎ÷ö'^èg>éœıM≈†mÅH8¶áÅ∏v“Ó„⁄M∏ÃÁ—º≥ÍyWQXÄA˚Ÿ∂«¨£B«hÇl√Ò°Ìo6rœ}∆ë#tØÚæv«˚Ztà	ò\ûYØ1Eﬁ^7&Á≈Œ≤π€o@ç€¬Ÿo~GÄ€b©ŒJx‰[·üNÜÕqGnõæ6b¡‰£ü™xl(ÛÀû?2q˚ﬂ=H$ÊSáEïüó∆ˇÒµîè~nX‰qùÆ–à˛ÿx4üú˛+¬"öMÈQR\4“û˛‹0…¸¶B¶∑Oü∑C%sY|∆Î€∫Ìãr…j}ÿ12¶î~åB·›¿ˆu°º∞{>WÏJÇ\7$çÖHC‰r‹ﬁv‚–ñ-]üñ˝H¬ÌÎàûuÖM∑Ïìob_èÙ)hkÊõ˝ç≤”‰õ–¬[∫‚^G4Ôñ?î„©ÿrqo∑¥w≥∞wø¨w∞®¡Yﬂ¥sÓ;uI«Œ∆£%‡ãyD¡aQ+W/å◊“}â/
+õ–Ì‹:π>4Ü‘“÷ıyU| ük)7∞5◊Ö€g4Ç†t4,"∏U•mÚÎKÇ1ÈLYª~‚‹“¯_å≥ù≤±^°bZµ’3íÇ7®î∏5x`é:ƒ]®Ó’·˜¢∂(ôùÌu“Ë˚öH…À(!ayï∆ÉIÇŒ~®ÈÔbLUØiˇïÄ±#jö0F¿æïdÆ€¶+‘vç»6h©Êøc5˙4EıÕ‹⁄ñ(1∞ﬂNN¢|Ú˚$æ¿ Öïk;˚ÂI4+˘ÅÁ^Hùg”îu÷^∏˘±1‹7f#\ﬁ≥ùﬂúéû@i˜ËEõväEj‰{wÿÓì,˚8öÌK¯TIÊ˝âõB‚ˆ6 ˝Vîe¬dn|FlÊ<‡7hJÀß'∏ß1p3N…e]G¬Ä¿[[ü/6Q@⁄2µMÏ;HPmÈs∆‚ÒLÃ≈C&˜´¿DR3¢q.1·Buê‰„‘Õ;È4’rDaEB–v†•ø≥nÀÍ∫ºÏá◊ÓŸ%t;ã“ó…Ã∑i˙HRŸATFiv∂KÑ'‹∏vqÄ'Cwñ•›ÇÖ¶lƒ¿ë t£†Ô¥"	é?Ôt¢]xÈ Ω…˘Úô«Nu}@Át»4fò2∏`Èh⁄·a¬«∞_d@©‡DÏÃJﬂVÆ!(n[wFG¡_nõ? msŸò2pºıq≠9yY_&@t≠ƒi”ÃŒcrÄ:z¯„X»
+#G ˝∆÷Î-å&PœÈ?k˝‹»√>Òﬁämÿˆ9aÜùfç√‹b dB9JRëN)‹Ÿ¶Ó\Ú¿WÆbÓGÛè˚CRúßIQ≤èÁQî&Ï<JæÙåÿÁÛvt1F	CßQblÎf?ˇPÁ≥òÕ£Ç˚Úıc3#≥èQ'Ä“QÙ1aãŸ9ñúú'ˇü$9∞◊åS¬+h9˚në‰WÿÑvÆãã≤!)}ÿ˙˘]t“ÎRÿ$üòﬁ∏ıh6ÊV!d…}SÊÌÜÃçaË	aÏ	EÅ„7h~v9áf1mvè·Ìﬁ´v≠Qv|^D(ÒÕ∂ÄàÚÒ9¸na·`¨‰ƒØ–v©6çççõuŒÿ¬∆Å‹÷¥PÅ&1y¶Ò4iÌù∂œßSfœ¶ÛÚ ˆHÛlPº¥sÔﬂ´l¡‹∏X6KØÿIÃ>%Erí∆¬ôå¸≈Ló–¢¨˝ÜΩDFÍ$ªdØ≤IîíõŸQ≥∫›rïYeÿÑô~„òûaúP\,‰"ﬁeOπ¥d@óbÈH\∆”‰∞Qﬁﬁæñv}¯°EÓeÀl`˛Çég_ø0,õﬁ‘Ÿ’(Q'Öõó)ªp•}unbã‚#„x’∆GâE0é6ƒüGg$/Ëô#Ûx|‚M¶—ÓGÍiô>´Ê⁄ø{æ—ÄŸÈY(‰¶Ô‰˜([µò&ï
+.#’|·©awlÑtØmó⁄JB‹ÄØÊ%À!π¶QÑ5≠6ª÷åøÛ›K…Z—Ò°µ¶–Aé∫à-÷¬ît˝Û˛Ò∆–{õ¨Ó1˛˝-R%•{é`˚Ω?e¬Ò˝≠OÁ`qÍJ[ î¢Õ XÅJs‡Ä§’‘7ù–ÀjuΩÒö7Ù›Ï™=√GíÇó·≥≠É2#&„Êyó eË˘·t&ÌÉ⁄˙¯""ˇ‘ /Å˙Q∑5ÿînDóÇéM.Ë∞∏ ¥‹≥EÑn›ß$‹£°∞∑Ùå†ÍΩ&◊DØ]'ÄóüMRX˚≥≥îØ·Û§Ï≠|u7êØrfˇ¥‡˛*∫L¶…˜±/02ﬂØ9ÛlÄÁ/]A±h˜I4õ¡ i{¿¶+]tq ≤≈œ)(-Wºûw∑≤¡ù…ƒ»”ÿó¥†Â“+{--a "∂cnˇ¥ñ˝ BJ‹pîÉÌ[Œç=Ìä´⁄p∏
+ßÂr;Òñ£Ï.XR∏óﬁé◊hy≈ﬂ&ˆI∏Ná˛˚Ñíù˛¥.’êoq£òN~πP¸®
+…∑ΩM∆Â"wq~ÈKÖª‹M∑äÌˆ©ı=B”â–EBˇMfÖ«¸1TÔÕIuP‰VÏùÀÙÁrØh-µº„ÁWåxI¶‚g√Rxπ±VÏÑ?Vàô¯l∆¡C9~·ºú√≥	∞ÓrgpÓ¡`Ç"bl(ûf⁄Î°Ä”ﬂ`-u≈5WÊg¨úQ€∑r'âÜŸ% Ÿ°«≈C,N∞ÇÁŒüÕﬁ”s|lT5/ﬂòAâœØπ¢ËÜø¢5R¨ˆ˚8f@ÄYBÅj7¨˘ëZ%¿äΩçÆ(Í=ˆ∑á¿¬Oñ[RŸçË•fY≠a6.¨=≠€,Ìb<éã‚_fu˝„≠ohï˛~ˇÌ˛!{r¯‚È◊œÿ˛|ûgü ¿¬—›^®]YÅ?∑£Z
+≥öµæµp∏À¡c^Ë∆xDzëΩ*Êçˆ¬€ v	 ·tœ≥ºd¯Z*¸!{Ä¡übÀ
+7kÅ·i °°⁄5'·»ﬂQj0J«zÚbb3bz!^á˚!ôµ»Jƒ£∏v\∑gËåPÿ2G;∂?A…B™)*— êMVc%√ã#d,ìJXZbS iW“Ï®∏öçYoL√ö<Ö„≈≠ˆˆÊ1¡ƒfe{¿ãmIVôî‘Ó0≥+vÛïAN\"alg?y∞´¯'ßW*≥®(ß]Ω._™Ñﬂ©¯¯(ú§ËˇK3h≤â9∫à‡∏>ç1—∑k—<YCÑ)÷~mf	Âa»∫£ÓÕ∑´é¿{óÁŸdáuﬂæ◊µ=ŒŒcÃîVÏ da∞ô†èx››1≠ˇCëÕ∫Ï∆n~íMÆvxlgqˆ|Ô∫fQVåÃ0∞U hÃ“„∆¥Œ“x£π9U0Z™Ô7˛ÌÉûbú„%õ4Ù¬÷πíû®ª,iÄµ„3Ú¶Ù!{P4.∑NT|œΩ_√ﬂb“.û;à©•®«∂uÈø\òwmhwÈ°˝@f¿F)Åd/ *Ω~õ‘h.I	dU¢Ùñç¨R„ k°kÔ©P≤òÒ˙Ó`˘â‹ÆÜ˙K‰ˆ_"∑ˇπ˝gπ]ÏˆÜHÌz{3A∏Ô1âÌ] V»’;:>∏_≈6ò«ÜJÆyW«Fe‹›DÛ’wD≥◊ñ@îﬁ≤ó≈û∆%–7[ïı<¬êG„è˙\∏ﬁ∂∑á‡±ß∑a`?r>g·vÄ{sz
+»ˆ.˚Ë˜u<É Ï-˜ÇG’®ñ™ºÁUu}“ﬂ}Œ”¬ Ñ ÉÙŒ∏„jm*\6ZV09¯∏‹fSËpç=Y\°ô:D›c–Ìò‹ä≤≈é?:≤%6ïB‚ªJ≥<¡◊¢µ@Å√7ÎAƒº §J°≤ö˛—ò[_‹ciîL]0≤æ®ÑØZ30B≠~$Ä‡ ‘+`0Ò{y<Ú7s8gæ#5Xpø¥ûj†WxÚÍ¬§;ŒÌ#÷ê6ê»¬i≤  ¨åRs;j–ˆÕ∏È~W˜–òƒ∑Ø´«jQñ‘ÙØó“Ùo€Ó`\”ØÚí$3v
+Ã˛´ºx—√´‡ÒøçAÄäjcÜ≠Ÿ≤e¬ (’œFe¢¨,4ìe~6Pﬂ¬Tá«Üh™izY¶üoq–lm†)]OLHåBêêq[Y!o8nÇ–y§-‚≤¶uÎÔZ˙j•›≥fÊö¥0òE‹•	 -Ÿù≠HHÉj¡¢óˆG®„‹0õ§‘î£¡X©∂~≥É¬Wsaî4Î4Kô„ú$Z+†ôiJ¢Ì*Bg
+I%ÏÙh¬ÜáT«„:‰bèç;‰zTØE™Á≤2Î]s—Ω*ëaÖVZ°¿OcQ0-ÃOxQ(kM€E¡å Ê¢@…œkQä≈ŸYåI\~öãRØ≈¢… wI—q\éW"@.ú\2!Ê¶)◊µ
+àN•¨å¸;˜Z2k˜c4ÇvõÕ¬Ph®‡˙*FcÒ¬#ÇE÷á◊ê∆?B”‰∆7¥}Lç§πØ3b≥E˛”_O<´ê¨ò∆äaπæ`\¥ºä!|ò]¯ç∫)F◊¬PöÍü<k/s±w·ΩÂ’0 ﬁNLu"\oçﬂ˛6≥ËSÃºY~Û’Û≈≥qEvñêmyã!£˙ø˘>ßãÅ¢ÃÊ(ôƒ∞Â‡ÇÛ◊S≠‚Öÿ8—ıÖ‹D‡(.K@˝‚i¡ﬁ© ˜Â9¡îUß/nP))∫¶t_π˝S9WH¯^Ûv(≠‚ß,ô|Âæ”Ûº >\–¥*7|r‚qú\hLJ¬ı˚P˘Qâ… *=±h(» ‰U4ßÜœ´ﬂz√›√xƒ]È)N∏º˝—£ﬁıç÷‚’ãŸ|Q∆ßº5|Ÿ˝›ªW/©ÙY£yœ#.t¢\X™êÜxrd¿î˜ t)3h'i8∏ò7)Ëﬂûπ++öÍáöHu÷T›1ÛBWXwWP:Ì¡?ŸK§©Q°2∏…÷HÀÏˆh(!Âè1æÃñÈµ(l◊-éyÊÈz!À[ˆ$ÅàÈéxHçÌB?ÑAC¢CDÇc¡_˛Bˇ—n$™_kB†(AâàΩ÷nh1Qr@SÄâ
+∞;˛jQR·°æŸΩè˙–⁄®a©~±§∂µÇÊxﬁk`”ﬂ À}:·?§Ü˛¨≠±#4RJ≥≥dº√æñÆ–¸ºåÄﬂ:ß»`´¯e∆û w∆J‡ÆƒÔ˛Ê<Ä|≥@ö\9À^/Ç≠Ω‚¢	Ï3Ò¢=ŒË+e˜°„lIöÔ•—å3WqîßW›Ø¨^û®^NÏ^N⁄˜≤O”¬ë{¿§Jâ®ﬁ$ÍúxÍhkWMuWjÄja˙#}•ø4™ªµG˛7–PDˇ¯Ω¶wY’Æi˜,äá:Ç‹¨≤cÎ–#º¯¿)-|}vz
+ÃÉALÖF˙j6Êîu¸å<†V≈ÚwŸ`_¿≤√öP›Ë≥7	∫ˇ@0Tà˛*J9æXp›Ü‡ŸrÿÍ’MˆóO˜û‡±iÅ´“ÆbÀÄ<UïÀ2Û4ÓÒ7àZ7"ëdµp˛¿÷O≤ãA4ô<˚Cx	º0™bî®ÅÉâ3ìÓ™÷ÉË@f£$,ΩÂpäo’!b•©>Ë wÉÂÌ∏3,npnö#”<xï!„(V≈MÊΩd…4úçÛ<∆JO„”hëñ2—•Ä"Ç¥ò¨£zá¿≠†¬´–¡⁄€≤Û £z&9ë
+ß∏∞ﬂ‡uÑ≥U[Ô∆NbÀ≠ π≠Z˜-Ï<xä'«Cád'ã"ô≈EÛ”î¡4À5cúÉË‘!áÃë	≠»:˘µ'Ç)ñtu¶g˜H‰P»-ñÑ8âHÂ°†.¿áÁõyôLáì1{ˇÇ»‹
+#»/<õ1â.ë§<¡_ÄŒ≤◊;˙ÎoV¥∑Ì ¶AaÍœ∏ûÏû§˙cºì”cmäì8-#≤RÔzÃFpuó«áA¢ﬂY¢ïTY©ääÉË{¯Xﬁ˜1N¢¡i
+£Q˜UU.ﬁ’–x~ÀÁ#˙j/m„,çóÖWWïåCA`QΩ ’‹Õbﬂ¨≠y„pıÓ=≥÷ﬂoŒÿÍKW/Ói∞çn≤’qgå{«;OmEµÉÁ±n(ÉVhp_ÌK∂
+¬émUQ«ÜAÊÛ◊óWé^2Ÿa¸Ï'
+dMO‘æîÊ+ÉUW_ìÍπ¶”∫Ó”&W¶QbùíÕHSk~¶æ'5ÔÛ$è—à(ˆ5ê©°d¶¥„€4æ—…%2Ôx§Èt±zœˆ∏}c1ê§⁄@’‚#Ã%Ñmîê˚k'∞Ω‰$”s&'ßu@iG¢ÒGÙã‹˚¬ôIÿÄ\ıfç—∞Øl∆ﬂÈF„∑6äKËºòpc<ï‡>0{m?£E¯Eîœz›'‚p%ÜŒﬂ‡ç*sÒõäåU¥Í”¥ﬁˇˆá˙˜ö¢·◊◊Ú¿Ω˘VçÃ8¯©yÔ€˜3…£m æ,ÅQ®~¯ü˛˘ø˛ó◊≠f¯Ö‰-u∂LéÂB%g∆ù-â5s≈=ŒuÉLØˆÄ!„Kèƒ"Ü„Êx¯A„ò∞–¥^≈b,’!ÎKç°4möú∑ldÊk°AT<éá∑1≈hzî1ã,ü¢;Å0„}.~JnL>¿!z›±Ñ" MNe˙.·=Ádzﬁ1Ao÷Tó≠ˆG}9.∑∑¡gƒ_‡2E/XE‚Êä√lj.'ƒÏ15HÂ>#™†^¸ <QΩ/ÑÖã∏ wà;èÃºz˘j–Å∆≠≠¯Ô.ˆW]QÆ·DFìøVΩÏF^À#§ñü¶∂ÙïX”Á–!Ã»π@≥jΩ≠£…OFÑ•d¢#‚	Ìæn Öf@sµ£¬DW›#®⁄’ÚrG≈ªQëLåp"¸ƒe∫cÖ\Ùè7∂(!2ŒØ(¯<öêãTå îi{Åá<]—ÒØûm‹ﬂ>¯†Ãb∏•∆˜˝ç°£jÛ*◊–‚ËmûL#ÿB˚c…WK—;ZÊ°È◊0°&–í$öÖÕè¶'˝0Ω-√ˆFYqlπâ®»‡»o‘≥ˆ h;!C|÷ôKB±nïÁ”nÂ€;¬(ô##Hâ!`mdkÑõ;!ND&QX‘!f"^:…ØÄÑ{¨a85¨‚∆rKq)Ïpºêú[¶∏_&ÖÍ¸Ò`|Â˚eo∏¬o≥]∑èÅ∂ÉÍiÒw·1¡	ƒUUfï}T»XL•^&ü9Ö)§¡6v\iJTãõr˜Ë<â”…¡y<˛Ë	Ú†!‡ñnTói¢XéG£`Í5o»Y†ŒÛËsÚ}\ä„é?€Ü)Î§©cõ≥,øZ¸5
+Ä)R∑,Y¶n≠@—ÚÏá¸œÇî‹QÎ≈líDû g~tÚ@∏EÊsø≠ä2Ê)AÌ—∏;\∂ò2óÕÈÊr+:+vÜãŒ:Ys#57“2≥ƒ πÃt≈’˝"Ã√≠‡È∞Ì9Ó€ù•{œıªCDI≤“Vîá¶:2ÔëÄåL#›ΩÍ3üiCû¥
+m9ˇ>&Ò›ÊSÿ<M3O3∫EŒ˘ËÖ>∆k,‰¯#Ãæ<¨«”<èvªPUÅ9
+Â¨Å‰è}i9l√Toú¢:.dÀ¥^ ÃX¸ûD≈y<y‹,d˚Õ:≥∑Ï£g7¡{†M$J
+WÄW 'ÔWüÓ]ÎVN¯á[u˙à‡r1/˜:∏:Å@—UuÔ⁄{µµ^gêj z\X¢ﬂ	ƒd”@∏∑D')zh&≠ÂÛ[ïW+ÿbπÔ[ÅË‹ê6ìgØ\ 7]î&Ê&˘ﬁ
+kªZ‡çƒäd[¸˜t‚ê\	Âù*–{mP$O/µ8òÎ%˙gÊæË• Ø†ò'3ô#KàM⁄P{ÈØÂ¡/∞î‹ÆP/(‰•¶‚-™êıﬁ>}n9ı[@zﬁ“"∑»¥ƒ_≠KK˘LÓŒâ8√Ò&&‰“£ΩŒ7Ä≥èﬁÇyúÓuft
+k¨“⁄Ãªuÿü[®—OöÕ∂åÄ6lµz÷"€ìßÂB©W8‘ÓZt«ô ¯ÒO√ëæº◊àì¶›Ì◊9¿›ª/•At8Ù yrìœ)ﬁI}¸Ûè…†t)M:π˛^eáapÃ,	a lØ≥Û!ù®obxp#p‘G`Âò€.Ä‰C@rJƒcR¿ÿ4ırúp˚˚îg3.¡iD˜›5úe #›µñ¶€¶D‰:`YR¿	£éo[$˝]¨≤$;CÿÏ±Ö¥1—MLY¯ç˛TÍπø-}îÕı}ù‹|Îã!°©‹ïmùcZgÎ’Õ◊,¥4∞øß`å[ÅwCØ<ÃR˛Jb·1"Å˘N8õ&1∫9ùHSﬁô7÷ˆ&ÇÄÓ°ú9Kπnéó!lÂΩÕìB◊¿&E•ç'=Õåí, µ öΩÎ±YÌÉî«Àè!+’pëà€ÖS√õÂ»gßM1‰ºZÒJBæh±K&∑ß{_l∫{”4KÊ—'b#1+˜ò/£π2/H⁄ç7;∞Mì≠j ìîÁ˙€5QoÌ◊◊ÒlúM‚˜á/îÕPJo-€Õ∑†%r`b/&§`ç˛s>¢ˇ®…Cì‡€À•ÓPïx≥Vx—»=˘E√⁄LjD+qßÿg∞P— £
+r£…]Ã˝¨§§=’jüÄπgÂ_fQ¡Hgà¡…ÑŒpe ÉÁVÜ°Ò∫!¸ÃŒ¸˘}=)}G√@“j/ˇNú\+‰71;ÑﬁlêäŸ®œT•ÀvıY6∞±¡l§¢¯«ZìmıZ0BNtÿ$&já„áÉ-3/¶?õ°∆‹Ë¸è‰sJd@=dNÕ ~´yÑ±^7ûêÙZp;^z˝¿ÖMÔöf<Ñã0ºÑ:âöãl¯sﬂ%™Å›Ôösˆb8—rÏ°w£*ä=ÂkŸÊnÊf‘ΩLÌÉ”8"\A√ßi]£ƒvÏA˛—8í¿∫£[ÂôO®çi"Ω«–FH∂SÂ( lwT,Ÿ∂≈À’gáµ		ŒÂO4öÓŒ◊´gÒΩ⁄ùµ~R˝‡9\ËóW±—>õ°™ÍÀ®k&'˜»>H-≠	îÊ•q!ıdˆ3ÓWñf…%J€·˙ã∆$çÍßYf©Eˇøˇì≠◊∑Õ®øª'πy2a†≤{˜ÄΩÀ£Iå·Z09v>éŸk`U≥¸£ñπ˛ïÃ*∑<Âî∑?üì¨ûÓ§g9%?@®hÇée–5ãyˆœUÜ©√Ÿ^6f9Ãï[HiˆA¢"9V`]Â+—©;Ì:Ç…OëÔ‡~ò¬‹tXı-∫^—k¸ˆ∑’s˛:Î°z™w˚àç*9>)=†£¥?æ¬ú∫ÿ6uv—qÏƒ‘®åyˇjÚ˛˝·ˆûÒ\˝Ïÿ√5Zqr0‰mƒèéÊe‘Æ≤n)´+s≤◊ÆÔîW™YYQ√ôÁhxÚ¡HÕS¸Ï^g\◊@òü¨
+Îp¸N/ÁÜkpVÆ^ñΩwÁ¿zä∫ã$˜(-∏ï•·I—Ö/cU]õo¶Œò
+;‹lU"ø˙ç+ß~åπ›ÊêÈó«‹Ú(∆<°ªàqÁ¥—ÃR„≈¬5A˘éÍµQm+\HÌ‚zOR~ÔÁS~ ø€¿:˛®w\ÎéÑ€2)^·L…À®rÇ„oÅ˚#ZéI˜–ﬁÈ…{Õ˚÷∏xx‹DEÌ;(¶ÙYLæ[ƒF\Œ ÓM4UÓE∫Cnu’!´tÓË XA˘ã?∆W8ó≈‡¨(π©:q¿’O·…y·.ô8eˆÓ)I&[¥‰82·õë~™©S‘F(uÇ5V50R#‘@n.‡…$æ›FÉjUıûÖ˜YñÛ’÷L“´˜©‡ç“Eë ø N|pWãzOüÁ¥hå©∆q—xcçÛ¢"—:h€:1™}—÷ë—ˇ∂ç˙õùÒcz4ö¯√4ö“„ÿbõTäÛó¨e˜”î6Îs@§ lv»9K8ƒ√§≤Ü)∑∫yÑ±.t∫£»àtætMÂ5äµòãìbú''19fãÔÔ2œ{<!@·–1Qé£_√£ì}TÆ°˙i:wÍ§÷Òk∆;_vjNÄä>ëˆLí ÈÙGt>HË-«7ùÛ3@à}^r{s˚¯ æ√sMﬁÅóJy`åﬁ©ÑÁ”ìUFñøEwUw≠ÁÒeª≥¨Ñù≈ç«ãÓäº’]`6Ì^œlh÷›€Csm:Ï®ÇÈe,n6;öEÛ‚<+{ﬂ≠≤^!~«……p ƒ RàäÉI6ñ+bm≠b!^„Ä∆ù1…∞ı4˙îÂâ^g4æ0ˆ.ÙÚ‚î%e∑`0kr¡E∑àüMÿE∑ˆO1}hÙÛ‘XùíÎs‡@≤´”rLE±∆>˘#-‹s4ô`îØVEXßã6Æ¡D3πó‘xfÙ/ˇˆsÓAˆ€íE»ﬂc*uA‰ °Îf3ˇÌ?˝áˇ‡$3( ´7W ÔÁápu[ ”“≈˚†”òëÕâ-v˜ä·_ç¿'t˛’ÈÈ©ß!›(å6XèáCßÅïE!Í—q≠≤∑ßF;`Î˜∏øãs<”%aàâXÌq4cÃ	∏è≈™<÷¬RÏø>xˆÚÂ≥ß<tu∏"E≤‰Qrfg,ô¿Â™(acLªS[‚uñOaúæ=UÄ·JE2Ú Fb0£>VYr6À¥‹Ç&y£»êÓ$6l*\¶£b·§^Mßñd;§i¨$†´b…ójz˙2„¨.0≤¿‡ÕØ”c~?	∑r§7Ïè'⁄Ÿíä~x7≤◊ûv#êZ"^„µ¯’´cˇC:gq&;Ô ë˝döØÑ*hï1±Äp–{õq)_%MÏÕEë/
+´óûπi	0≤-†-Ï_ —P≥l3∑ÅÕ©öÕŒ®Æ!r“òú™æ7úÒ¢~ùG„¯të‚>„1©QÎØMù„?Mäø¬ì2ô∆Ÿ¢¨õ$üÿ˙˙ h ∫XÚ˚√¡ÉçÌ°Ò°l≠®0|˘˛±h7U<ôWÂwÿ–µt˜…p'»ò9‡^`<°#,dΩwyrvÜ|Lc&K5—d
+Hˆ≈kïe<ùóp≈Ñy,#Rˇ- ∏X—o¥ÿq<y≥(≈UV˝6Ó∞ı(ìï™–[Q£<ÑAˆqfåágoÅ±àÅ\1ícùƒQâﬁ™hÒ∞ñùûíÂÉ”qÒ’NtñG”µÁ∞Ç'Yˆq•˜›H ¬´u◊ºòBy)«°Ü°ÿ”ùçŸ!Á4∂Nui±t¢\ã)`.¢bÀ®"bÖ˘€±EÃ•ÈyBÄ›õ¸à$ˆò‘lèzøzv£U∂⁄*CÿB<…∏Á}ìÚˆﬂp¶CÜ∏–{ıEŒPÃ’x‰0tÎl‹rÆKh»
+√ø√6ÇΩ((‹jXhÆÌy√Üå	ÂS\Ù{<B—9ò;ú^lb@pΩNËÕ	Ûú⁄x<£Z6ƒ…rk4N"”BÆπÍ≈kIÒuöùD©ëÓQÙÂy“Æ3+7û—ùı¨]ánä?£O˜qS∑áÑQjè—)˜vƒ[ÚXüc≤hñãûÒ§@!3ËŒùã®«hé*≈g∆C1%π‹CﬂÏFéKÒRˇ>WaYËœÎªN„iv÷É;ƒø˝Ÿ°1éI\ÚLî*éñè»8 n*ílnA
+ß.©¨N∫spC!åñ
+Î±ãewQãﬁ¥≠≥¸È®]~ù#FàÑz]r†6Óµk\Rﬂ/Ë¬¸òõÌuŸoe  =–ëcˆ#\Œbê}$q|±êˇÏuE&ü>≥›˝b‚Ñ%XAInÂbÕvà’vﬂ /Ω∂IçÙï∆Qà3ùWƒùõ¥8óhfÎ#zˆsVÈ$æ¸Rø!ªóM•¨•ÊŒ©»µ¢˛]\I∑A5∆20À–æÆZ◊x]	lYÜÊP“¸
+cÏ∏eFBk± F√äâêÌ≤›ˆu$¥ÅÌã&‘FÂÉ5’më«˛ÍÎrØä≥•ﬂo´†ƒ+©Æ\R Öøπ&—3Ç %1v‹!ó©i†jÓ@åØj+&ŸƒÍ6]ıúW€Q◊˜“8Ù€∞÷5ÇS„ÆP]QZ^Ç‹´ﬁô#Âm5f8m˜e6ç0Í÷ﬂ.2†RG—,)˘›„hsñêâÅÏ;™_é„Û†—≈òÀ!≈ÄDEÍKÖq√CùúÖ)› Â√ŒöHF™(Â§∏%t¥À`5˜¨;‚ÓÇi\ﬁÛ®L˛ÏÖÿ%óE˘üõ‹;Ø˝ï˝ÜÁ¿∆˘<O»°6M"ˆÕiUﬂ”€{isﬁ‹Q2ÈÆh6™πè¬üÑrkJΩà›ÎâU√jOË26ªèIo[rÒ¸{ç÷Wt©'Ÿ<õ.`¸Øﬂº„≤◊4>ã∆Wl1ìö5X( `°:≈·äë`ÍP˙¶yîRœ]Ìë´Q*Ÿﬁ¬‚49KJ”Ê¸Å»E˛xPàr"ﬁ’6‘{B2nwà
+29•∆{rµè¥fZ˚<F:MœÏ3≥Írß ~høçk›¨Å≠ÿ]IHìZ”ÈÕx∫\á®›ÒÄ˙1≥˙&ÌÈC;=¿p+løë?YW3´ØB∫%Fl≈ì·Öè<0ˆHÿ#JoT!ì£Dè¥≠˘¬	⁄¸2}gØ2oüçp®õ.PÅßŸ∏7Åˇkd⁄DÖ∆ö†^+¿ÅÚáÉ¯é=‘“;,xÙ*I6Èm™Õ˘ÙD°pïöî˜°°w†˘4ŒœDíná—¨ˆì˜ÖÁôæ›Ù·π¨¨µõ⁄Uñ;Eõ˜c&'lÏd≈‹Õ≥‹=÷˛¡è‹.NçHyﬁ:",íÜ¸6˝u—Ä‰©fÅ?M£3Ïåi¿˙´3
+‚b÷-z≠%„§LØ¯AQ≠à	àQí‘¢jÆ3Áàõ∏°_Ÿ•◊Fø~q¸ïÃkQ¿8°ÍÌπ'¿ò"7ﬂö…k8E@õ„Bƒ¨Ùg ÷j¿âQ˝r»ˇ»mèU<_oﬁ¸+Ñ∫…ÔkO´_uË≥Â6˜∫>&_mgø∑m ˜º1È«:∞Zè¯q–®B$ºd
+W¥ÛÓö¡ÒXt.ò˙–£ò´®à	◊î°6{#±iôΩøwOËF®[uÓÑ^SîKÁòÅ®⁄Ïxı†\:õæ∆ﬁ¬&°K^…^<Ö{9]¡±É¢˘§òb˜˙Åœœÿ.ªà
+~-U+ÿlÆâáÆ«4mîıV(/§¯a	π<0•◊As4YêkbX6Àb@Ïﬁ=eQC{πcQ†U„æóû^tÄí≠£¡ÈPoŒÇh›8<M≈¶,rá&é®ÔVY3"¢äã∞‘vﬂBä¢¬‚~~≥∆:¬öù'ÛB£»aÒ†.$°ö
+–€é35bª√>≤‚•Z]Z∞Üd¡ΩÅ„WB◊¶k,ÄV;®"óZY4¢ aì¶@Ä¥ûk≈/B°2*àÅ4hRB˘û,oÚºN®¡HiuÖ$˜“döî{[≠—√§XvkhZ¸˘WÕ´“
+®∞WÕ–Ç˚òjÀx¥øÀ¶(çN‚táuÒ›Ö s¯µ¶¬¯ ⁄‹2Ω™œk-
+^`∑£¿KEQ5|∆"h-EàßÈÛ$ùVÌ0È}°µ È∑›F`ålÑn68jØ¥ÜcUf7~Õ_å—|GΩ3;öÎo%NS·éë‰„TÉ™(÷«ÁVÈ4'ô_’Ïµa-Yµ5≠(ÌNﬁ¶ã‚Ëªy 0¡ÄÏ1/‡m?ûTõÇn{ÓÕB‚–`æ(Œ{
+%(d†6ŸlÁ“ÇOæOààD÷C]´r*h™F£¨I_˘*Ç≠ì€]X•MùºÃŒ2åÎ¶ı†µi.ìŸ[]Ë≈M›DÈxë¢ïï÷âYÿ‘0Ö£≠6Îª8¡∫‹Ms≤SOÃ≤fèoÆ˘’`N˘˙e™Å5¨7ûügP!ì|ò][ksU+C˜ä•∑—Ê6Ù÷®ÕµgIK*LFl´Qw≈{ÒÄ«o~<òcª?rE›êƒ∆2NM÷$8¡oÒæë©Qæô:ì•˛€@û*>π@”˚Ò™`ö÷bπ°6˜∑ƒxonµÿ’F	Ø∏o3µZvœ~^zÌiãSb'hVo∏ÕŒYÆs∂‹ıFY«…cP&\ï“åáÂŒfÔgh6FZ1#èhç—›[{då||x~,JÀ¬"`ÀdÑó˜0mµå[ñÆUk®V≠õ4(—Zµ„:3¨nE∫»†¿°£á∂Áµ›t
+Ur˚´πÿ[AN´"AÍ…f¢=&ˆ©*µÆ·¸&‘Ö)—ÒâXD∞üJFÎtÙ[Ä3q±¯õ¯Íiv!â w«Ö≤ì, '∂› π»QYA∏≥dÿò;Xﬁœ5˘sÿﬁP
+A∆
+˘,-∏zbÅjøy≈ËTîÂ˚i⁄Î
+>Ó>∞û}åŸ”µ∫Êü.S¶'£˛ÇÎFÑπë˘Ie‹u\<‘Gc>0;ë]à4£≥I|ââ6ƒ¿	º9Ì›≠XaÌznbÍ˘Ûù{⁄[Ö™œFÏ1≤≥Íou?@ŸÊXı¸·ÒÄ Ë$9Û”X˘ g8˛‰‰ÓåÊ±wú÷˚ﬁ1™é=c¥–ﬂÃª`«íHf}ïJ°&/Bm+p–Ñ28Ù&<‹DÕ
+†'¬GNÚPA©‹Gklc(‚ò≥itŸø∞‚b]ä»X*˙ƒÓ‚Æ≤Ò—&w^≈õÿ}ó—®íJ7âΩfí‡±Æ¥xJhDí°#’ﬁı5&úÿa˜∑ÙËNDÑE¥j®¢â7&~Á€a[√°.É˜:fŸNY€éSñÓê•¸∞Ã*¬ıä<Æ\Á,\É£‰˚ªﬂp∫«ßàÒjœ∑G≠9)î ã¸≈ÿËÅ;æÏÚàb∞@ù!£Z¯ßøÚ≥ì®7\•ˇõ+NSú<ˆUÅ“'ﬁ`}kkU˛?åVÙTötN≈´{ˇ≈¡yóÃÚx<ó¯D<¬∏Dt°!ﬁå$t_/0ò	qó˘zNî7¬"•ÁÍ∞.ÁûÄ·⁄ıàZ…%9K¬a⁄≤Ô˚«Î[√Ln*åËè´;…Ôs ä–ïç¢Ow0
+∑ùßDÚ ÔÃ	˝+—±?⁄2„Xq£=∑;;≥ªÓ‘XJ;ì'·•© —†‰è%çâZ$òÏ\ÙGkÎÇ`Pq=|!@Cè7."·ìœ
+£«%ﬂübõº	`„XŒ˚«|:ˇ†C˛˚,õ¬ø˙Y›åuTv~	KÀÉlãÁ-“⁄‘Ùì ›»Ä[Æ›¬Ω1QKª∑‘“éã√Œ·ˇˆ1n˝AÀ¨@∑n6¿ôm§ˆ EÚÍ<2ÿ}ˆ6ÀK /)ã)ú·+∑‡“ÿº….BQŒñﬂéû}t—ø`Ωè≥æË?¿Œ·»5!≠8†jg∏A”©TmﬁV-ñ˘Ã[ÌÆ¶‚ÀEç˛È?:‚“Âül!∫MeE®Oï™_û'3wª‡ÚΩEl6#|Åµı∆mëu·jRñ{+Ñ∆≠j•˜˚oˇÈﬂ˛œLN´ò™èßÀ˘Ú[ßÈÕçìì¿	ÙºDPn<ê_e'xô„¡~XOπ,r^â€ r8Fü bL(ë˜ªlŒ^∆ß%£∞IL‰læ'rm°®zE;ΩwπèÑ¡ıNv‰âfy˝‘7x\P–øÛ˛»óΩ√°√z&≥Ôë’∞∫üí"Å+úÜacÁ•Ë¬>aM:'Æf,·u"‡eƒ[t£œ>0“}aºD¡^¨–;
+Ÿ\◊üÿÊëYG(¨›/£é4◊Eº‚ÔÒ'‹ß€t!¬ﬂôá{«&¢R+ﬁÎÆuWnñã÷Ó…#ÄAì´Âqíç∏°pmñË⁄õ‹ØrC7†,≈’}r∏ˇ˙È7/ﬂ|˝Êõ£√',.ÕÂu^ÔøzVó∆‰¢ø8ªÕèå˚¸»∏oÖ"÷#‘*¢ ±OÂfÎè{´òß;P§MÖf‘óXÅÇw"volc$ƒQ~ü2äìE•d™èÔ9À >%›Û≥I`	m∏~ôÂ„Û>ñ˚f;‹≤ÅÍÛt¢ÇÚ´qñÕ™Ù^ˆ·W»{*˝y4M“´÷ÈæÇ_˙Ω°Mo˜ËjÜjœÓ~éÅWû‡¸–ãF“/–“´≥j‹ë˘∂pÔë”±ÅÙáÚõmq_Øj≈ß|‡Â ¸9
+Ü[òEIF®$¿MKˇo,ïï*Õ?a
+ä<ÿò.Ñ"l%‡ß…"G”≤˜Êı”ÉïFXÖÆG>~∞=∞b“
+¥Ù√ft+ÿ¿ÅgÚ$!œ¬¨üì[® 2Îüí®üÂËŒ·ïi¿£e”Ío 2≠ë*S-7xéŒqöÃ˘F¢·È¡ÂÈ \E≈5@ÿo”ËÍ4Jp}(-ÓÜÉdˆ}åZêÓ◊qñü%Ó	⁄&ˆõ+˛√?˝Ï˜oˆ_≤ÁoŸK˙eç|êq¥r^eü‰^E„ëÍπhU¥¯{ +Í∂Zõñƒº“Í}ZH}ÌfÙ$∑¥ªèNä,] Ê‰8π˛êº∑Ûµ££·ä
+¬W~Û8Qò§'3Ô¯¸dvÅ$ÿ™ÌMq∏≠˚ƒ#’e›woÂì˜ÂN¢®Ã°0ÿ(ß/ FÊÀË÷ÿï/n12:œQºÎyF¡	˜Æù úæ8◊UÍ1¡å¯‚tˆTRlÍ⁄0vŒ8>«à}˘^G¿g¡çå>F∞Ï~·8ÉAC“£ä¬Ëõõx?
+ümDìü∆ìdQwë«;m∂(—Íé7m∞;⁄q"√;èe˙w‘æG,∑—kHSyCÛØ∆IıÁ0RÒçöÉÀAıÿ¥R⁄â-S@˝ùg7¯^]∑ùGUàxò¶œØ{§‡;åãEZÏ)P¯	™Ë|—‚]§óaJ1˙Éî*Ök*ù`ÒãXŸoO•öâ^∫≈Âá@ñl˘.""EP(˘¬µ‹g<iPoQó˚¢ä]Ç›†Ã^f2ä´+8–˚ôÒÙ?Z®Y¿◊e:¿∏¥º+m–≤˝êì1v£Âß]∂L\À;ë)l€v tkÑ*⁄¬wdyéÛr ¢“)ÇWÍe˛7›¨H!*áÅD”¯Ò≤›Rup%”˛]ÕtC±‚ùGØ3ò)óu∆·:KÜÎ¡‹"·å‘¯YqÔuÔ yÔ}ÔÅÔ ÖˇrHLhåŸÀhΩC∏¡Q8¯êâ¸WNÄÈP∆¸ÿrMUVX7µÙ‰µ≠îúJOQÂôü+ë’?¡‘C¯iï jÆid“≥`˛kS¿Õ†jIÙËj Ù·Á2‰ßU™,W]°èÕ÷ 6ä˙ÏÑ•‘»§Ã>"jKdF©…ﬂÉX˚àÚMÒÑ´·}"ÄÑ¢Gûn´jw#2gqa~ªÙSÅÙù’ßé¢À„„¡¯< ˜Àﬁê»C˜}∑æ„:‹≠9bDèIKc‚™PcZ~Xﬂ<2âıóép+u;l≠zkãêÿç'©U mji3Z˝º™r2vE«ˆ√?˛g™&œ£≥IyíÁ,5øÊ
+5I;)∑ÍÜîvq8l˙“ü÷ÓÑ⁄!¨¨x,ìYÀ©ÎÀ"‰ŸâKÈñù„çÙµ⁄eÛÆÃ∏ÌïsWR}Îph"«ÓπAYCïËÅÔ‹c#dÕäaØPcÀ≥Í~ùq]b#Ÿ-˙6u‰à•ÔS«jX(g√“{NVV*39©V´“YuSËÙ0÷ñØtß!…— M}^\BÜó’k≥ÙÆ‡E^e8]†ø≠a•'ìvÎıSˆmNﬂ∆Ùò≥{∂ÊÚ€RÊ
+{`∞k¢ÙÛv•X4ô§ıìs M|ç›>ˆ*#À<˚˜è◊Îú$ÀˆÜ¥Ú¶Ò¢aı˜4.>ñŸú	”o›2Ä≤ài¶ü’Xª(lY+UˆEˇ¯˛:û•ÈŸ|_ﬂ‹$Ÿ˘quæê(µ1™|°bgÒ'u$I≤\ò¨„Àeé¡mˆ=›A•‚}ù¶Y÷W∆+Ü¿¥Z´2:!Î‚ΩÎaÖyŸLòÕÔ]˚åÈeEM‚W≠\r<f~	◊µÚØ§T◊àà+ÓçëSã`”›»”Q}c&`zå˛òˆq◊ê≤c€‡Rçoíâf¯&LØÏ1}‚ä‚“m2˚ﬁA∑x¿ÌáLÖË…©¬’„Ùπdoè)Ä`ñHG+LÚ\¬r¢^Â»G;xJPO3ûÁ†Vô€JH-èkNal2ZÙj…DU∫Ú6g≠HïºˇµM›;‹Íx"<5ØÃΩ{Ää.¢™‹õ
+¥B}Óô`zNÛ›<ªêì¥[)7Ì0–q]˚$†z≠ m{PAlÅ™ù†À”L6:èÙÌÏ7m´ï$ <⁄4,MµªººÎ)ıìñ%}:QŸ6á,ô	ì,cÅÂÛëeÊ"Î÷QËÍ¥·  Hà"'ì≥Ï"èÊB=`⁄C=∫ÖÙÃóE]bÛπ¸Àä±œ(É´jÒRdbÛÑ\Àﬁº≠∑»ø~ä+)Â2ª•≤7
+Ùl	‡mH∂Á∫ÌâS!6œ–ıö+(LäR5‡ïµÎï‰äV˚ü†M—‚øZÚ˘Uﬁß_l¯y9üÖ¢˙pÒ!ºËI{OÔtx)ı·¢FJº¨”Ji IPdúÕûaLﬁ Æ2,Í≈·K«]π•˜‚ã)úg“q ≥àáÊ∫á$Ó~ŸëØüõ€+ÊNNLqÛñøúéÓÚÄ›Í`‘3x√9•]~Biª1Ww‡Ê”ZL`ÜBi8«ËRß⁄_‡–’ç0´≥˜G9¡Í]=Ç◊É›
+‡^â≈Úg
+üP ∏ÿOºBg˛-AÑÔm<M*ﬁ˜∏“ã◊¶jf>Ç—Ü\»I¸’PrıÎÊ5Ö“Ñ†‚©)Ê¸´ﬂ±·Æ©ﬂxäu∂l∂õX;g◊›zãuΩ√ÖD?§E∑›M]áØ≤¶mÙóì™ˇ’o¿[HÌR[QÆ¯/ª∞Õ.î–j{éπ[PÌ∫íú11!ÏÕ/*x¢]´4…ªGãŸù≤î —˜€Åõew˚Üd6IŒ2…≥Z!∫óÓ™t—/πÛn6â)i4”/Ø‘˜ó=Ïú§ËΩÏ∂¥ß§5îßØ¢d∆x^9∂ü«ëÆ>ı˚˛¬ß©¶&≈ROä€ÿuuñ[·Ë>≤)éƒÛ6—∂FÕjƒ8Z&¶êÇ‘ K/h¯˙ƒP$˚†aiêk˝¡∑ó˘ÒphŒZQ(_ÊÅ_0‹r=ﬂpxmü˝òt¡±3˝VdøŸ¢êÒu±à«£ı!Qõ‰S˘¶≥}Ó‘%¬»%≤ùFÍ‹‘õøÖ∫+H¶gIﬂè‚ˆÕ¸ûﬂû◊£0∂É˝zÂßnôq0å–n˛êq√àÏŒÒﬂ·∑ÙÏñ0s)ü”b≈3W´ƒ’L˙º,˝¨wµè3†Ω…≥Œ&KﬁÙuΩ—Ωy7—õ◊q:◊]∆–€∏€Ûœ_»À?ûÊ˛ı„l≈CqÊËVØüÁR.(óì˛?q˛πÖ∑∏òoZ ó››æŸs|QM¿‡ÁÊ^ãøü„.∞’Û≤fÒöEıÍ‹3–oˆ.ŒPué≈≥	∆œÚk–K·B÷k©êb◊Ôu÷:,Ê≥ΩÎ›Á±€#[Ä˜´"ÀJÛ∞™‰ÜÍæ pﬁF˛B´7≤êÒfûKA?7‚•Jç≠E>ΩπH∫@ÌıY|÷()É˛J—p∑ÔP…Ù˜®¨Œªö«ÃÛ7£ÊEw;nÀŒ∑zõa†¥¸¯ïÖÍ—ﬁLB∑G];˚OóÛê‚v¡À$:Û_ﬁäı∏ÔiÄ«Ä)îºÖº≤ÍäRx]]§˜¸Åé<‘ãÃì^≤∏€ùXÀ‘n›÷vx.ô_÷Ôg∂~<mäAÑ®cÂ/∑ÉπèÑ÷¸∂Nñ[@ËÛ®ïP»UÉ"-EË¥πˆ'ãA˚8≥[*◊ª•tºo£Yúz`f:ôÿ«ÛÓ C*…ç~ûk‚õw/^>c¿}ºπˇXëßá˚xv®Àpﬁ¡Ê™ôa+åO
+ÍﬁµùëE€x ä∏Œ<AƒÆ‘¬ıjC|{¯Ê9éÚËŸªw/^}ƒÓ±˝ÉÉ7Ô_øÛåVPs˘ÜÎÓ¿õ⁄”TÕ¥%“∫Ú“Ì9vılíîb‰∆ß¡Õ˘yÙÅ∑Êπè£îKL<Ωò¬UÀ∫Ñ1 g—¶l∆É;íp”P.hkéø˜Ñ$Ÿ~/œ~t¿	Ô∂Ú"Ÿoû––‚	¨€tÎk˛ÆÍA_O≠™N—çÒÂ‰Ÿ—UÅë{Ï9∞êpk^¿JxÕCUkË/õ∆Q>·R|ÿÔ¿µ˘›ehá˚|<œG<¡ ßZ*€4œ>W=©#s„œ“Û˜Ÿ"g2?jçë√fØiôÙè xŒﬁÃ(ÖFΩ\cøÒñl}Ú@“Õ4„£ô«'C}ñæ¸?nË O^!#ùåa\ËÉ}©Ó][y™ÙaÍ|Õè∏8úä0Cl√$QëÇZg	L™ƒÂâj8ÇÇîÕ:åB∏}{≤ªf)P(˚¿”¯Súfs¯&hëÄGèx ¿€Ù àYÀõ©V¢QH1kÄçM˙êàê≈˚ç⁄Î¢0«¡ñÍq-Ç‡I'ç-]|–N…d0NÃVx`û±u(†˜Ü!óÔf„∞¶¡ËU≠?`¢g#Õœó]cw≤ZvËTª·4·}kÚ ÛLøçÆ(ïÃΩ–1'kääÿ`™>ÿiçˆ?R¯GTÉ∏Ë¬Yïë£˜Kf∆´ÁÄ‰˜[6Ä1ÊäQ*0∆Û§}ç	ƒ»’Yß*cò™\+Or¥ˆ™/≥öQΩπ€¬G´pxÔ9(46á≈ˆÂ]dè˝˘?∞v¸AcOπO?™}¥=√øËáèè˛$+Àl ^sEÆ•∂ñgm⁄ú;%üP€ /YF∫´B/6x'ó-5r°œ#“!
+√4æ∆“÷¨bU4 L≈kXˇlów”Ï_· 3ôŒj¿âìª^ôA.*B´”M“6j‘£GT≤^âÉ™‰Gè™±4<¥L¬wıÖ2í<óÏ˝<Õ¢	ú#\¯7≤E3ÇÈ⁄>âËNÓãèY%∆⁄aù_uAü£≈7D>òˇÎÀë~[`Œ˘&?ıôTÂGˇZße‚÷˜ßeCÿ¥Ö5Êª8ÔI∞"q™™’ÖæËèF∏ˇGéóüÆ(,Ö¶P· Í¸*;—L⁄ïm+≥∫™˙Vejóiˆg∫eW#0îÈî¸&{∆TcÇö≠À/z‹OÀÊ∆´>7∑;F5òã∫.‘≈ÜË¬ä ÕwÉèN(éX«C˘˚G•"9¯ÚTB•ø{!7∂Ó©J)ãÃà%vÄôÉ(ôegiá÷
+πÓÿ•’54®qNΩçkÍg9¶÷π•÷8•~éKj≥CÍùπ£∂vF˝]Q˝é®>7T∑◊µ—Ô¬>÷⁄√sÊ0BªÃg”€.ïaDT–äz‰51Å¯2;3 cõ”™˘òæ†:;Àò¥ısÆR◊âcËI2XóY·√áZf¡áÀœô7kS¢eòwa3FqùæïØN®≥¶(Ào4i›˜õmV3 (ﬁk#-√/Y7»¿µFh9ô]üLÃP„IÛwé†1ﬁUÿiµ)	°π|q(K£5HÖæ˚DF^&j ﬁÉgÆÚºè∑Òﬂs¸∑ŒïˆÓÒõ·7[∞œø·yD7Ü´£áWG√´√¡∆ y o /ÍÓ[ìa®!©ô˙ƒıÊã/‚Àyñó®>BÓüù.fî‚≈·=~[‡ßÈ1◊W≠r§«Ø¯y|T¢-©~~ó˘ï:Wƒij‰«„ÇÜó®%ÎÆpFYqòﬂ0J´mwBKKñÕìΩ√ûùûhÉc‡È‡q»˙ıGÂãñ_ƒ°6†•∆LÙòÛæ««•D∆T
+s*´Ã™.Ú//ıVûR}ÈßHH¥7êƒ”˛öÄ∂*WÚ√äñlºRT˙r÷cyØâX˛%~—≤µõÈöÖàyå'à˝Q~•î˛§%ﬂåÀr õ¯%ßiAÆôD0m,7⁄Óﬁ}íg¿∫ëeA^G`‹—œ˜Ò?oéhuMÚ∆…µ)§a
+æ¨k◊!IÁî˙=ÎùÏÓöÑ¸ÒÓZ ˆ¥œˇ   ˇˇ 	"˜

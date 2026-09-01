@@ -36,6 +36,7 @@ interface UniversalYouTubePlayerProps {
   aspectRatio?: string;
   className?: string;
   autoPlay?: boolean;
+  muted?: boolean;
 }
 
 export const UniversalYouTubePlayer = React.memo(function UniversalYouTubePlayer({
@@ -43,7 +44,8 @@ export const UniversalYouTubePlayer = React.memo(function UniversalYouTubePlayer
   isReel = false,
   aspectRatio,
   className = '',
-  autoPlay = true
+  autoPlay = false,
+  muted = true
 }: UniversalYouTubePlayerProps) {
   const ytId = extractYouTubeId(url);
 
@@ -62,7 +64,7 @@ export const UniversalYouTubePlayer = React.memo(function UniversalYouTubePlayer
   // - rel=0 disables unrelated recommended videos
   // - modestbranding=1 minimizes player overlays
   // - enablejsapi=0 prevents cross-origin postMessage lag
-  const embedUrl = `https://www.youtube.com/embed/${ytId}?autoplay=${autoPlay ? 1 : 0}&mute=0&controls=1&rel=0&playsinline=1&modestbranding=1&enablejsapi=0${isVertical ? `&loop=1&playlist=${ytId}` : ''}`;
+  const embedUrl = `https://www.youtube.com/embed/${ytId}?autoplay=${autoPlay ? 1 : 0}&mute=${muted ? 1 : 0}&controls=1&rel=0&playsinline=1&modestbranding=1&enablejsapi=0${isVertical ? `&loop=1&playlist=${ytId}` : ''}`;
 
   return (
     <div

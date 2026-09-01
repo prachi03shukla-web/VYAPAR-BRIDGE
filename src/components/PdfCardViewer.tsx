@@ -61,7 +61,14 @@ export const PdfCardViewer: React.FC<PdfCardViewerProps> = ({ post, variant = 'f
   const [renderError, setRenderError] = useState<boolean>(false);
   const [isReaderModalOpen, setIsReaderModalOpen] = useState<boolean>(false);
   const [coverThumbUrl, setCoverThumbUrl] = useState<string>(
-    (post.thumbnailUrl && !post.thumbnailUrl.startsWith('data:application/pdf') && !post.thumbnailUrl.startsWith('blob:')) 
+    (post.thumbnailUrl && 
+     !post.thumbnailUrl.startsWith('data:application/pdf') && 
+     !post.thumbnailUrl.startsWith('blob:') && 
+     !post.thumbnailUrl.includes('.pdf') && 
+     !post.thumbnailUrl.match(/\.pdf(\?.*)?$/i) && 
+     post.thumbnailUrl !== 'undefined' && 
+     post.thumbnailUrl !== 'null' && 
+     post.thumbnailUrl.trim() !== '') 
       ? post.thumbnailUrl 
       : ''
   );
@@ -100,7 +107,14 @@ export const PdfCardViewer: React.FC<PdfCardViewerProps> = ({ post, variant = 'f
   }, [rawPdfUrl, post.id]);
 
   useEffect(() => {
-    if (post.thumbnailUrl && !post.thumbnailUrl.startsWith('data:application/pdf') && !post.thumbnailUrl.startsWith('blob:')) {
+    if (post.thumbnailUrl && 
+        !post.thumbnailUrl.startsWith('data:application/pdf') && 
+        !post.thumbnailUrl.startsWith('blob:') && 
+        !post.thumbnailUrl.includes('.pdf') && 
+        !post.thumbnailUrl.match(/\.pdf(\?.*)?$/i) && 
+        post.thumbnailUrl !== 'undefined' && 
+        post.thumbnailUrl !== 'null' && 
+        post.thumbnailUrl.trim() !== '') {
       setCoverThumbUrl(post.thumbnailUrl);
       setIsRendering(false);
       setRenderError(false);
@@ -230,25 +244,40 @@ export const PdfCardViewer: React.FC<PdfCardViewerProps> = ({ post, variant = 'f
         >
           {/* Custom Cover Thumbnail, Canvas, or Fallback Image */}
           {coverThumbUrl ? (
-            <img src={coverThumbUrl} alt={docTitle} className="w-full h-full object-cover" />
-          ) : hasCanvasRendered ? (
-            <div className="w-full h-full flex items-center justify-center bg-slate-950 p-1">
-              <canvas ref={canvasRef} className="max-w-full max-h-full object-contain shadow-md rounded-sm" />
-            </div>
+            <img 
+              src={coverThumbUrl} 
+              alt={docTitle} 
+              className="w-full h-full object-cover" 
+              onError={() => {
+                console.warn('PDF Cover Thumbnail load failed, falling back...');
+                setCoverThumbUrl('');
+              }}
+            />
           ) : (
-            <div className="w-full h-full bg-gradient-to-br from-emerald-950 via-teal-900 to-slate-900 p-3 flex flex-col items-center justify-between text-center">
-              <div className="w-10 h-10 rounded-xl bg-white/10 backdrop-blur-md flex items-center justify-center border border-emerald-400/30 text-emerald-300 mt-2">
-                <FileText className="w-5 h-5" />
+            <>
+              {/* Always preserve the same canvas DOM node so its rendered pixels are not lost */}
+              <div className={`w-full h-full flex items-center justify-center bg-slate-950 p-1 ${
+                hasCanvasRendered ? 'flex' : 'hidden'
+              }`}>
+                <canvas ref={canvasRef} className="max-w-full max-h-full object-contain shadow-md rounded-sm" />
               </div>
-              <div className="my-auto">
-                <p className="text-[10px] font-black text-white line-clamp-2 uppercase tracking-wide">
-                  {companyName}
-                </p>
-                <p className="text-[8px] text-emerald-300 font-semibold line-clamp-1 mt-0.5">
-                  {docTitle}
-                </p>
-              </div>
-            </div>
+
+              {!hasCanvasRendered && (
+                <div className="w-full h-full bg-gradient-to-br from-emerald-950 via-teal-900 to-slate-900 p-3 flex flex-col items-center justify-between text-center">
+                  <div className="w-10 h-10 rounded-xl bg-white/10 backdrop-blur-md flex items-center justify-center border border-emerald-400/30 text-emerald-300 mt-2">
+                    <FileText className="w-5 h-5" />
+                  </div>
+                  <div className="my-auto">
+                    <p className="text-[10px] font-black text-white line-clamp-2 uppercase tracking-wide">
+                      {companyName}
+                    </p>
+                    <p className="text-[8px] text-emerald-300 font-semibold line-clamp-1 mt-0.5">
+                      {docTitle}
+                    </p>
+                  </div>
+                </div>
+              )}
+            </>
           )}
 
           {/* Top PDF Indicator Tag */}
@@ -294,34 +323,39 @@ export const PdfCardViewer: React.FC<PdfCardViewerProps> = ({ post, variant = 'f
               src={coverThumbUrl} 
               alt={docTitle} 
               className="w-full h-auto max-h-[85vh] object-contain transition-transform duration-300 group-hover:scale-[1.008]" 
-            />
-          ) : hasCanvasRendered ? (
-            <canvas 
-              ref={canvasRef} 
-              className="w-full h-auto max-h-[85vh] object-contain transition-transform duration-300 group-hover:scale-[1.008]" 
+              onError={() => {
+                console.warn('PDF Cover Thumbnail load failed in Feed, falling back to Canvas/Design Cover...');
+                setCoverThumbUrl('');
+              }}
             />
           ) : (
-            // Rich Branded Catalogue Card Preview (Never blank white!)
-            <div className="w-full min-h-[320px] bg-gradient-to-br from-slate-950 via-slate-900 to-emerald-950 p-8 rounded-2xl text-center flex flex-col items-center justify-center my-auto border border-emerald-500/20">
-              <div className="w-16 h-16 rounded-2xl bg-emerald-500/15 border border-emerald-400/40 flex items-center justify-center text-emerald-400 mb-3 shadow-lg shadow-emerald-950/50 group-hover:scale-105 transition-transform">
-                <FileText className="w-8 h-8 text-emerald-400" />
-              </div>
-              <h4 className="text-sm font-black text-white uppercase tracking-wider mb-1 line-clamp-2 max-w-sm">
-                {companyName}
-              </h4>
-              <p className="text-xs text-emerald-300/90 font-semibold mb-3 max-w-sm line-clamp-2">
-                {docTitle}
-              </p>
-              <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-600/30 border border-emerald-400/40 text-emerald-300 text-xs font-bold">
-                <BookOpen className="w-3.5 h-3.5" />
-                <span>Tap to Open Full Catalogue</span>
-              </div>
-            </div>
-          )}
+            <>
+              {/* Maintain the exact same canvas element so its printed buffer state isn't lost on state change */}
+              <canvas 
+                ref={canvasRef} 
+                className={`w-full h-auto max-h-[85vh] object-contain transition-transform duration-300 group-hover:scale-[1.008] ${
+                  hasCanvasRendered ? 'block' : 'hidden'
+                }`}
+              />
 
-          {/* Hidden Canvas Element while computing render */}
-          {!hasCanvasRendered && !coverThumbUrl && (
-            <canvas ref={canvasRef} className="hidden" />
+              {!hasCanvasRendered && (
+                <div className="w-full min-h-[320px] bg-gradient-to-br from-slate-950 via-slate-900 to-emerald-950 p-8 rounded-2xl text-center flex flex-col items-center justify-center my-auto border border-emerald-500/20">
+                  <div className="w-16 h-16 rounded-2xl bg-emerald-500/15 border border-emerald-400/40 flex items-center justify-center text-emerald-400 mb-3 shadow-lg shadow-emerald-950/50 group-hover:scale-105 transition-transform">
+                    <FileText className="w-8 h-8 text-emerald-400" />
+                  </div>
+                  <h4 className="text-sm font-black text-white uppercase tracking-wider mb-1 line-clamp-2 max-w-sm">
+                    {companyName}
+                  </h4>
+                  <p className="text-xs text-emerald-300/90 font-semibold mb-3 max-w-sm line-clamp-2">
+                    {docTitle}
+                  </p>
+                  <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-600/30 border border-emerald-400/40 text-emerald-300 text-xs font-bold">
+                    <BookOpen className="w-3.5 h-3.5" />
+                    <span>Tap to Open Full Catalogue</span>
+                  </div>
+                </div>
+              )}
+            </>
           )}
 
           {/* Minimal Page Count Tag in Corner */}
