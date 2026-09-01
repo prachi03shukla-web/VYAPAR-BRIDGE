@@ -31,12 +31,14 @@ export function cleanupStorageQuota(): void {
         k.startsWith('temp_') || 
         k === 'VyaparBridge_deleted_posts' || 
         k === 'vyapar_barcode_url' ||
-        k.startsWith('vyapar_catalogues_')
+        k.startsWith('vyapar_catalogues_') ||
+        k.startsWith('vyapar_my_stories') ||
+        k.startsWith('vyapar_reviews_')
       ) {
         keysToRemove.push(k);
       }
-      // 3. User lists cache can be trimmed
-      else if (k === 'local_users_cache' || k === 'local_brand_ads') {
+      // 3. User lists and posts cache can be trimmed or removed
+      else if (k === 'local_users_cache' || k === 'local_brand_ads' || k === 'VyaparBridge_cached_posts') {
         keysToTrim.push(k);
       }
     }
@@ -54,22 +56,25 @@ export function cleanupStorageQuota(): void {
         const item = localStorage.getItem(k);
         if (item) {
           const parsed = JSON.parse(item);
-          if (Array.isArray(parsed) && parsed.length > 20) {
-            // Keep only essential 20 items and strip big media
-            const trimmed = parsed.slice(0, 20).map(obj => {
-              if (obj && typeof obj === 'object') {
-                const copy = { ...obj };
-                // Strip huge base64 strings if any
-                Object.keys(copy).forEach(prop => {
-                  if (typeof copy[prop] === 'string' && copy[prop].length > 10000 && copy[prop].startsWith('data:')) {
-                    delete copy[prop];
-                  }
-                });
-                return copy;
-              }
-              return obj;
-            });
-            localStorage.setItem(k, JSON.stringify(trimmed));
+          if (Array.isArray(parsed)) {
+            if (k === 'VyaparBridge_cached_posts' && parsed.length > 10) {
+              // Keep only essential 10 items and strip big media
+              const trimmed = parsed.slice(0, 10).map(obj => {
+                if (obj && typeof obj === 'object') {
+                  const copy = { ...obj };
+                  Object.keys(copy).forEach(prop => {
+                    if (typeof copy[prop] === 'string' && copy[prop].length > 20000 && copy[prop].startsWith('data:')) {
+                      delete copy[prop];
+                    }
+                  });
+                  return copy;
+                }
+                return obj;
+              });
+              localStorage.setItem(k, JSON.stringify(trimmed));
+            } else if (parsed.length > 15) {
+              localStorage.setItem(k, JSON.stringify(parsed.slice(0, 15)));
+            }
           }
         }
       } catch (e) {
@@ -93,23 +98,25 @@ export function sanitizeUserForStorage(user: any): any {
   
   // Whitelist of valid user fields to prevent deep nested bloat
   const allowedKeys = [
-    'id', 'username', 'name', 'role', 'phone', 'email', 'bio', 'city', 'state',
-    'address', 'gstNumber', 'isVerified', 'verifiedBadge', 'verifiedPlan',
-    'membershipType', 'activeFreeOneYearPlan', 'subscriptionPlan', 'subscriptionAmount',
+    'id', 'username', 'name', 'businessName', 'tradeName', 'role', 'phone', 'email', 'bio',
+    'city', 'state', 'address', 'pincode', 'location', 'gstNumber', 'isVerified', 'verifiedBadge',
+    'verifiedPlan', 'membershipType', 'activeFreeOneYearPlan', 'subscriptionPlan', 'subscriptionAmount',
     'goldenBadge', 'fingerprintId', 'referralCode', 'referredBy', 'referralCount',
     'qualifiedReferralCount', 'referralRewardEligible', 'avatarUrl', 'avatar',
-    'bannerUrl', 'visitingCard', 'qrCodeUrl', 'createdAt', 'updatedAt', 'lastLoginAt',
-    'isAdmin', 'permissions', 'sellerDiscountsGiven', 'upiId'
+    'bannerUrl', 'coverPhoto', 'coverUrl', 'visitingCard', 'qrCodeUrl', 'createdAt', 'updatedAt',
+    'lastLoginAt', 'isAdmin', 'permissions', 'sellerDiscountsGiven', 'upiId',
+    'categories', 'category', 'subCategory', 'subCategories', 'description',
+    'catalogueUrl', 'catalogUrl', 'website', 'rating', 'reviewCount', 'totalDeals',
+    'contactNumber', 'whatsappNumber', 'establishedYear', 'turnover'
   ];
 
   allowedKeys.forEach(k => {
     if (user[k] !== undefined) {
       let val = user[k];
-      // If a base64 field is abnormally huge (> 300KB), truncate or skip it in localStorage
-      // Firestore already holds the full asset
-      if (typeof val === 'string' && val.length > 300000 && val.startsWith('data:')) {
-        console.warn(`User field ${k} exceeds 300KB, compressing for localStorage safety.`);
-        // We do not save huge 5MB data URLs inside user object in localStorage
+      // If a base64 field is large (> 50KB), don't store raw large base64 in localStorage
+      // Firestore already holds the full asset and in-memory state holds it during current session
+      if (typeof val === 'string' && val.length > 50000 && (val.startsWith('data:') || val.startsWith('blob:'))) {
+        console.warn(`User field '${k}' exceeds 50KB data-URI size, pruning for localStorage quota protection.`);
         return;
       }
       sanitized[k] = val;
@@ -126,6 +133,14 @@ export function safeSetLocalStorage(key: string, value: any): boolean {
   if (typeof window === 'undefined') return false;
 
   const stringVal = typeof value === 'string' ? value : JSON.stringify(value);
+
+  // Quick sanity check: if string is massive (> 500KB), don't dump into localStorage directly
+  if (stringVal.length > 500000) {
+    console.warn(`SafeStorage: Payload for '${key}' is very large (${Math.round(stringVal.length / 1024)}KB). Using memory & session fallback.`);
+    try { sessionStorage.setItem(key, stringVal); } catch (e) {}
+    memoryFallbackStore.set(key, stringVal);
+    return true;
+  }
 
   try {
     localStorage.setItem(key, stringVal);
@@ -193,6 +208,7 @@ export function safeRemoveLocalStorage(key: string): void {
 export function safeSaveUser(user: any): void {
   if (!user) {
     safeRemoveLocalStorage('user');
+    safeRemoveLocalStorage('VyaparBridge_user');
     safeRemoveLocalStorage('Vyapar Bridge_user');
     return;
   }
@@ -201,6 +217,7 @@ export function safeSaveUser(user: any): void {
   const userJson = JSON.stringify(compactUser);
 
   safeSetLocalStorage('user', userJson);
+  safeSetLocalStorage('VyaparBridge_user', userJson);
   safeSetLocalStorage('Vyapar Bridge_user', userJson);
 
   if (compactUser.id) {

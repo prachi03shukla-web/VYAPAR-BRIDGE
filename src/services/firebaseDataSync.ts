@@ -304,7 +304,7 @@ export async function syncPostToFirestore(postData: any): Promise<boolean> {
       } else {
         localList.unshift(postWithId);
       }
-      localStorage.setItem(LOCAL_POSTS_CACHE_KEY, JSON.stringify(localList.slice(0, 100)));
+      safeSetLocalStorage(LOCAL_POSTS_CACHE_KEY, localList.slice(0, 50));
     } catch (e) {}
     
     // Ensure mediaUrl is a persistent cloud/data URL or valid media path (DO NOT wipe /uploads/ or base64)
@@ -360,11 +360,6 @@ export async function syncPostToFirestore(postData: any): Promise<boolean> {
     const videoStreamCandidate = cleanData.videoUrl || cleanData.video || (cleanData.mediaUrl && !cleanData.mediaUrl.startsWith('data:image') ? cleanData.mediaUrl : '');
     if (videoStreamCandidate) {
       cacheVideoUrlInMemory(postId, videoStreamCandidate);
-      if (typeof videoStreamCandidate === 'string' && (videoStreamCandidate.startsWith('data:video') || videoStreamCandidate.startsWith('blob:'))) {
-        try {
-          localStorage.setItem('vyapar_video_' + postId, videoStreamCandidate);
-        } catch (e) {}
-      }
     }
 
     if (cleanData.type === 'video' || (cleanData.mediaUrl && (cleanData.mediaUrl.startsWith('data:video') || cleanData.mediaUrl.match(/\.(mp4|webm|mov|m4v)(\?.*)?$/i)))) {
@@ -457,7 +452,7 @@ export async function syncPostToFirestore(postData: any): Promise<boolean> {
       let list: any[] = existingStr ? JSON.parse(existingStr) : [];
       if (!Array.isArray(list)) list = [];
       const filtered = list.filter(p => String(p.id) !== postId);
-      localStorage.setItem(LOCAL_POSTS_CACHE_KEY, JSON.stringify([cleanData, ...filtered].slice(0, 100)));
+      safeSetLocalStorage(LOCAL_POSTS_CACHE_KEY, [cleanData, ...filtered].slice(0, 50));
     } catch (localErr) {
       console.warn('Local cache backup note:', localErr);
     }
@@ -651,7 +646,7 @@ export async function fetchPostsFromFirestore(): Promise<any[]> {
 
   // Update local cache with freshest authoritative state
   try {
-    localStorage.setItem(LOCAL_POSTS_CACHE_KEY, JSON.stringify(result.slice(0, 100)));
+    safeSetLocalStorage(LOCAL_POSTS_CACHE_KEY, result.slice(0, 50));
   } catch (e) {}
 
   return result;
@@ -785,7 +780,7 @@ export function subscribeToPostsFromFirestore(callback: (posts: any[]) => void):
         });
 
       try { 
-        localStorage.setItem(LOCAL_POSTS_CACHE_KEY, JSON.stringify(result.slice(0, 100))); 
+        safeSetLocalStorage(LOCAL_POSTS_CACHE_KEY, result.slice(0, 50)); 
       } catch (e) {}
       
       cachedPosts = result as any;
@@ -1908,7 +1903,7 @@ export async function syncUserToFirestore(userData: any): Promise<boolean> {
       let list: any[] = existingStr ? JSON.parse(existingStr) : [];
       if (!Array.isArray(list)) list = [];
       const filtered = list.filter(u => String(u.id) !== uId);
-      localStorage.setItem(LOCAL_USERS_CACHE_KEY, JSON.stringify([cleanData, ...filtered]));
+      safeSetLocalStorage(LOCAL_USERS_CACHE_KEY, [cleanData, ...filtered].slice(0, 50));
     } catch (localErr) {
       console.warn('Local users cache backup note:', localErr);
     }
@@ -2103,7 +2098,7 @@ export async function fetchAllUsersFromFirestore(): Promise<any[]> {
 
   try {
     updateCachedUsers(result);
-    localStorage.setItem(LOCAL_USERS_CACHE_KEY, JSON.stringify(result));
+    safeSetLocalStorage(LOCAL_USERS_CACHE_KEY, result.slice(0, 50));
   } catch (e) {}
   return result;
 }
@@ -2303,7 +2298,7 @@ export async function updateUserVerificationInFirestore(
             }
             return u;
           });
-          localStorage.setItem(LOCAL_USERS_CACHE_KEY, JSON.stringify(updated));
+          safeSetLocalStorage(LOCAL_USERS_CACHE_KEY, updated.slice(0, 50));
         }
       }
     } catch (e) {}
@@ -2615,7 +2610,7 @@ export async function updateUserPresence(userId: string | number, isOnline: bool
             }
             return u;
           });
-          localStorage.setItem(LOCAL_USERS_CACHE_KEY, JSON.stringify(updated));
+          safeSetLocalStorage(LOCAL_USERS_CACHE_KEY, updated.slice(0, 50));
         }
       }
     } catch (e) {}

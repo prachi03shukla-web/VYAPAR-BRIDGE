@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import { getVideoBlobUrl } from '../utils/videoStorage';
-import { extractPdfFirstPageThumbnail, ensurePdfWorkerConfigured } from '../utils/pdfThumbnail';
+import { extractPdfFirstPageThumbnail, ensurePdfWorkerConfigured, generateFallbackPdfCover } from '../utils/pdfThumbnail';
 import { 
   FileText, 
   Download, 
@@ -13,12 +13,11 @@ import {
   ZoomIn, 
   ZoomOut, 
   Building2, 
-  CheckCircle, 
   BookOpen, 
   Share2,
+  FileCheck,
   Sparkles,
-  ShieldCheck,
-  FileCheck
+  Layers
 } from 'lucide-react';
 
 ensurePdfWorkerConfigured();
@@ -60,25 +59,25 @@ export const PdfCardViewer: React.FC<PdfCardViewerProps> = ({ post, variant = 'f
   const [hasCanvasRendered, setHasCanvasRendered] = useState<boolean>(false);
   const [renderError, setRenderError] = useState<boolean>(false);
   const [isReaderModalOpen, setIsReaderModalOpen] = useState<boolean>(false);
-  const [coverThumbUrl, setCoverThumbUrl] = useState<string>(
-    (post.thumbnailUrl && 
-     !post.thumbnailUrl.startsWith('data:application/pdf') && 
-     !post.thumbnailUrl.startsWith('blob:') && 
-     !post.thumbnailUrl.includes('.pdf') && 
-     !post.thumbnailUrl.match(/\.pdf(\?.*)?$/i) && 
-     post.thumbnailUrl !== 'undefined' && 
-     post.thumbnailUrl !== 'null' && 
-     post.thumbnailUrl.trim() !== '') 
-      ? post.thumbnailUrl 
-      : ''
-  );
+  
+  const initialThumb = (
+    post.thumbnailUrl && 
+    !post.thumbnailUrl.startsWith('data:application/pdf') && 
+    !post.thumbnailUrl.includes('.pdf') && 
+    !post.thumbnailUrl.match(/\.pdf(\?.*)?$/i) && 
+    post.thumbnailUrl !== 'undefined' && 
+    post.thumbnailUrl !== 'null' && 
+    post.thumbnailUrl.trim() !== ''
+  ) ? post.thumbnailUrl : '';
+
+  const [coverThumbUrl, setCoverThumbUrl] = useState<string>(initialThumb);
 
   // Derived Company & Document Titles
   const companyName = 
     post.companyName || 
     post.user?.businessName || 
     post.user?.name || 
-    'Official Business Catalogue';
+    'Official Trade Catalogue';
 
   const docTitle = 
     post.title || 
@@ -109,29 +108,20 @@ export const PdfCardViewer: React.FC<PdfCardViewerProps> = ({ post, variant = 'f
   useEffect(() => {
     if (post.thumbnailUrl && 
         !post.thumbnailUrl.startsWith('data:application/pdf') && 
-        !post.thumbnailUrl.startsWith('blob:') && 
         !post.thumbnailUrl.includes('.pdf') && 
         !post.thumbnailUrl.match(/\.pdf(\?.*)?$/i) && 
         post.thumbnailUrl !== 'undefined' && 
         post.thumbnailUrl !== 'null' && 
         post.thumbnailUrl.trim() !== '') {
       setCoverThumbUrl(post.thumbnailUrl);
-      setIsRendering(false);
-      setRenderError(false);
     }
   }, [post.thumbnailUrl]);
 
-  // Load and render Page 1 as thumbnail canvas or extracted image
+  // Load and render Page 1 (Front Page) as crisp thumbnail image or canvas
   useEffect(() => {
     let isCancelled = false;
 
-    if (coverThumbUrl) {
-      setIsRendering(false);
-      return;
-    }
-
     if (!effectivePdfUrl || effectivePdfUrl.startsWith('indexeddb:')) {
-      setIsRendering(false);
       return;
     }
 
@@ -140,24 +130,41 @@ export const PdfCardViewer: React.FC<PdfCardViewerProps> = ({ post, variant = 'f
         setIsRendering(true);
         setRenderError(false);
 
-        // 1. Try extracting thumbnail via pdfThumbnail utility first
-        const { thumbnailUrl, numPages: count } = await extractPdfFirstPageThumbnail(effectivePdfUrl);
-        if (isCancelled) return;
+        // If we don't have a thumbnail image yet, extract directly
+        if (!coverThumbUrl) {
+          const { thumbnailUrl, numPages: count } = await extractPdfFirstPageThumbnail(effectivePdfUrl);
+          if (isCancelled) return;
 
-        if (count > 0) setNumPages(count);
-        if (thumbnailUrl && !thumbnailUrl.startsWith('data:application/pdf')) {
-          setCoverThumbUrl(thumbnailUrl);
-          setIsRendering(false);
-          return;
+          if (count > 0) setNumPages(count);
+
+          if (thumbnailUrl && !thumbnailUrl.startsWith('data:application/pdf')) {
+            setCoverThumbUrl(thumbnailUrl);
+            setIsRendering(false);
+            return;
+          }
         }
 
-        // 2. Direct Canvas Render fallback
+        // Direct in-canvas Page 1 render fallback
+        ensurePdfWorkerConfigured();
         const pdfjsVer = pdfjsLib.version || '6.2.108';
-        const loadingTask = pdfjsLib.getDocument({
-          url: effectivePdfUrl,
-          cMapUrl: `https://unpkg.com/pdfjs-dist@${pdfjsVer}/cmaps/`,
-          cMapPacked: true,
-        });
+        const cMapUrl = `https://unpkg.com/pdfjs-dist@${pdfjsVer}/cmaps/`;
+
+        let loadingTask: any;
+        if (effectivePdfUrl.startsWith('http://') || effectivePdfUrl.startsWith('https://') || effectivePdfUrl.startsWith('blob:')) {
+          try {
+            const resp = await fetch(effectivePdfUrl);
+            if (resp.ok) {
+              const buf = await resp.arrayBuffer();
+              loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(buf), cMapUrl, cMapPacked: true });
+            } else {
+              loadingTask = pdfjsLib.getDocument({ url: effectivePdfUrl, cMapUrl, cMapPacked: true });
+            }
+          } catch {
+            loadingTask = pdfjsLib.getDocument({ url: effectivePdfUrl, cMapUrl, cMapPacked: true });
+          }
+        } else {
+          loadingTask = pdfjsLib.getDocument({ url: effectivePdfUrl, cMapUrl, cMapPacked: true });
+        }
 
         const pdf = await loadingTask.promise;
         if (isCancelled) return;
@@ -168,23 +175,24 @@ export const PdfCardViewer: React.FC<PdfCardViewerProps> = ({ post, variant = 'f
         const page = await pdf.getPage(1);
         if (isCancelled) return;
 
-        const viewport = page.getViewport({ scale: 1.2 });
         const canvas = canvasRef.current;
-
         if (canvas) {
+          const unscaled = page.getViewport({ scale: 1 });
+          const targetScale = Math.min(Math.max(900 / (unscaled.width || 600), 1.2), 2.2);
+          const viewport = page.getViewport({ scale: targetScale });
+
           const context = canvas.getContext('2d', { alpha: false });
           if (context) {
-            canvas.height = viewport.height;
-            canvas.width = viewport.width;
+            canvas.height = Math.floor(viewport.height);
+            canvas.width = Math.floor(viewport.width);
             context.fillStyle = '#ffffff';
             context.fillRect(0, 0, canvas.width, canvas.height);
 
-            const renderContext = {
+            await page.render({
               canvasContext: context,
               viewport: viewport,
-            };
+            }).promise;
 
-            await page.render(renderContext).promise;
             if (!isCancelled) {
               setHasCanvasRendered(true);
             }
@@ -193,9 +201,13 @@ export const PdfCardViewer: React.FC<PdfCardViewerProps> = ({ post, variant = 'f
         setIsRendering(false);
       } catch (err) {
         if (!isCancelled) {
-          console.warn('PDF Canvas Render Note:', err);
+          console.warn('PDF First Page Canvas Render Note:', err);
           setRenderError(true);
           setIsRendering(false);
+          // Set attractive fallback cover if completely failed
+          if (!coverThumbUrl) {
+            setCoverThumbUrl(generateFallbackPdfCover(docTitle, companyName));
+          }
         }
       }
     };
@@ -205,7 +217,7 @@ export const PdfCardViewer: React.FC<PdfCardViewerProps> = ({ post, variant = 'f
     return () => {
       isCancelled = true;
     };
-  }, [effectivePdfUrl, coverThumbUrl]);
+  }, [effectivePdfUrl, coverThumbUrl, docTitle, companyName]);
 
   const handleDownload = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -240,57 +252,35 @@ export const PdfCardViewer: React.FC<PdfCardViewerProps> = ({ post, variant = 'f
       <>
         <div 
           onClick={() => setIsReaderModalOpen(true)}
-          className="relative w-full h-full aspect-square bg-slate-900 overflow-hidden cursor-pointer group border border-emerald-500/20 rounded-lg shadow-sm"
+          className="relative w-full h-full aspect-square bg-slate-900 overflow-hidden cursor-pointer group border border-emerald-500/30 rounded-xl shadow-sm"
         >
           {/* Custom Cover Thumbnail, Canvas, or Fallback Image */}
           {coverThumbUrl ? (
             <img 
               src={coverThumbUrl} 
               alt={docTitle} 
-              className="w-full h-full object-cover" 
+              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" 
               onError={() => {
-                console.warn('PDF Cover Thumbnail load failed, falling back...');
-                setCoverThumbUrl('');
+                setCoverThumbUrl(generateFallbackPdfCover(docTitle, companyName));
               }}
             />
           ) : (
-            <>
-              {/* Always preserve the same canvas DOM node so its rendered pixels are not lost */}
-              <div className={`w-full h-full flex items-center justify-center bg-slate-950 p-1 ${
-                hasCanvasRendered ? 'flex' : 'hidden'
-              }`}>
-                <canvas ref={canvasRef} className="max-w-full max-h-full object-contain shadow-md rounded-sm" />
-              </div>
-
-              {!hasCanvasRendered && (
-                <div className="w-full h-full bg-gradient-to-br from-emerald-950 via-teal-900 to-slate-900 p-3 flex flex-col items-center justify-between text-center">
-                  <div className="w-10 h-10 rounded-xl bg-white/10 backdrop-blur-md flex items-center justify-center border border-emerald-400/30 text-emerald-300 mt-2">
-                    <FileText className="w-5 h-5" />
-                  </div>
-                  <div className="my-auto">
-                    <p className="text-[10px] font-black text-white line-clamp-2 uppercase tracking-wide">
-                      {companyName}
-                    </p>
-                    <p className="text-[8px] text-emerald-300 font-semibold line-clamp-1 mt-0.5">
-                      {docTitle}
-                    </p>
-                  </div>
-                </div>
-              )}
-            </>
+            <div className="w-full h-full flex items-center justify-center bg-slate-950 p-1">
+              <canvas ref={canvasRef} className="max-w-full max-h-full object-contain shadow-md rounded-sm" />
+            </div>
           )}
 
           {/* Top PDF Indicator Tag */}
-          <div className="absolute top-1.5 left-1.5 z-10 bg-emerald-600/90 text-white backdrop-blur-md px-2 py-0.5 rounded-md text-[8.5px] font-black tracking-wider uppercase flex items-center gap-1 shadow-md border border-emerald-400/40">
+          <div className="absolute top-2 left-2 z-10 bg-emerald-600/95 text-white backdrop-blur-md px-2 py-0.5 rounded-md text-[9px] font-black tracking-wider uppercase flex items-center gap-1 shadow-md border border-emerald-400/50">
             <FileCheck className="w-3 h-3 text-emerald-200" /> PDF CATALOGUE
           </div>
 
           {/* Hover Overlay */}
-          <div className="absolute inset-0 bg-slate-950/80 opacity-0 group-hover:opacity-100 transition-all duration-300 flex flex-col items-center justify-center p-2 text-center text-white z-20">
-            <BookOpen className="w-6 h-6 text-emerald-400 mb-1 animate-bounce" />
-            <p className="text-[10px] font-black line-clamp-2 uppercase text-emerald-300">{companyName}</p>
-            <span className="mt-2 text-[9px] bg-emerald-600 px-3 py-1 rounded-full font-bold shadow-md flex items-center gap-1">
-              <Eye className="w-3 h-3" /> Read Catalogue
+          <div className="absolute inset-0 bg-slate-950/80 opacity-0 group-hover:opacity-100 transition-all duration-300 flex flex-col items-center justify-center p-3 text-center text-white z-20">
+            <BookOpen className="w-6 h-6 text-emerald-400 mb-1.5 animate-bounce" />
+            <p className="text-[11px] font-black line-clamp-2 uppercase text-emerald-300">{companyName}</p>
+            <span className="mt-2 text-[10px] bg-emerald-600 hover:bg-emerald-500 text-white px-3.5 py-1.5 rounded-full font-bold shadow-md flex items-center gap-1.5">
+              <Eye className="w-3.5 h-3.5" /> Read Catalogue
             </span>
           </div>
         </div>
@@ -309,68 +299,119 @@ export const PdfCardViewer: React.FC<PdfCardViewerProps> = ({ post, variant = 'f
     );
   }
 
-  // FULL FEED WALL VARIANT
+  // FULL FEED WALL POSTCARD VARIANT
   return (
     <>
       <div 
         onClick={() => setIsReaderModalOpen(true)}
-        className="relative w-full bg-slate-900/95 dark:bg-black/95 rounded-2xl overflow-hidden shadow-md cursor-pointer group hover:opacity-98 transition-all duration-200 my-1.5 flex items-center justify-center border border-slate-200/40 dark:border-zinc-800"
+        className="relative w-full bg-slate-950 rounded-2xl overflow-hidden shadow-lg cursor-pointer group hover:border-emerald-500/50 transition-all duration-300 my-2 border border-slate-800"
       >
-        {/* First Page Render / Cover Thumbnail */}
-        <div className="relative w-full min-h-[300px] max-h-[85vh] flex items-center justify-center bg-zinc-950 overflow-hidden">
-          {coverThumbUrl && !coverThumbUrl.startsWith('data:application/pdf') ? (
-            <img 
-              src={coverThumbUrl} 
-              alt={docTitle} 
-              className="w-full h-auto max-h-[85vh] object-contain transition-transform duration-300 group-hover:scale-[1.008]" 
-              onError={() => {
-                console.warn('PDF Cover Thumbnail load failed in Feed, falling back to Canvas/Design Cover...');
-                setCoverThumbUrl('');
-              }}
-            />
+        {/* Top Front Page Header Banner */}
+        <div className="bg-gradient-to-r from-emerald-950 via-slate-900 to-emerald-950 px-4 py-2.5 flex items-center justify-between border-b border-emerald-500/20 text-white">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="p-1.5 bg-emerald-500/20 text-emerald-400 rounded-lg border border-emerald-400/30">
+              <FileText className="w-4 h-4" />
+            </div>
+            <div className="min-w-0">
+              <span className="text-[11px] font-black uppercase tracking-wider text-emerald-300 block truncate">
+                📄 PDF CATALOGUE • FRONT COVER
+              </span>
+              <p className="text-[10px] text-slate-300 font-medium truncate">
+                {companyName}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={handleDownload}
+              className="p-1.5 bg-slate-800 hover:bg-emerald-700 text-white rounded-lg transition-colors border border-slate-700 shadow-sm"
+              title="Download PDF"
+            >
+              <Download className="w-3.5 h-3.5 text-emerald-300" />
+            </button>
+            <button
+              type="button"
+              onClick={handleShare}
+              className="p-1.5 bg-slate-800 hover:bg-emerald-700 text-white rounded-lg transition-colors border border-slate-700 shadow-sm"
+              title="Share Catalogue"
+            >
+              <Share2 className="w-3.5 h-3.5 text-emerald-300" />
+            </button>
+          </div>
+        </div>
+
+        {/* First Page / Front Cover Hero Canvas / Image */}
+        <div className="relative w-full min-h-[340px] max-h-[82vh] flex items-center justify-center bg-slate-900/90 overflow-hidden p-2 sm:p-4">
+          {coverThumbUrl ? (
+            <div className="relative max-h-[76vh] flex items-center justify-center rounded-xl overflow-hidden shadow-2xl border border-slate-700/60 bg-white">
+              <img 
+                src={coverThumbUrl} 
+                alt={docTitle} 
+                className="w-full h-auto max-h-[76vh] object-contain transition-transform duration-300 group-hover:scale-[1.01]" 
+                onError={() => {
+                  setCoverThumbUrl(generateFallbackPdfCover(docTitle, companyName));
+                }}
+              />
+            </div>
           ) : (
-            <>
-              {/* Maintain the exact same canvas element so its printed buffer state isn't lost on state change */}
+            <div className="relative max-h-[76vh] flex items-center justify-center rounded-xl overflow-hidden shadow-2xl border border-slate-700/60 bg-white">
               <canvas 
                 ref={canvasRef} 
-                className={`w-full h-auto max-h-[85vh] object-contain transition-transform duration-300 group-hover:scale-[1.008] ${
+                className={`w-full h-auto max-h-[76vh] object-contain transition-transform duration-300 group-hover:scale-[1.01] ${
                   hasCanvasRendered ? 'block' : 'hidden'
                 }`}
               />
 
-              {!hasCanvasRendered && (
-                <div className="w-full min-h-[320px] bg-gradient-to-br from-slate-950 via-slate-900 to-emerald-950 p-8 rounded-2xl text-center flex flex-col items-center justify-center my-auto border border-emerald-500/20">
-                  <div className="w-16 h-16 rounded-2xl bg-emerald-500/15 border border-emerald-400/40 flex items-center justify-center text-emerald-400 mb-3 shadow-lg shadow-emerald-950/50 group-hover:scale-105 transition-transform">
+              {!hasCanvasRendered && !isRendering && (
+                <div className="w-full min-h-[320px] bg-gradient-to-br from-slate-950 via-slate-900 to-emerald-950 p-8 rounded-xl text-center flex flex-col items-center justify-center my-auto border border-emerald-500/20">
+                  <div className="w-16 h-16 rounded-2xl bg-emerald-500/15 border border-emerald-400/40 flex items-center justify-center text-emerald-400 mb-3 shadow-lg group-hover:scale-105 transition-transform">
                     <FileText className="w-8 h-8 text-emerald-400" />
                   </div>
                   <h4 className="text-sm font-black text-white uppercase tracking-wider mb-1 line-clamp-2 max-w-sm">
                     {companyName}
                   </h4>
-                  <p className="text-xs text-emerald-300/90 font-semibold mb-3 max-w-sm line-clamp-2">
+                  <p className="text-xs text-emerald-300/90 font-semibold mb-4 max-w-sm line-clamp-2">
                     {docTitle}
                   </p>
-                  <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-600/30 border border-emerald-400/40 text-emerald-300 text-xs font-bold">
-                    <BookOpen className="w-3.5 h-3.5" />
+                  <div className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black shadow-lg">
+                    <BookOpen className="w-4 h-4" />
                     <span>Tap to Open Full Catalogue</span>
                   </div>
                 </div>
               )}
-            </>
+            </div>
           )}
 
-          {/* Minimal Page Count Tag in Corner */}
-          <div className="absolute bottom-3 right-3 bg-black/80 hover:bg-black/95 text-white backdrop-blur-md px-3 py-1 rounded-full text-[11px] font-bold tracking-tight flex items-center gap-1.5 shadow-lg border border-white/20 pointer-events-none z-10">
-            <FileText className="w-3.5 h-3.5 text-emerald-400" />
-            <span>{numPages ? `${numPages} Pages` : 'PDF'} • Tap to View</span>
+          {/* Minimal Floating Page Count & Tap to Open Badge */}
+          <div className="absolute bottom-4 right-4 bg-slate-950/90 hover:bg-black text-white backdrop-blur-md px-3.5 py-1.5 rounded-full text-[11px] font-black tracking-tight flex items-center gap-2 shadow-xl border border-emerald-500/40 pointer-events-none z-10">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+            <BookOpen className="w-3.5 h-3.5 text-emerald-400" />
+            <span>{numPages ? `${numPages} Pages` : 'PDF Brochure'} • Tap to Read</span>
           </div>
 
           {/* Loading Indicator */}
           {isRendering && !coverThumbUrl && !hasCanvasRendered && (
-            <div className="absolute inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center gap-2 text-white font-medium text-xs z-20">
+            <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center gap-2.5 text-emerald-400 font-bold text-xs z-20">
               <div className="w-5 h-5 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />
-              Loading PDF Catalogue...
+              Loading PDF Front Page...
             </div>
           )}
+        </div>
+
+        {/* Bottom Bar Details */}
+        <div className="px-4 py-2.5 bg-slate-900/95 border-t border-slate-800 flex items-center justify-between text-xs">
+          <div className="flex items-center gap-2 text-slate-300 min-w-0">
+            <Layers className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+            <span className="font-semibold text-slate-300 truncate">
+              {docTitle}
+            </span>
+          </div>
+
+          <span className="text-[10px] font-black uppercase text-emerald-400 bg-emerald-500/10 border border-emerald-400/30 px-2.5 py-1 rounded-md shrink-0 ml-2">
+            📖 Open Reader
+          </span>
         </div>
       </div>
 
@@ -421,12 +462,26 @@ export const PdfReaderModal: React.FC<PdfReaderModalProps> = ({
       try {
         setLoading(true);
         setPdfError(false);
+        ensurePdfWorkerConfigured();
         const pdfjsVer = pdfjsLib.version || '6.2.108';
-        const loadingTask = pdfjsLib.getDocument({
-          url: pdfUrl,
-          cMapUrl: `https://unpkg.com/pdfjs-dist@${pdfjsVer}/cmaps/`,
-          cMapPacked: true,
-        });
+        const cMapUrl = `https://unpkg.com/pdfjs-dist@${pdfjsVer}/cmaps/`;
+
+        let loadingTask: any;
+        if (pdfUrl.startsWith('http://') || pdfUrl.startsWith('https://') || pdfUrl.startsWith('blob:')) {
+          try {
+            const resp = await fetch(pdfUrl);
+            if (resp.ok) {
+              const buf = await resp.arrayBuffer();
+              loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(buf), cMapUrl, cMapPacked: true });
+            } else {
+              loadingTask = pdfjsLib.getDocument({ url: pdfUrl, cMapUrl, cMapPacked: true });
+            }
+          } catch {
+            loadingTask = pdfjsLib.getDocument({ url: pdfUrl, cMapUrl, cMapPacked: true });
+          }
+        } else {
+          loadingTask = pdfjsLib.getDocument({ url: pdfUrl, cMapUrl, cMapPacked: true });
+        }
 
         const doc = await loadingTask.promise;
         if (!isMounted) return;
@@ -466,10 +521,12 @@ export const PdfReaderModal: React.FC<PdfReaderModalProps> = ({
         const canvas = modalCanvasRef.current;
 
         if (canvas) {
-          const context = canvas.getContext('2d');
+          const context = canvas.getContext('2d', { alpha: false });
           if (context) {
-            canvas.height = viewport.height;
-            canvas.width = viewport.width;
+            canvas.height = Math.floor(viewport.height);
+            canvas.width = Math.floor(viewport.width);
+            context.fillStyle = '#ffffff';
+            context.fillRect(0, 0, canvas.width, canvas.height);
 
             const renderContext = {
               canvasContext: context,
@@ -495,20 +552,20 @@ export const PdfReaderModal: React.FC<PdfReaderModalProps> = ({
 
   return (
     <div 
-      className="fixed inset-0 z-[9999] bg-black/90 backdrop-blur-xl flex flex-col items-center justify-between p-2 sm:p-4 select-none animate-in fade-in duration-200"
+      className="fixed inset-0 z-[9999] bg-black/95 backdrop-blur-xl flex flex-col items-center justify-between p-2 sm:p-4 select-none animate-in fade-in duration-200"
       onClick={(e) => e.stopPropagation()}
     >
       {/* Top Header */}
-      <div className="w-full max-w-5xl bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 flex items-center justify-between text-white shadow-2xl">
+      <div className="w-full max-w-5xl bg-slate-900 border border-slate-800 rounded-2xl px-4 py-3 flex items-center justify-between text-white shadow-2xl">
         <div className="flex items-center gap-3 min-w-0">
-          <div className="w-8 h-8 rounded-lg bg-emerald-500/20 border border-emerald-400/30 flex items-center justify-center text-emerald-400 shrink-0">
-            <FileText className="w-4 h-4" />
+          <div className="w-9 h-9 rounded-xl bg-emerald-500/20 border border-emerald-400/30 flex items-center justify-center text-emerald-400 shrink-0">
+            <FileText className="w-5 h-5" />
           </div>
           <div className="min-w-0">
             <h3 className="text-xs sm:text-sm font-black uppercase tracking-wide text-white truncate">
               {companyName}
             </h3>
-            <p className="text-[10px] text-emerald-300/80 truncate">
+            <p className="text-[10px] sm:text-xs text-emerald-300/90 truncate">
               {docTitle}
             </p>
           </div>
@@ -516,25 +573,25 @@ export const PdfReaderModal: React.FC<PdfReaderModalProps> = ({
 
         <div className="flex items-center gap-2 shrink-0">
           {/* View Mode Switcher */}
-          <div className="hidden md:flex items-center bg-slate-950/80 rounded-lg p-1 border border-slate-800 text-xs mr-2">
+          <div className="hidden md:flex items-center bg-slate-950/80 rounded-xl p-1 border border-slate-800 text-xs mr-2">
             <button 
               onClick={() => setViewMode('canvas')}
-              className={`px-2.5 py-1 rounded-md font-bold transition-all cursor-pointer ${viewMode === 'canvas' ? 'bg-emerald-600 text-white shadow-md' : 'text-zinc-400 hover:text-white'}`}
+              className={`px-3 py-1.5 rounded-lg font-bold transition-all cursor-pointer ${viewMode === 'canvas' ? 'bg-emerald-600 text-white shadow-md' : 'text-zinc-400 hover:text-white'}`}
             >
               📄 Page View
             </button>
             <button 
               onClick={() => setViewMode('embed')}
-              className={`px-2.5 py-1 rounded-md font-bold transition-all cursor-pointer ${viewMode === 'embed' ? 'bg-emerald-600 text-white shadow-md' : 'text-zinc-400 hover:text-white'}`}
+              className={`px-3 py-1.5 rounded-lg font-bold transition-all cursor-pointer ${viewMode === 'embed' ? 'bg-emerald-600 text-white shadow-md' : 'text-zinc-400 hover:text-white'}`}
             >
-              📱 Full Document
+              📱 Full PDF
             </button>
           </div>
 
           <a 
             href={pdfUrl} 
             download={`${companyName.replace(/[^a-zA-Z0-9]/g, '_')}_Catalogue.pdf`}
-            className="p-2 bg-slate-800 hover:bg-slate-700 text-zinc-200 hover:text-white rounded-lg transition-colors border border-slate-700 cursor-pointer flex items-center gap-1 text-xs font-bold"
+            className="px-3 py-2 bg-slate-800 hover:bg-emerald-600 text-zinc-200 hover:text-white rounded-xl transition-colors border border-slate-700 cursor-pointer flex items-center gap-1.5 text-xs font-bold shadow-md"
             title="Download PDF"
           >
             <Download className="w-4 h-4 text-emerald-400" />
@@ -543,7 +600,7 @@ export const PdfReaderModal: React.FC<PdfReaderModalProps> = ({
 
           <button
             onClick={onClose}
-            className="p-2 bg-red-500/20 hover:bg-red-500/40 text-red-300 rounded-lg transition-colors border border-red-500/30 cursor-pointer ml-2"
+            className="p-2 bg-red-500/20 hover:bg-red-500/40 text-red-300 rounded-xl transition-colors border border-red-500/30 cursor-pointer ml-1"
           >
             <X className="w-5 h-5" />
           </button>
@@ -568,17 +625,19 @@ export const PdfReaderModal: React.FC<PdfReaderModalProps> = ({
               {companyName}
             </h3>
             <p className="text-xs text-amber-300 font-bold mb-3">
-              📄 Catalogue PDF File Unavailable on Server
+              📄 Catalogue PDF Document
             </p>
             <p className="text-[11px] text-zinc-300 mb-5 leading-relaxed">
-              This catalogue file was saved locally on the previous server session. All new uploaded PDFs are now saved permanently as Base64 Data URLs so they never expire!
+              This catalogue file can be opened directly or downloaded to your device.
             </p>
-            <button 
-              onClick={onClose}
-              className="px-5 py-2 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black rounded-xl text-xs shadow-lg transition-transform active:scale-95 cursor-pointer"
+            <a 
+              href={pdfUrl} 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="px-5 py-2.5 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black rounded-xl text-xs shadow-lg transition-transform active:scale-95 cursor-pointer"
             >
-              Close & Re-upload Catalogue
-            </button>
+              Open PDF in New Window
+            </a>
           </div>
         ) : viewMode === 'embed' || !pdfDoc ? (
           <iframe 
@@ -590,20 +649,20 @@ export const PdfReaderModal: React.FC<PdfReaderModalProps> = ({
           <div className="w-full h-full flex items-center justify-center overflow-auto">
             <canvas 
               ref={modalCanvasRef} 
-              className="max-h-full max-w-full object-contain rounded-lg shadow-2xl border border-white/10" 
+              className="max-h-full max-w-full object-contain rounded-xl shadow-2xl border border-white/10" 
             />
           </div>
         )}
       </div>
 
       {/* Bottom Controls Bar */}
-      <div className="w-full max-w-5xl bg-slate-900 border border-slate-800 rounded-xl px-4 py-2.5 flex items-center justify-between text-white shadow-2xl">
+      <div className="w-full max-w-5xl bg-slate-900 border border-slate-800 rounded-2xl px-4 py-2.5 flex items-center justify-between text-white shadow-2xl">
         {/* Page Navigation */}
         <div className="flex items-center gap-2">
           <button
             disabled={currentPage <= 1}
             onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
-            className="p-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 rounded-lg text-zinc-200 transition-colors border border-slate-700 cursor-pointer"
+            className="p-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 rounded-xl text-zinc-200 transition-colors border border-slate-700 cursor-pointer"
           >
             <ChevronLeft className="w-4 h-4" />
           </button>
@@ -615,7 +674,7 @@ export const PdfReaderModal: React.FC<PdfReaderModalProps> = ({
           <button
             disabled={currentPage >= totalPages}
             onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
-            className="p-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 rounded-lg text-zinc-200 transition-colors border border-slate-700 cursor-pointer"
+            className="p-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 rounded-xl text-zinc-200 transition-colors border border-slate-700 cursor-pointer"
           >
             <ChevronRight className="w-4 h-4" />
           </button>
@@ -625,7 +684,7 @@ export const PdfReaderModal: React.FC<PdfReaderModalProps> = ({
         <div className="flex items-center gap-2">
           <button
             onClick={() => setScale(prev => Math.max(0.6, prev - 0.2))}
-            className="p-2 bg-slate-800 hover:bg-slate-700 rounded-lg text-zinc-200 transition-colors border border-slate-700 cursor-pointer"
+            className="p-2 bg-slate-800 hover:bg-slate-700 rounded-xl text-zinc-200 transition-colors border border-slate-700 cursor-pointer"
             title="Zoom Out"
           >
             <ZoomOut className="w-4 h-4" />
@@ -637,7 +696,7 @@ export const PdfReaderModal: React.FC<PdfReaderModalProps> = ({
 
           <button
             onClick={() => setScale(prev => Math.min(3.0, prev + 0.2))}
-            className="p-2 bg-slate-800 hover:bg-slate-700 rounded-lg text-zinc-200 transition-colors border border-slate-700 cursor-pointer"
+            className="p-2 bg-slate-800 hover:bg-slate-700 rounded-xl text-zinc-200 transition-colors border border-slate-700 cursor-pointer"
             title="Zoom In"
           >
             <ZoomIn className="w-4 h-4" />

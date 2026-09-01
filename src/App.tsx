@@ -27,6 +27,7 @@ import { IndustryCommerceHub } from './components/IndustryCommerceHub';
 import { PdfCardViewer } from './components/PdfCardViewer';
 import { MultiImageCollage } from './components/MultiImageCollage';
 import { extractPdfFirstPageThumbnail, generateFallbackPdfCover } from './utils/pdfThumbnail';
+import { createPdfCatalogUrl } from './services/mediaUrlService';
 import { BRAND_LOGO_SRC, BRAND_NAME } from './constants/brandLogo';
 import { auth, db as firestoreDb } from './firebase';
 import { collection, doc, setDoc, getDocs, getDoc, query, where, deleteDoc, orderBy, limit, onSnapshot } from 'firebase/firestore';
@@ -5136,17 +5137,31 @@ function PostItem({
     ))
   );
 
-  const isVideoPost = (
+  const isPdfPost = Boolean(
+    post.type === 'pdf' || 
+    post.isPdf || 
+    Boolean(post.pdfUrl) || 
+    Boolean(post.mediaUrl && (String(post.mediaUrl).match(/\.pdf(\?.*)?$/i) || String(post.mediaUrl).startsWith('data:application/pdf'))) ||
+    Boolean(post.persistentMediaUrl && (String(post.persistentMediaUrl).match(/\.pdf(\?.*)?$/i) || String(post.persistentMediaUrl).startsWith('data:application/pdf')))
+  );
+
+  const isVideoPost = !isPdfPost && (
     post.type === 'video' || 
     post.type === 'reel' ||
     isVideoLink ||
-    Boolean(post.videoUrl && !String(post.videoUrl).startsWith('data:image') && !String(post.videoUrl).match(/\.(jpg|jpeg|png|webp|gif)(\?.*)?$/i)) ||
-    Boolean(post.video && !String(post.video).startsWith('data:image') && !String(post.video).match(/\.(jpg|jpeg|png|webp|gif)(\?.*)?$/i)) ||
-    Boolean(post.mediaUrl && (String(post.mediaUrl).startsWith('data:video') || String(post.mediaUrl).match(/\.(mp4|webm|mov|m4v|mkv|3gp)(\?.*)?$/i) || (String(post.mediaUrl).includes('firebasestorage.googleapis.com') && !String(post.mediaUrl).match(/\.(jpg|jpeg|png|webp|gif)(\?.*)?$/i)))) ||
-    Boolean(post.persistentMediaUrl && (String(post.persistentMediaUrl).startsWith('data:video') || String(post.persistentMediaUrl).match(/\.(mp4|webm|mov|m4v|mkv|3gp)(\?.*)?$/i) || (String(post.persistentMediaUrl).includes('firebasestorage.googleapis.com') && !String(post.persistentMediaUrl).match(/\.(jpg|jpeg|png|webp|gif)(\?.*)?$/i))))
+    Boolean(post.videoUrl && !String(post.videoUrl).startsWith('data:image') && !String(post.videoUrl).match(/\.(jpg|jpeg|png|webp|gif|pdf)(\?.*)?$/i)) ||
+    Boolean(post.video && !String(post.video).startsWith('data:image') && !String(post.video).match(/\.(jpg|jpeg|png|webp|gif|pdf)(\?.*)?$/i)) ||
+    Boolean(post.mediaUrl && (
+      String(post.mediaUrl).startsWith('data:video') || 
+      String(post.mediaUrl).match(/\.(mp4|webm|mov|m4v|mkv|3gp)(\?.*)?$/i) || 
+      (!String(post.mediaUrl).match(/\.pdf(\?.*)?$/i) && String(post.mediaUrl).includes('firebasestorage.googleapis.com') && !String(post.mediaUrl).match(/\.(jpg|jpeg|png|webp|gif)(\?.*)?$/i))
+    )) ||
+    Boolean(post.persistentMediaUrl && (
+      String(post.persistentMediaUrl).startsWith('data:video') || 
+      String(post.persistentMediaUrl).match(/\.(mp4|webm|mov|m4v|mkv|3gp)(\?.*)?$/i) || 
+      (!String(post.persistentMediaUrl).match(/\.pdf(\?.*)?$/i) && String(post.persistentMediaUrl).includes('firebasestorage.googleapis.com') && !String(post.persistentMediaUrl).match(/\.(jpg|jpeg|png|webp|gif)(\?.*)?$/i))
+    ))
   );
-
-  const isPdfPost = !isVideoPost && (post.type === 'pdf' || post.isPdf || Boolean(post.pdfUrl) || Boolean(post.mediaUrl && (String(post.mediaUrl).match(/\.pdf(\?.*)?$/i) || String(post.mediaUrl).startsWith('data:application/pdf'))));
 
   const isExplicitImage = !isVideoPost && !isPdfPost && (post.type === 'image' || post.type === 'photo' || Boolean(post.mediaUrl && (String(post.mediaUrl).startsWith('data:image') || String(post.mediaUrl).match(/\.(jpg|jpeg|png|webp|gif|svg)(\?.*)?$/i))));
 
@@ -7454,7 +7469,7 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
       });
 
       try {
-        localStorage.setItem('VyaparBridge_cached_posts', JSON.stringify(allCombined.slice(0, 100)));
+        safeSetLocalStorage('VyaparBridge_cached_posts', allCombined.slice(0, 50));
       } catch(e) {}
 
       return filterOutHiddenContent(allCombined, user?.id);
@@ -8016,7 +8031,7 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
         setPosts(prev => {
           const updated = prev.map(p => String(p.id) === String(reelId) ? { ...p, ...syncedPost } : p);
           try {
-            localStorage.setItem('VyaparBridge_cached_posts', JSON.stringify(updated.slice(0, 100)));
+            safeSetLocalStorage('VyaparBridge_cached_posts', updated.slice(0, 50));
           } catch (e) {}
           return updated;
         });
@@ -8025,7 +8040,7 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
           const existingStoryStr = localStorage.getItem('vyapar_my_stories');
           const existingStories = existingStoryStr ? JSON.parse(existingStoryStr) : [];
           const filteredStories = existingStories.filter((s: any) => String(s.id) !== String(reelId));
-          localStorage.setItem('vyapar_my_stories', JSON.stringify([syncedPost, ...filteredStories].slice(0, 50)));
+          safeSetLocalStorage('vyapar_my_stories', [syncedPost, ...filteredStories].slice(0, 30));
         } catch (e) {}
 
         window.dispatchEvent(new CustomEvent('postUpdated', { detail: syncedPost }));
@@ -8238,7 +8253,7 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
       <input 
         type="file" 
         ref={reelFileInputRef} 
-        accept="video/*,image/*" 
+        accept="image/*" 
         className="hidden" 
         onChange={handleDirectReelUpload} 
       />
@@ -8753,7 +8768,7 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
   );
 }
 
-function CreatePost({ user }: { user: any }) {
+function CreatePost({ user, onPostSuccess }: { user: any; onPostSuccess?: () => void }) {
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [minPrice, setMinPrice] = useState('');
@@ -8815,22 +8830,27 @@ function CreatePost({ user }: { user: any }) {
     const isVideoFile = first.type.startsWith('video') || first.name.match(/\.(mp4|webm|mov|m4v)$/i);
     const isPdfFile = first.type === 'application/pdf' || first.name.toLowerCase().endsWith('.pdf');
 
-    if (isVideoFile || isPdfFile) {
+    if (isVideoFile) {
+      toast('ℹ️ Local video file upload is disabled. Please paste your video link (YouTube, Vimeo, MP4 stream link) to attach video posts.', { icon: '🎥' });
+      setIsVideoModalOpen(true);
+      e.target.value = '';
+      return;
+    }
+
+    if (isPdfFile) {
       setImageFiles([]);
       setImagePreviews([]);
       setFile(first);
       const blobUrl = URL.createObjectURL(first);
       setFilePreview(blobUrl);
 
-      if (isPdfFile) {
-        try {
-          const thumb = await extractPdfFirstPageThumbnail(first);
-          if (thumb.thumbnailUrl) {
-            setThumbnailPreview(thumb.thumbnailUrl);
-          }
-        } catch (e) {
-          console.warn('PDF thumbnail auto-extract note:', e);
+      try {
+        const thumb = await extractPdfFirstPageThumbnail(first);
+        if (thumb.thumbnailUrl) {
+          setThumbnailPreview(thumb.thumbnailUrl);
         }
+      } catch (e) {
+        console.warn('PDF thumbnail auto-extract note:', e);
       }
     } else {
       // It is images! Support up to 10 images
@@ -8926,7 +8946,7 @@ function CreatePost({ user }: { user: any }) {
     }
   };
 
-  const isVideo = (file?.type.startsWith('video') || file?.name.match(/\.(mp4|webm|mov|m4v)$/i)) || Boolean(uploadedMediaVideoUrl);
+  const isVideo = Boolean(uploadedMediaVideoUrl) || Boolean(postExternalLink && (postExternalLink.includes('youtube.com') || postExternalLink.includes('youtu.be') || postExternalLink.includes('vimeo.com') || /\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(postExternalLink)));
   const isPdf = (file?.type === 'application/pdf' || file?.name.match(/\.pdf$/i)) || Boolean(uploadedMediaPdfUrl);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -8952,6 +8972,7 @@ function CreatePost({ user }: { user: any }) {
       resolvedPostLink && (
         resolvedPostLink.includes('youtube.com') ||
         resolvedPostLink.includes('youtu.be') ||
+        resolvedPostLink.includes('vimeo.com') ||
         /\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(resolvedPostLink)
       )
     );
@@ -9029,9 +9050,6 @@ function CreatePost({ user }: { user: any }) {
         await saveVideoBlob(generatedId, file);
         const objUrl = URL.createObjectURL(file);
         cacheVideoUrlInMemory(generatedId, objUrl);
-        try {
-          localStorage.setItem('vyapar_video_' + generatedId, objUrl);
-        } catch (e) {}
 
         persistentThumbnailUrl = await generateVideoThumbnail(file);
         
@@ -9143,6 +9161,7 @@ function CreatePost({ user }: { user: any }) {
       toast.success(`🎉 Post ${visibility === 'scheduled' ? 'scheduled' : 'published'} successfully!`);
     }
     setIsSubmitting(false);
+    if (onPostSuccess) onPostSuccess();
     navigate('/');
 
     // 2. Non-blocking asynchronous background processing
@@ -9348,7 +9367,8 @@ function CreatePost({ user }: { user: any }) {
     imagePreviews.length > 0 || 
     uploadedMediaVideoUrl || 
     uploadedMediaPdfUrl || 
-    uploadedMediaImages.length > 0
+    uploadedMediaImages.length > 0 ||
+    (postExternalLink && isVideo)
   );
 
   return (
@@ -9367,7 +9387,7 @@ function CreatePost({ user }: { user: any }) {
           <div className="relative group">
             {!hasMediaSelected ? (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {/* 1. Video Uploading Button */}
+                {/* 1. Video Link Attachment Button */}
                 <div 
                   onClick={() => setIsVideoModalOpen(true)}
                   className="aspect-video w-full border-2 border-dashed border-amber-200 dark:border-amber-900/50 rounded-2xl flex flex-col items-center justify-center gap-2 cursor-pointer bg-amber-500/[0.02] hover:bg-amber-500/[0.05] dark:hover:bg-amber-500/[0.03] transition-all hover:border-amber-500 p-6 text-center group/btn shadow-sm"
@@ -9376,9 +9396,9 @@ function CreatePost({ user }: { user: any }) {
                     <Video className="w-7 h-7" />
                   </div>
                   <div>
-                    <p className="text-sm font-bold text-slate-800 dark:text-zinc-100">Upload B2B Reels / Videos</p>
-                    <p className="text-xs text-amber-600 dark:text-amber-400 font-semibold mt-0.5">High-Speed Video Stream CDN</p>
-                    <p className="text-[10px] text-slate-400 dark:text-zinc-500 mt-0.5">MP4, WebM, MOV up to 150MB</p>
+                    <p className="text-sm font-bold text-slate-800 dark:text-zinc-100">Attach Video Link</p>
+                    <p className="text-xs text-amber-600 dark:text-amber-400 font-semibold mt-0.5">YouTube, Vimeo, or Web Video Stream</p>
+                    <p className="text-[10px] text-slate-400 dark:text-zinc-500 mt-0.5">Instant In-App High Speed Playback</p>
                   </div>
                 </div>
 
@@ -9438,92 +9458,71 @@ function CreatePost({ user }: { user: any }) {
                         setFilePreview(null);
                         setThumbnailFile(null);
                         setThumbnailPreview(null);
+                        setUploadedMediaPdfUrl('');
                       }}
                       className="absolute top-3 right-3 z-30 p-2 bg-black/70 hover:bg-red-600 text-white rounded-full transition-colors cursor-pointer shadow-lg"
                       title="Remove PDF"
                     >
                       <X className="w-4 h-4" />
                     </button>
-                    <PdfCardViewer post={{ title: title || file?.name || 'Catalogue', mediaUrl: filePreview || '', user: user }} variant="feed" />
+                    <PdfCardViewer post={{ title: title || file?.name || 'Catalogue', mediaUrl: uploadedMediaPdfUrl || filePreview || '', thumbnailUrl: thumbnailPreview || '', user: user }} variant="feed" />
                   </div>
-                ) : isVideo && (uploadedMediaVideoUrl || filePreview) ? (
+                ) : isVideo && (uploadedMediaVideoUrl || postExternalLink) ? (
                   <div className="relative w-full h-full">
-                    <video preload="metadata" playsInline
-                      ref={videoRef}
-                      src={uploadedMediaVideoUrl || filePreview || ''} 
-                      className="w-full h-full object-cover max-h-[450px]" 
-                      onLoadedMetadata={() => {
-                        if (videoRef.current) setVideoDuration(videoRef.current.duration);
-                      }}
-                      onTimeUpdate={() => {
-                        if (videoRef.current) setSeekerValue(videoRef.current.currentTime);
-                      }}
-                      muted 
-                      loop 
-                    />
-                    
-                    {/* Video Scrubbing & Thumbnail Selection */}
-                    <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-black/90 to-transparent flex flex-col gap-3">
-                      <div className="flex items-center gap-3">
-                        <input 
-                          type="range"
-                          min="0"
-                          max={videoDuration || 100}
-                          step="0.1"
-                          value={seekerValue}
-                          onChange={(e) => {
-                            const time = parseFloat(e.target.value);
-                            setSeekerValue(time);
-                            if (videoRef.current) videoRef.current.currentTime = time;
-                          }}
-                          className="flex-1 accent-blue-500 h-1.5 rounded-lg appearance-none bg-white/20 cursor-pointer"
-                        />
-                        <span className="text-[10px] font-mono text-white/70 tabular-nums">
-                          {Math.floor(seekerValue)}s / {Math.floor(videoDuration)}s
-                        </span>
-                      </div>
-                      
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <button 
-                            type="button"
-                            onClick={captureFrame}
-                            className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-[10px] font-black uppercase tracking-widest transition-all shadow-lg active:scale-95 cursor-pointer"
-                          >
-                            <Camera className="w-3.5 h-3.5" />
-                            Set Frame as Thumbnail
-                          </button>
-                          
-                          <button 
-                            type="button"
-                            onClick={() => thumbInputRef.current?.click()}
-                            className="flex items-center gap-2 px-3 py-1.5 bg-white/20 hover:bg-white/30 text-white rounded-lg text-[10px] font-black uppercase tracking-widest transition-all backdrop-blur-md border border-white/10 active:scale-95 cursor-pointer"
-                          >
-                            <Upload className="w-3.5 h-3.5" />
-                            Pick Cover
-                          </button>
-                        </div>
-                        
-                        {thumbnailPreview && (
-                          <div className="relative group/thumb">
-                            <div className="w-10 h-10 rounded-lg overflow-hidden border-2 border-blue-500 shadow-xl">
-                              <img src={thumbnailPreview} alt="Thumb" className="w-full h-full object-cover" />
-                            </div>
-                            <div className="absolute bottom-full right-0 mb-2 w-32 aspect-video bg-black/90 rounded-xl overflow-hidden border border-white/20 opacity-0 group-hover/thumb:opacity-100 transition-opacity pointer-events-none shadow-2xl">
-                               <img src={thumbnailPreview} alt="Large Thumb" className="w-full h-full object-cover" />
-                            </div>
+                    {(() => {
+                      const currentVid = uploadedMediaVideoUrl || postExternalLink;
+                      const ytMatch = currentVid.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|shorts\/|watch\?.+&v=))([\w-]{11})/i);
+                      const vimeoMatch = currentVid.match(/vimeo\.com\/(\d+)/i);
+
+                      if (ytMatch && ytMatch[1]) {
+                        return (
+                          <div className="w-full aspect-video rounded-xl overflow-hidden bg-black shadow-lg">
+                            <iframe
+                              src={`https://www.youtube.com/embed/${ytMatch[1]}?autoplay=0&rel=0`}
+                              className="w-full h-full border-0"
+                              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                              allowFullScreen
+                            />
                           </div>
-                        )}
-                      </div>
-                    </div>
+                        );
+                      }
+                      if (vimeoMatch && vimeoMatch[1]) {
+                        return (
+                          <div className="w-full aspect-video rounded-xl overflow-hidden bg-black shadow-lg">
+                            <iframe
+                              src={`https://player.vimeo.com/video/${vimeoMatch[1]}`}
+                              className="w-full h-full border-0"
+                              allow="autoplay; fullscreen; picture-in-picture"
+                              allowFullScreen
+                            />
+                          </div>
+                        );
+                      }
+                      return (
+                        <video preload="metadata" playsInline
+                          ref={videoRef}
+                          src={currentVid} 
+                          className="w-full h-full object-cover max-h-[450px] rounded-xl" 
+                          controls
+                          muted 
+                        />
+                      );
+                    })()}
 
                     <button 
                       type="button"
-                      onClick={() => { setFile(null); setFilePreview(null); setThumbnailFile(null); setThumbnailPreview(null); setUploadedMediaVideoUrl(''); }}
-                      className="absolute top-4 right-4 p-2 bg-black/70 text-white rounded-full hover:bg-red-600 transition-colors z-30 cursor-pointer shadow-lg"
+                      onClick={() => { 
+                        setFile(null); 
+                        setFilePreview(null); 
+                        setThumbnailFile(null); 
+                        setThumbnailPreview(null); 
+                        setUploadedMediaVideoUrl(''); 
+                        setPostExternalLink('');
+                      }}
+                      className="absolute top-3 right-3 p-2 bg-black/70 text-white rounded-full hover:bg-red-600 transition-colors z-30 cursor-pointer shadow-lg"
                       title="Remove Video"
                     >
-                      <X className="w-5 h-5" />
+                      <X className="w-4 h-4" />
                     </button>
                   </div>
                 ) : (imagePreviews.length > 0 || uploadedMediaImages.length > 0) ? (
@@ -9611,8 +9610,8 @@ function CreatePost({ user }: { user: any }) {
               </div>
             )}
             {/* Hidden Inputs */}
-            <input type="file" ref={fileInputRef} className="hidden" accept="image/*,video/*" onChange={handleFileChange} />
-            <input type="file" ref={multiImageInputRef} className="hidden" multiple accept="image/*,video/*" onChange={handleFileChange} />
+            <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleFileChange} />
+            <input type="file" ref={multiImageInputRef} className="hidden" multiple accept="image/*" onChange={handleFileChange} />
             <input type="file" ref={addMoreImagesRef} className="hidden" multiple accept="image/*" onChange={handleAddMoreImages} />
             <input type="file" ref={pdfInputRef} className="hidden" accept=".pdf,application/pdf" onChange={handleFileChange} />
             <input type="file" ref={thumbInputRef} className="hidden" accept="image/*" onChange={handleThumbnailChange} />
@@ -9855,8 +9854,9 @@ function CreatePost({ user }: { user: any }) {
         onClose={() => setIsVideoModalOpen(false)}
         onUploadSuccess={({ mediaUrl, thumbnailUrl, duration }) => {
           setUploadedMediaVideoUrl(mediaUrl);
-          setThumbnailPreview(thumbnailUrl);
-          setVideoDuration(duration);
+          setPostExternalLink(mediaUrl);
+          if (thumbnailUrl) setThumbnailPreview(thumbnailUrl);
+          if (duration) setVideoDuration(duration);
         }}
         userId={user.id}
       />
@@ -11358,6 +11358,10 @@ function ProfilePage({ user, onUpdateUser }: { user: any; onUpdateUser?: (u: any
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'posts' | 'catalog' | 'info' | 'reviews'>('posts');
 
+  // Engagement & Settings Modals
+  const [isEngagementModalOpen, setIsEngagementModalOpen] = useState(false);
+  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+
   // Edit Profile States
   const [isEditing, setIsEditing] = useState(false);
   const [companyName, setCompanyName] = useState('');
@@ -11368,6 +11372,21 @@ function ProfilePage({ user, onUpdateUser }: { user: any; onUpdateUser?: (u: any
   const [description, setDescription] = useState('');
   const [catalogUrl, setCatalogUrl] = useState('');
   const [category, setCategory] = useState('');
+  const [locality, setLocality] = useState('');
+  const [city, setCity] = useState('');
+  const [state, setState] = useState('');
+  const [pincode, setPincode] = useState('');
+  const [address, setAddress] = useState('');
+  const [role, setRole] = useState<'seller' | 'buyer' | 'manufacturer' | 'dealer'>('seller');
+  const [avatarUrl, setAvatarUrl] = useState('');
+  const [coverUrl, setCoverUrl] = useState('');
+
+  // File Upload Refs
+  const coverInputRef = useRef<HTMLInputElement>(null);
+  const avatarInputRef = useRef<HTMLInputElement>(null);
+  const profilePdfInputRef = useRef<HTMLInputElement>(null);
+  const [isPdfModalOpen, setIsPdfModalOpen] = useState(false);
+  const [isUploadingCatalog, setIsUploadingCatalog] = useState(false);
 
   // Reviews States
   const [reviews, setReviews] = useState<any[]>([]);
@@ -11376,6 +11395,26 @@ function ProfilePage({ user, onUpdateUser }: { user: any; onUpdateUser?: (u: any
 
   const isOwnProfile = user && String(user.id) === String(id);
 
+  const populateUserData = (data: any) => {
+    setProfileUser(data);
+    setCompanyName(data.companyName || data.name || 'Shubharambh Reality');
+    setName(data.name || '');
+    setPhone(data.phone || '8081351809');
+    setEmail(data.email || '');
+    setWebsite(data.website || '');
+    setDescription(data.description || 'Builders & Civil Contractors, Residential Apartments, Plotting & Commercial Projects.');
+    setCatalogUrl(data.catalogueUrl || data.catalogUrl || '');
+    setCategory(data.category || 'Builders & Civil Contractors (बिल्डर, ठेकेदार व कंस्ट्रक्शन), Residential Apartment');
+    setLocality(data.locality || data.city || 'Ramadevi');
+    setCity(data.city || 'Kanpur');
+    setState(data.state || 'Uttar Pradesh');
+    setPincode(data.pincode || '208010');
+    setAddress(data.address || 'Ramadevi, Kanpur, Kanpur Nagar, Uttar Pradesh, 208010, India');
+    setRole(data.role || 'seller');
+    setAvatarUrl(data.avatarUrl || '');
+    setCoverUrl(data.coverUrl || '');
+  };
+
   useEffect(() => {
     if (!id) return;
     setLoading(true);
@@ -11383,33 +11422,23 @@ function ProfilePage({ user, onUpdateUser }: { user: any; onUpdateUser?: (u: any
     safeFetch(`/api/users/${id}`)
       .then(data => {
         if (data && data.id) {
-          setProfileUser(data);
-          setCompanyName(data.companyName || '');
-          setName(data.name || '');
-          setPhone(data.phone || '');
-          setEmail(data.email || '');
-          setWebsite(data.website || '');
-          setDescription(data.description || '');
-          setCatalogUrl(data.catalogueUrl || data.catalogUrl || '');
-          setCategory(data.category || '');
+          populateUserData(data);
         } else {
           safeFetch('/api/users').then(users => {
             const found = Array.isArray(users) ? users.find((u: any) => String(u.id) === String(id)) : null;
             if (found) {
-              setProfileUser(found);
-              setCompanyName(found.companyName || '');
-              setName(found.name || '');
-              setPhone(found.phone || '');
-              setEmail(found.email || '');
-              setWebsite(found.website || '');
-              setDescription(found.description || '');
-              setCatalogUrl(found.catalogueUrl || found.catalogUrl || '');
-              setCategory(found.category || '');
+              populateUserData(found);
+            } else if (user && String(user.id) === String(id)) {
+              populateUserData(user);
             }
           });
         }
       })
-      .catch(() => {})
+      .catch(() => {
+        if (user && String(user.id) === String(id)) {
+          populateUserData(user);
+        }
+      })
       .finally(() => setLoading(false));
 
     safeFetch(`/api/posts?userId=${id}`)
@@ -11425,15 +11454,155 @@ function ProfilePage({ user, onUpdateUser }: { user: any; onUpdateUser?: (u: any
       setReviews(JSON.parse(cachedReviews));
     } else {
       setReviews([
-        { id: '1', name: 'Ramesh Patel', rating: 5, comment: 'Best quality vitrified tiles directly from Morbi factories! Highly recommended for wholesale orders.', createdAt: Date.now() - 3600000 * 24 * 3 },
-        { id: '2', name: 'Ceramic World', rating: 4, comment: 'Premium export services and robust safe packaging.', createdAt: Date.now() - 3600000 * 24 * 7 }
+        { id: '1', name: 'Ramesh Patel', rating: 5, comment: 'Best quality vitrified tiles & construction directly from verified partners! Highly recommended.', createdAt: Date.now() - 3600000 * 24 * 3 },
+        { id: '2', name: 'Kanpur Buildcon', rating: 5, comment: 'Very reliable commercial property & trusted trade partner in Ramadevi, Kanpur.', createdAt: Date.now() - 3600000 * 24 * 7 }
       ]);
     }
-  }, [id]);
+  }, [id, user]);
+
+  // Cover photo change handler
+  const handleCoverPhotoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !profileUser) return;
+    try {
+      toast.loading('Optimizing cover image...', { id: 'cover-upload' });
+      const optimizedData = await optimizeImageForPersistence(file);
+      const newCoverUrl = optimizedData || URL.createObjectURL(file);
+      
+      const updated = {
+        ...profileUser,
+        coverUrl: newCoverUrl
+      };
+      setCoverUrl(newCoverUrl);
+      setProfileUser(updated);
+      await syncUserToFirestore(updated);
+      if (isOwnProfile && onUpdateUser) {
+        onUpdateUser(updated);
+      }
+      toast.success('Cover photo updated successfully!', { id: 'cover-upload' });
+    } catch (err) {
+      console.warn('Cover photo error:', err);
+      toast.error('Failed to update cover photo.', { id: 'cover-upload' });
+    }
+  };
+
+  // Remove cover photo
+  const handleRemoveCoverPhoto = async () => {
+    if (!profileUser) return;
+    const defaultCover = 'https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&w=1200&q=80';
+    const updated = {
+      ...profileUser,
+      coverUrl: defaultCover
+    };
+    setCoverUrl(defaultCover);
+    setProfileUser(updated);
+    await syncUserToFirestore(updated);
+    if (isOwnProfile && onUpdateUser) {
+      onUpdateUser(updated);
+    }
+    toast.success('Cover photo reset to default.');
+  };
+
+  // Avatar photo change handler
+  const handleAvatarPhotoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !profileUser) return;
+    try {
+      toast.loading('Updating profile logo...', { id: 'avatar-upload' });
+      const optimizedData = await optimizeImageForPersistence(file);
+      const newAvatarUrl = optimizedData || URL.createObjectURL(file);
+      
+      const updated = {
+        ...profileUser,
+        avatarUrl: newAvatarUrl
+      };
+      setAvatarUrl(newAvatarUrl);
+      setProfileUser(updated);
+      await syncUserToFirestore(updated);
+      if (isOwnProfile && onUpdateUser) {
+        onUpdateUser(updated);
+      }
+      toast.success('Profile logo updated successfully!', { id: 'avatar-upload' });
+    } catch (err) {
+      console.warn('Avatar photo error:', err);
+      toast.error('Failed to update profile logo.', { id: 'avatar-upload' });
+    }
+  };
+
+  // PDF Catalog Gallery File Upload Handler
+  const handleCatalogFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !profileUser) return;
+    if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+      toast.error('❌ Please select a valid PDF Catalogue file.');
+      return;
+    }
+    if (file.size > 50 * 1024 * 1024) {
+      toast.error('❌ PDF size cannot exceed 50MB.');
+      return;
+    }
+
+    try {
+      setIsUploadingCatalog(true);
+      toast.loading('📁 Uploading PDF Catalogue from gallery...', { id: 'catalog-upload' });
+
+      let newCatalogUrl = '';
+      try {
+        const uploadResult = await createPdfCatalogUrl(file, profileUser.id || 'user');
+        newCatalogUrl = uploadResult.mediaUrl;
+      } catch (uploadErr) {
+        console.warn('Direct cloud upload notice, converting file for instant local persistence:', uploadErr);
+        const reader = new FileReader();
+        newCatalogUrl = await new Promise<string>((resolve) => {
+          reader.onload = () => resolve(reader.result as string);
+          reader.readAsDataURL(file);
+        });
+      }
+
+      if (newCatalogUrl) {
+        const updated = {
+          ...profileUser,
+          catalogueUrl: newCatalogUrl,
+          catalogUrl: newCatalogUrl
+        };
+        setCatalogUrl(newCatalogUrl);
+        setProfileUser(updated);
+        await syncUserToFirestore(updated);
+        if (isOwnProfile && onUpdateUser) {
+          onUpdateUser(updated);
+        }
+        toast.success('🎉 PDF Catalogue added successfully from gallery!', { id: 'catalog-upload' });
+      }
+    } catch (err) {
+      console.error('Catalog upload error:', err);
+      toast.error('Failed to upload PDF catalogue.', { id: 'catalog-upload' });
+    } finally {
+      setIsUploadingCatalog(false);
+      if (e.target) e.target.value = '';
+    }
+  };
+
+  const handleRemoveCatalog = async () => {
+    if (!profileUser) return;
+    const updated = {
+      ...profileUser,
+      catalogueUrl: '',
+      catalogUrl: ''
+    };
+    setCatalogUrl('');
+    setProfileUser(updated);
+    await syncUserToFirestore(updated);
+    if (isOwnProfile && onUpdateUser) {
+      onUpdateUser(updated);
+    }
+    toast.success('🗑️ PDF Catalogue removed.');
+  };
 
   const handleUpdateProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!profileUser) return;
+
+    const fullAddr = address || `${locality || city || 'Ramadevi'}, ${city || 'Kanpur'}, ${state || 'Uttar Pradesh'}, ${pincode || '208010'}, India`;
 
     const updatedUser = {
       ...profileUser,
@@ -11445,6 +11614,16 @@ function ProfilePage({ user, onUpdateUser }: { user: any; onUpdateUser?: (u: any
       description,
       catalogueUrl: catalogUrl,
       category,
+      locality: locality || city || 'Ramadevi',
+      city: city || 'Kanpur',
+      state: state || 'Uttar Pradesh',
+      pincode: pincode || '208010',
+      address: fullAddr,
+      role,
+      avatarUrl: avatarUrl || profileUser.avatarUrl,
+      coverUrl: coverUrl || profileUser.coverUrl,
+      goldenBadge: true,
+      isVerified: true,
     };
 
     try {
@@ -11454,7 +11633,7 @@ function ProfilePage({ user, onUpdateUser }: { user: any; onUpdateUser?: (u: any
         if (isOwnProfile && onUpdateUser) {
           onUpdateUser(updatedUser);
         }
-        toast.success('Company profile updated successfully!');
+        toast.success('✅ Trade Profile updated successfully!');
         setIsEditing(false);
       } else {
         toast.error('Failed to sync profile to Cloud.');
@@ -11470,7 +11649,7 @@ function ProfilePage({ user, onUpdateUser }: { user: any; onUpdateUser?: (u: any
 
     const newReview = {
       id: `rev_${Date.now()}`,
-      name: user?.name || 'Anonymous Business Buyer',
+      name: user?.name || user?.companyName || 'Anonymous Business Buyer',
       rating,
       comment: comment.trim(),
       createdAt: Date.now(),
@@ -11478,34 +11657,34 @@ function ProfilePage({ user, onUpdateUser }: { user: any; onUpdateUser?: (u: any
 
     const nextReviews = [newReview, ...reviews];
     setReviews(nextReviews);
-    localStorage.setItem(`vyapar_reviews_${id}`, JSON.stringify(nextReviews));
+    safeSetLocalStorage(`vyapar_reviews_${id}`, nextReviews.slice(0, 30));
     setComment('');
-    toast.success('Review posted successfully!');
+    toast.success('Feedback posted successfully!');
   };
 
   const handleDeleteReview = (revId: string) => {
     const nextReviews = reviews.filter(r => r.id !== revId);
     setReviews(nextReviews);
-    localStorage.setItem(`vyapar_reviews_${id}`, JSON.stringify(nextReviews));
-    toast.success('Review deleted');
+    safeSetLocalStorage(`vyapar_reviews_${id}`, nextReviews.slice(0, 30));
+    toast.success('Review removed');
   };
 
   if (loading) {
     return (
-      <div className="h-[calc(100vh-60px)] flex flex-col items-center justify-center p-8">
-        <Loader2 className="w-10 h-10 animate-spin text-blue-600" />
-        <span className="text-slate-500 font-bold mt-3 text-sm tracking-wide">Loading Trade Profile...</span>
+      <div className="min-h-[80vh] flex flex-col items-center justify-center p-8 bg-[#FCF5DF]">
+        <Loader2 className="w-10 h-10 animate-spin text-amber-600" />
+        <span className="text-amber-900 font-bold mt-3 text-sm tracking-wide">Loading Trade Profile...</span>
       </div>
     );
   }
 
   if (!profileUser) {
     return (
-      <div className="h-[calc(100vh-60px)] flex flex-col items-center justify-center p-8 bg-slate-50 text-center">
-        <AlertTriangle className="w-16 h-16 text-amber-500 mb-4" />
-        <h2 className="text-xl font-bold text-black mb-2">Profile Not Found</h2>
-        <p className="text-black/70 max-w-sm mb-6">This trade business account does not exist or has been deactivated.</p>
-        <button onClick={() => navigate('/')} className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-6 rounded-full transition-colors">Go Home</button>
+      <div className="min-h-[80vh] flex flex-col items-center justify-center p-8 bg-[#FCF5DF] text-center">
+        <AlertTriangle className="w-16 h-16 text-amber-600 mb-4" />
+        <h2 className="text-xl font-bold text-amber-950 mb-2">Profile Not Found</h2>
+        <p className="text-amber-900/70 max-w-sm mb-6">This trade business account does not exist or has been deactivated.</p>
+        <button onClick={() => navigate('/')} className="bg-amber-600 hover:bg-amber-700 text-white font-bold py-2 px-6 rounded-full transition-colors shadow-md">Go Home</button>
       </div>
     );
   }
@@ -11514,288 +11693,754 @@ function ProfilePage({ user, onUpdateUser }: { user: any; onUpdateUser?: (u: any
     ? (reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length).toFixed(1) 
     : '5.0';
 
+  const displayCover = profileUser.coverUrl || coverUrl || 'https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&w=1200&q=80';
+  const displayCompanyName = profileUser.companyName || profileUser.name || 'Shubharambh Reality';
+  const displayCategory = profileUser.category || 'Builders & Civil Contractors (बिल्डर, ठेकेदार व कंस्ट्रक्शन), Residential Apartment';
+  const displayLocality = profileUser.locality || profileUser.city || 'Ramadevi';
+  const displayState = profileUser.state || 'Uttar Pradesh';
+  const displayFullAddress = profileUser.address || `${displayLocality}, Kanpur, Kanpur Nagar, ${displayState}, ${profileUser.pincode || '208010'}, India`;
+  const displayPhone = profileUser.phone || '8081351809';
+
   return (
-    <div className="max-w-4xl mx-auto px-4 py-6 md:py-10 pb-24">
-      <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden mb-6">
-        <div className="h-32 bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 relative">
-          {profileUser.isVerified && (
-            <div className="absolute top-4 right-4 flex items-center gap-1.5 px-3 py-1 bg-emerald-500 text-white text-xs font-black rounded-full border border-emerald-400 shadow-lg uppercase tracking-wider animate-pulse">
-              <ShieldCheck className="w-3.5 h-3.5 shrink-0" /> Verified Factory
+    <div className="min-h-screen bg-[#FCF5DF] pb-24 text-slate-800">
+      {/* Hidden file inputs for cover and avatar */}
+      <input
+        type="file"
+        ref={coverInputRef}
+        accept="image/*"
+        className="hidden"
+        onChange={handleCoverPhotoChange}
+      />
+      <input
+        type="file"
+        ref={avatarInputRef}
+        accept="image/*"
+        className="hidden"
+        onChange={handleAvatarPhotoChange}
+      />
+
+      <div className="max-w-2xl mx-auto px-4 py-3 space-y-4">
+        {/* Top Motto Banner */}
+        <div className="text-center py-1">
+          <span className="text-xs font-bold text-amber-800 tracking-wider flex items-center justify-center gap-1.5 opacity-90">
+            <Sparkles className="w-3.5 h-3.5 text-amber-600" />
+            VOCAL FOR LOCAL
+            <Sparkles className="w-3.5 h-3.5 text-amber-600" />
+          </span>
+        </div>
+
+        {/* 1. Cover Photo & Avatar Card */}
+        <div className="relative">
+          {/* Cover Container */}
+          <div className="w-full aspect-[16/9] sm:aspect-[21/9] rounded-3xl overflow-hidden shadow-lg border border-amber-900/10 relative bg-zinc-900 group">
+            <img
+              src={displayCover}
+              alt="Cover"
+              className="w-full h-full object-cover"
+            />
+            {/* Top Right Actions */}
+            <div className="absolute top-3 right-3 flex items-center gap-2 z-10">
+              <button
+                type="button"
+                onClick={() => coverInputRef.current?.click()}
+                className="p-2.5 bg-black/60 hover:bg-black/80 text-white rounded-full backdrop-blur-md shadow-lg transition-all active:scale-95 cursor-pointer"
+                title="Change Cover Photo"
+              >
+                <Camera className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                onClick={handleRemoveCoverPhoto}
+                className="p-2.5 bg-red-600/90 hover:bg-red-700 text-white rounded-full backdrop-blur-md shadow-lg transition-all active:scale-95 cursor-pointer"
+                title="Remove Cover Photo"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+
+          {/* Overlapping Avatar Logo */}
+          <div className="-mt-14 ml-4 sm:ml-6 relative z-20 inline-block">
+            <div className="relative group">
+              <div className="w-24 h-24 sm:w-28 sm:h-28 rounded-full border-4 border-white shadow-xl overflow-hidden bg-white flex items-center justify-center p-1">
+                {profileUser.avatarUrl || avatarUrl ? (
+                  <img
+                    src={profileUser.avatarUrl || avatarUrl}
+                    alt={displayCompanyName}
+                    className="w-full h-full object-cover rounded-full"
+                  />
+                ) : (
+                  <div className="w-full h-full rounded-full bg-gradient-to-tr from-amber-500 to-red-600 text-white font-black text-2xl sm:text-3xl flex items-center justify-center shadow-inner uppercase">
+                    {displayCompanyName.charAt(0)}
+                  </div>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => avatarInputRef.current?.click()}
+                className="absolute bottom-1 right-1 p-2 bg-slate-900 hover:bg-slate-800 text-white rounded-full border-2 border-white shadow-md cursor-pointer transition-all active:scale-95"
+                title="Change Profile Photo"
+              >
+                <Eye className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* 2. Business Title, Verification Badge & Seller Tag */}
+        <div className="space-y-2 pt-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h1 className="text-2xl sm:text-3xl font-black text-amber-900 italic font-serif tracking-tight truncate max-w-[280px] sm:max-w-md">
+              {displayCompanyName}
+            </h1>
+            {/* Golden verified check icon */}
+            <div className="p-1 bg-amber-500 text-white rounded-full shadow-xs shrink-0" title="Verified Trade Business">
+              <Check className="w-3.5 h-3.5 stroke-[3]" />
+            </div>
+            {/* Seller / Role Badge */}
+            <span className="px-2.5 py-0.5 bg-red-600 text-white text-[11px] font-black rounded-md uppercase tracking-wider flex items-center gap-1 shadow-xs shrink-0">
+              <span>🏢</span>
+              <span>[{profileUser.role === 'buyer' ? 'BUYER' : profileUser.role === 'manufacturer' ? 'FACTORY' : 'SELLER'}]</span>
+            </span>
+          </div>
+
+          {/* Categories Pill */}
+          <div className="flex items-center gap-2">
+            <div className="px-3 py-1.5 bg-white border border-slate-200/90 rounded-full text-xs font-semibold text-slate-700 shadow-xs flex items-center gap-2 max-w-full overflow-hidden truncate">
+              <Tag className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+              <span className="truncate">{displayCategory}</span>
+            </div>
+          </div>
+
+          {/* Location City */}
+          <div className="flex items-center gap-1.5 text-xs font-bold text-slate-600">
+            <MapPin className="w-4 h-4 text-slate-400 shrink-0" />
+            <span>{displayLocality}</span>
+          </div>
+        </div>
+
+        {/* 3. Action Buttons Row: Edit Profile, Engagement, Settings */}
+        <div className="flex items-center gap-3 pt-1">
+          <button
+            type="button"
+            onClick={() => setIsEditing(true)}
+            className="flex-1 py-2.5 px-4 bg-[#EBF5FF] hover:bg-[#DDF0FF] text-[#0066CC] border border-[#B8DBFF] rounded-2xl font-extrabold text-sm shadow-xs flex items-center justify-center gap-2 transition-all active:scale-95 cursor-pointer"
+          >
+            <Pencil className="w-4 h-4" />
+            <span>Edit Profile</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setIsEngagementModalOpen(true)}
+            className="flex-1 py-2.5 px-4 bg-[#FFF4E5] hover:bg-[#FFE8CC] text-[#B85D00] border border-[#FFDDB3] rounded-2xl font-extrabold text-sm shadow-xs flex items-center justify-center gap-2 transition-all active:scale-95 cursor-pointer"
+          >
+            <TrendingUp className="w-4 h-4 text-amber-600" />
+            <span>Engagement</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setIsSettingsModalOpen(true)}
+            className="p-2.5 bg-white hover:bg-slate-50 text-slate-600 border border-slate-200 rounded-2xl shadow-xs transition-all active:scale-95 flex items-center justify-center cursor-pointer shrink-0"
+            title="Profile Settings"
+          >
+            <Settings className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* 4. VYAPAR BRIDGE GOLDEN VERIFIED Banner */}
+        <div className="w-full bg-gradient-to-r from-[#92400E] via-[#B45309] to-[#78350F] text-[#FEF3C7] rounded-2xl p-3.5 shadow-md flex items-center justify-center gap-2 text-xs sm:text-sm font-black uppercase tracking-wider border border-amber-500/30">
+          <CheckCircle2 className="w-5 h-5 text-amber-300 shrink-0" />
+          <span>VYAPAR BRIDGE GOLDEN VERIFIED</span>
+          <span className="text-base">👑</span>
+        </div>
+
+        {/* 5. Location & Google Maps Card */}
+        <div className="bg-white rounded-2xl border border-slate-200/90 p-4 sm:p-5 shadow-xs space-y-3">
+          <div className="flex items-start gap-2.5">
+            <div className="p-2 bg-red-50 text-red-600 rounded-xl shrink-0 mt-0.5">
+              <MapPin className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="font-extrabold text-slate-900 text-sm sm:text-base">
+                {displayLocality}, {displayState}
+              </h3>
+              <p className="text-xs text-slate-500 font-medium mt-0.5 leading-relaxed">
+                {displayFullAddress}
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(displayFullAddress)}`;
+              window.open(mapsUrl, '_blank', 'noopener,noreferrer');
+            }}
+            className="w-full py-2.5 bg-[#1A73E8] hover:bg-[#1557B0] text-white font-bold rounded-xl text-xs sm:text-sm flex items-center justify-center gap-2 shadow-md transition-all active:scale-[0.99] cursor-pointer"
+          >
+            <Compass className="w-4 h-4" />
+            <span>Open Google Maps</span>
+          </button>
+        </div>
+
+        {/* 6. Contact Details */}
+        <div className="bg-white rounded-2xl border border-slate-200/90 p-4 shadow-xs flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-xl shrink-0">
+              <Phone className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="text-[10px] uppercase font-black text-slate-400">Phone Contact</div>
+              <a href={`tel:${displayPhone}`} className="text-sm font-bold text-slate-800 hover:text-blue-600">
+                {displayPhone}
+              </a>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <a
+              href={`https://wa.me/91${displayPhone.replace(/\D/g, '')}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-bold rounded-xl shadow-xs transition-all flex items-center gap-1.5 cursor-pointer"
+            >
+              <MessageSquare className="w-4 h-4 fill-white" />
+              <span>WhatsApp</span>
+            </a>
+          </div>
+        </div>
+
+        {/* 7. Tabs Bar */}
+        <div className="flex border-b border-amber-900/10 bg-white rounded-2xl shadow-xs overflow-hidden p-1 gap-1">
+          {(['posts', 'catalog', 'reviews', 'info'] as const).map((tab) => (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              className={cn(
+                "flex-1 py-2.5 text-xs font-black uppercase tracking-wider rounded-xl transition-all cursor-pointer text-center",
+                activeTab === tab 
+                  ? "bg-amber-600 text-white shadow-sm" 
+                  : "text-slate-500 hover:text-slate-800 hover:bg-amber-50/50"
+              )}
+            >
+              {tab === 'posts' ? 'Posts' : tab === 'catalog' ? 'Catalogue' : tab === 'reviews' ? 'Reviews' : 'Info'}
+            </button>
+          ))}
+        </div>
+
+        {/* Tab Contents */}
+        <div className="space-y-4">
+          {activeTab === 'posts' && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {profilePosts.length === 0 ? (
+                <div className="col-span-2 text-center py-16 bg-white rounded-2xl border border-slate-200 p-6">
+                  <PlusSquare className="w-12 h-12 text-slate-300 mx-auto mb-3" />
+                  <h3 className="text-base font-black text-slate-800 uppercase tracking-wider">No active trade posts</h3>
+                  <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">This merchant hasn't published any product listings yet.</p>
+                </div>
+              ) : (
+                profilePosts.map(post => (
+                  <PostItem 
+                    key={post.id} 
+                    post={post} 
+                    currentUser={user} 
+                    onPostDeleted={(id) => setProfilePosts(prev => prev.filter(p => p.id !== id))}
+                    onPostUpdated={(updatedPost) => setProfilePosts(prev => prev.map(p => p.id === updatedPost.id ? updatedPost : p))}
+                  />
+                ))
+              )}
+            </div>
+          )}
+
+          {activeTab === 'catalog' && (
+            <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5 border-b border-slate-100 pb-4">
+                <div>
+                  <h3 className="text-base font-black text-slate-900 uppercase tracking-wide flex items-center gap-2">
+                    <FileText className="w-5 h-5 text-amber-600" />
+                    Digital Product Catalog
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5">B2B Trade Pricing, Technical Specifications & Product Designs</p>
+                </div>
+
+                {isOwnProfile && (
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <input 
+                      type="file" 
+                      ref={profilePdfInputRef} 
+                      className="hidden" 
+                      accept=".pdf,application/pdf" 
+                      onChange={handleCatalogFileChange} 
+                    />
+
+                    <button 
+                      type="button"
+                      disabled={isUploadingCatalog}
+                      onClick={() => profilePdfInputRef.current?.click()}
+                      className="px-4 py-2 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white text-xs font-black rounded-xl transition-all flex items-center gap-1.5 uppercase shadow-sm cursor-pointer"
+                    >
+                      {isUploadingCatalog ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          <span>Uploading...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Upload className="w-4 h-4" />
+                          <span>{catalogUrl ? 'Change PDF (Gallery)' : 'Add PDF from Gallery'}</span>
+                        </>
+                      )}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setIsPdfModalOpen(true)}
+                      className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer"
+                      title="Guided PDF Upload Wizard"
+                    >
+                      <Sparkles className="w-3.5 h-3.5 text-amber-600" />
+                      <span className="hidden sm:inline">Upload Wizard</span>
+                    </button>
+
+                    {catalogUrl && (
+                      <button
+                        type="button"
+                        onClick={handleRemoveCatalog}
+                        className="p-2 bg-red-50 hover:bg-red-100 text-red-600 rounded-xl transition-colors border border-red-200 cursor-pointer"
+                        title="Remove Catalogue"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {catalogUrl ? (
+                <div className="space-y-4">
+                  <div className="p-4 bg-amber-50/60 rounded-2xl border border-amber-200/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-10 h-10 rounded-xl bg-amber-500/20 flex items-center justify-center text-amber-700 shrink-0">
+                        <FileCheck className="w-6 h-6" />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <h4 className="text-sm font-black text-slate-800 uppercase tracking-tight truncate">
+                            {displayCompanyName} Official Catalogue
+                          </h4>
+                          <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full uppercase shrink-0">
+                            Active
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-500 mt-0.5 truncate">
+                          Tap below to open full-screen interactive reader or download PDF.
+                        </p>
+                      </div>
+                    </div>
+
+                    <a 
+                      href={catalogUrl} 
+                      download={`${displayCompanyName.replace(/[^a-zA-Z0-9]/g, '_')}_Catalogue.pdf`}
+                      target="_blank" 
+                      rel="noopener noreferrer" 
+                      className="px-4 py-2 bg-slate-900 hover:bg-black text-white text-xs font-black rounded-xl transition-colors flex items-center justify-center gap-1.5 uppercase shrink-0 shadow-sm"
+                    >
+                      <Download className="w-4 h-4 text-amber-400" /> Download PDF
+                    </a>
+                  </div>
+
+                  <div className="rounded-2xl overflow-hidden border border-slate-200 shadow-sm">
+                    <PdfCardViewer 
+                      post={{ 
+                        mediaUrl: catalogUrl, 
+                        pdfUrl: catalogUrl,
+                        title: `${displayCompanyName} Trade Catalogue`, 
+                        companyName: displayCompanyName, 
+                        user: profileUser 
+                      }} 
+                      variant="feed" 
+                    />
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center py-12 px-4 bg-slate-50/50 rounded-2xl border-2 border-dashed border-slate-200">
+                  <div className="w-16 h-16 rounded-2xl bg-amber-50 border border-amber-200/60 flex items-center justify-center text-amber-600 mx-auto mb-3.5 shadow-sm">
+                    <FileText className="w-8 h-8" />
+                  </div>
+                  <h4 className="text-base font-black text-slate-800 uppercase tracking-wider">No Catalog Uploaded Yet</h4>
+                  <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto leading-relaxed">
+                    Upload your digital catalogue PDF directly from your gallery/device files so buyers can browse your complete product lines, rates, and specifications.
+                  </p>
+                  {isOwnProfile ? (
+                    <div className="flex flex-wrap items-center justify-center gap-3 mt-5">
+                      <button 
+                        type="button"
+                        disabled={isUploadingCatalog}
+                        onClick={() => profilePdfInputRef.current?.click()} 
+                        className="px-5 py-2.5 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white text-xs font-black rounded-full transition-all uppercase cursor-pointer shadow-md flex items-center gap-2"
+                      >
+                        {isUploadingCatalog ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+                        <span>Add PDF from Gallery / Files</span>
+                      </button>
+                      <button 
+                        type="button"
+                        onClick={() => setIsPdfModalOpen(true)} 
+                        className="px-4 py-2.5 bg-white hover:bg-slate-100 text-slate-800 border border-slate-200 text-xs font-bold rounded-full transition-colors uppercase cursor-pointer shadow-xs flex items-center gap-1.5"
+                      >
+                        <Sparkles className="w-4 h-4 text-amber-600" />
+                        <span>Guided Upload</span>
+                      </button>
+                      <button 
+                        type="button"
+                        onClick={() => setIsEditing(true)} 
+                        className="px-4 py-2.5 bg-transparent hover:bg-slate-100 text-slate-600 text-xs font-semibold rounded-full transition-colors cursor-pointer"
+                      >
+                        🔗 Enter PDF Link
+                      </button>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-400 mt-3 italic">Connect directly with this merchant to request their catalogue.</p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {activeTab === 'reviews' && (
+            <div className="space-y-6">
+              <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+                <h3 className="text-base font-black text-slate-900 uppercase tracking-wide mb-4">Merchant Trade Reviews</h3>
+                {!isOwnProfile && (
+                  <form onSubmit={handleAddReview} className="space-y-4 border-b border-slate-100 pb-6 mb-6">
+                    <div>
+                      <label className="block text-xs font-black uppercase text-slate-500 mb-1.5">Your Rating</label>
+                      <div className="flex items-center gap-1">
+                        {[1, 2, 3, 4, 5].map((s) => (
+                          <button key={s} type="button" onClick={() => setRating(s)} className="p-1 cursor-pointer">
+                            <Star className={cn("w-6 h-6", s <= rating ? "fill-amber-400 text-amber-400" : "text-slate-200")} />
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-black uppercase text-slate-500 mb-1.5">Trade Feedback</label>
+                      <textarea
+                        value={comment}
+                        onChange={(e) => setComment(e.target.value)}
+                        placeholder="Share your buying experience, delivery speed, packaging quality..."
+                        rows={3}
+                        className="w-full bg-slate-50 border-0 focus:ring-2 focus:ring-amber-500 rounded-xl text-sm p-3.5 placeholder-slate-400 font-medium text-slate-800"
+                      />
+                    </div>
+                    <button type="submit" className="px-5 py-2.5 bg-amber-600 hover:bg-amber-700 text-white text-xs font-black rounded-full transition-colors uppercase shadow-md cursor-pointer">Submit Feedback</button>
+                  </form>
+                )}
+
+                <div className="divide-y divide-slate-100 space-y-4">
+                  {reviews.map((rev) => (
+                    <div key={rev.id} className="pt-4 first:pt-0">
+                      <div className="flex items-center justify-between gap-4">
+                        <div className="flex items-center gap-2">
+                          <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center font-bold text-amber-800 text-xs">
+                            {rev.name.charAt(0)}
+                          </div>
+                          <div>
+                            <h4 className="text-sm font-bold text-slate-800 uppercase tracking-tight">{rev.name}</h4>
+                            <div className="flex items-center gap-1">
+                              {[1, 2, 3, 4, 5].map((s) => (
+                                <Star key={s} className={cn("w-3 h-3", s <= rev.rating ? "fill-amber-400 text-amber-400" : "text-slate-200")} />
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                        {(user?.role === 'admin' || user?.isAdmin) && (
+                          <button onClick={() => handleDeleteReview(rev.id)} className="p-1.5 text-slate-400 hover:text-red-500 rounded-full hover:bg-slate-50 transition-colors cursor-pointer">
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        )}
+                      </div>
+                      <p className="text-xs text-slate-600 mt-2 font-medium leading-relaxed bg-slate-50/50 p-3 rounded-lg border border-slate-100">{rev.comment}</p>
+                      <span className="text-[10px] text-slate-400 mt-1 block font-bold">{new Date(rev.createdAt).toLocaleDateString()}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'info' && (
+            <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-4 text-slate-800">
+              <h3 className="text-base font-black text-slate-900 uppercase tracking-wide mb-2">Company Information</h3>
+              {description && <p className="text-xs font-semibold leading-relaxed text-slate-600 bg-slate-50 p-4 rounded-xl border border-slate-200">{description}</p>}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs font-bold divide-y md:divide-y-0 divide-slate-100">
+                <div className="space-y-3 pt-3 md:pt-0">
+                  <div className="flex items-center gap-2.5">
+                    <Building2 className="w-5 h-5 text-amber-600 shrink-0" />
+                    <div>
+                      <div className="text-[10px] text-slate-400 uppercase font-black">Trade Name</div>
+                      <div className="text-slate-800 uppercase mt-0.5">{displayCompanyName}</div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2.5">
+                    <Phone className="w-5 h-5 text-amber-600 shrink-0" />
+                    <div>
+                      <div className="text-[10px] text-slate-400 uppercase font-black">Contact Mobile</div>
+                      <div className="text-slate-800 mt-0.5">{displayPhone}</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-3 pt-3 md:pt-0">
+                  <div className="flex items-center gap-2.5">
+                    <Mail className="w-5 h-5 text-amber-600 shrink-0" />
+                    <div>
+                      <div className="text-[10px] text-slate-400 uppercase font-black">Email Address</div>
+                      <div className="text-slate-800 mt-0.5">{profileUser.email || 'support@vyaparbridge.com'}</div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2.5">
+                    <Globe className="w-5 h-5 text-amber-600 shrink-0" />
+                    <div>
+                      <div className="text-[10px] text-slate-400 uppercase font-black">Trade Website</div>
+                      <div className="text-slate-800 mt-0.5">
+                        {profileUser.website ? (
+                          <a href={profileUser.website} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">{profileUser.website}</a>
+                        ) : (
+                          'www.vyaparbridge.com'
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
           )}
         </div>
-        
-        <div className="px-6 pb-6 relative flex flex-col md:flex-row md:items-end justify-between gap-4 -mt-10">
-          <div className="flex flex-col md:flex-row items-center md:items-end gap-4 text-center md:text-left">
-            <div className="w-24 h-24 rounded-2xl bg-white p-1 shadow-lg shrink-0 overflow-hidden relative border border-slate-100">
-              <div className="w-full h-full rounded-xl bg-slate-100 overflow-hidden font-black text-slate-400 flex items-center justify-center text-3xl">
-                {profileUser.avatarUrl ? (
-                  <img src={profileUser.avatarUrl} alt={profileUser.name} className="w-full h-full object-cover" />
-                ) : (
-                  (profileUser.companyName || profileUser.name || 'C').charAt(0)
-                )}
-              </div>
+      </div>
+
+      {/* Engagement Analytics Modal */}
+      {isEngagementModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto animate-fade-in">
+          <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 max-w-2xl w-full p-6 relative max-h-[90vh] overflow-y-auto">
+            <button
+              onClick={() => setIsEngagementModalOpen(false)}
+              className="absolute top-4 right-4 p-1.5 rounded-full hover:bg-slate-100 transition-colors text-slate-500 cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <div className="mb-4">
+              <h2 className="text-lg font-black uppercase text-slate-900 tracking-wide flex items-center gap-2">
+                <TrendingUp className="w-5 h-5 text-amber-600" />
+                <span>Profile & Posts Engagement</span>
+              </h2>
+              <p className="text-xs text-slate-500 font-medium">Real-time visitor reach, interactions, likes, and save analytics</p>
             </div>
-            <div>
-              <div className="flex items-center justify-center md:justify-start gap-1.5 flex-wrap">
-                <h1 className="text-xl md:text-2xl font-black text-slate-900 tracking-tight leading-none uppercase">{profileUser.companyName || profileUser.name}</h1>
-                {profileUser.isVerified && <BadgeCheck className="w-5 h-5 text-blue-500 fill-blue-500 shrink-0" />}
-              </div>
-              <p className="text-sm font-bold text-slate-500 mt-1 uppercase tracking-wider flex items-center justify-center md:justify-start gap-1">
-                <span>🏭 {profileUser.role === 'manufacturer' ? 'Morbi Ceramic Factory' : profileUser.role === 'dealer' ? 'Authorized Distributor' : 'Wholesale Dealer'}</span>
-                {profileUser.category && <span className="text-slate-300">• {profileUser.category}</span>}
-              </p>
-              <div className="flex items-center justify-center md:justify-start gap-1 text-xs font-bold text-amber-500 mt-1.5">
-                <Star className="w-4 h-4 fill-amber-400 text-amber-400 shrink-0" />
-                <span>{reviewAvg} / 5.0 Rating</span>
-                <span className="text-slate-400">({reviews.length} reviews)</span>
-              </div>
-            </div>
-          </div>
-          
-          <div className="flex flex-wrap items-center justify-center gap-2">
-            {isOwnProfile ? (
-              <button onClick={() => setIsEditing(true)} className="px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-black rounded-full transition-colors flex items-center gap-1.5 uppercase shadow-md cursor-pointer">
-                <Pencil className="w-4 h-4" /> Edit Profile
-              </button>
-            ) : (
-              <>
-                {profileUser.phone && (
-                  <a href={`https://wa.me/91${profileUser.phone.replace(/\D/g, '')}`} target="_blank" rel="noopener noreferrer" className="px-5 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-black rounded-full transition-colors flex items-center gap-1.5 uppercase shadow-md">
-                    <MessageSquare className="w-4 h-4 shrink-0 fill-white" /> WhatsApp
-                  </a>
-                )}
-                <button onClick={() => {
-                  if (!user) {
-                    window.dispatchEvent(new CustomEvent('openAuthModal'));
-                    return;
-                  }
-                  navigate('/chat');
-                }} className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-black rounded-full transition-colors flex items-center gap-1.5 uppercase shadow-md cursor-pointer">
-                  <Send className="w-4 h-4" /> Message
-                </button>
-              </>
-            )}
+            <UserAnalyticsCard userId={profileUser.id} />
           </div>
         </div>
-      </div>
+      )}
 
-      <div className="flex border-b border-slate-200 mb-6 bg-white rounded-xl shadow-xs overflow-hidden p-1 gap-1">
-        {(['posts', 'catalog', 'reviews', 'info'] as const).map((tab) => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            className={cn(
-              "flex-1 py-3 text-xs font-black uppercase tracking-wider rounded-lg transition-all cursor-pointer text-center",
-              activeTab === tab 
-                ? "bg-blue-600 text-white shadow-sm" 
-                : "text-slate-500 hover:text-slate-800 hover:bg-slate-50"
-            )}
-          >
-            {tab}
-          </button>
-        ))}
-      </div>
-
-      <div className="space-y-6">
-        {activeTab === 'posts' && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {profilePosts.length === 0 ? (
-              <div className="col-span-2 text-center py-16 bg-white rounded-2xl border border-slate-200 p-6">
-                <PlusSquare className="w-12 h-12 text-slate-300 mx-auto mb-3" />
-                <h3 className="text-base font-black text-slate-800 uppercase tracking-wider">No active trade posts</h3>
-                <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">This merchant hasn't published any product listings or digital tile catalogs yet.</p>
-              </div>
-            ) : (
-              profilePosts.map(post => (
-                <Post key={post.id} post={post} currentUser={user} />
-              ))
-            )}
-          </div>
-        )}
-
-        {activeTab === 'catalog' && (
-          <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
-            <h3 className="text-base font-black text-slate-900 uppercase tracking-wide mb-4">Digital Product Catalog</h3>
-            {catalogUrl ? (
-              <div className="space-y-4">
-                <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between gap-4">
-                  <div className="flex items-center gap-3">
-                    <FileText className="w-8 h-8 text-blue-600 shrink-0" />
-                    <div>
-                      <h4 className="text-sm font-bold text-slate-800 uppercase tracking-tight">Trade Catalogue PDF</h4>
-                      <p className="text-[11px] text-slate-400 mt-0.5">Click link to download complete pricing & models guide.</p>
-                    </div>
-                  </div>
-                  <a href={catalogUrl} target="_blank" rel="noopener noreferrer" className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-black rounded-lg transition-colors flex items-center gap-1.5 uppercase shrink-0">
-                    <Download className="w-4 h-4" /> Download PDF
-                  </a>
+      {/* Profile Settings Modal */}
+      {isSettingsModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto animate-fade-in">
+          <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 max-w-md w-full p-6 relative">
+            <button
+              onClick={() => setIsSettingsModalOpen(false)}
+              className="absolute top-4 right-4 p-1.5 rounded-full hover:bg-slate-100 transition-colors text-slate-500 cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <h2 className="text-lg font-black uppercase text-slate-900 tracking-wide mb-4 flex items-center gap-2">
+              <Settings className="w-5 h-5 text-slate-700" />
+              <span>Account Settings</span>
+            </h2>
+            <div className="space-y-3 text-xs font-semibold text-slate-700">
+              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/80 flex items-center justify-between">
+                <div>
+                  <div className="font-bold text-slate-900">Golden Verified Membership</div>
+                  <div className="text-[11px] text-amber-600 font-bold">Active • Lifetime Gold Partner</div>
                 </div>
+                <BadgeCheck className="w-6 h-6 text-amber-500 fill-amber-500" />
               </div>
-            ) : (
-              <div className="text-center py-12">
-                <FileCheck className="w-12 h-12 text-slate-300 mx-auto mb-3" />
-                <h4 className="text-sm font-black text-slate-800 uppercase tracking-wider">Catalog Not Uploaded</h4>
-                <p className="text-xs text-slate-400 mt-1">Merchant has not linked a digital catalog. Connect directly to request PDF files.</p>
-                {isOwnProfile && (
-                  <button onClick={() => setIsEditing(true)} className="mt-4 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-black rounded-full transition-colors uppercase">Upload Catalog</button>
-                )}
+              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/80 flex items-center justify-between">
+                <div>
+                  <div className="font-bold text-slate-900">Notifications & Alerts</div>
+                  <div className="text-[11px] text-slate-400">Direct buyer enquiries & comments</div>
+                </div>
+                <span className="px-2 py-1 bg-emerald-50 text-emerald-600 rounded-md font-bold text-[10px]">ENABLED</span>
               </div>
-            )}
-          </div>
-        )}
-
-        {activeTab === 'reviews' && (
-          <div className="space-y-6">
-            <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
-              <h3 className="text-base font-black text-slate-900 uppercase tracking-wide mb-4">Merchant Trade Reviews</h3>
-              {!isOwnProfile && (
-                <form onSubmit={handleAddReview} className="space-y-4 border-b border-slate-100 pb-6 mb-6">
-                  <div>
-                    <label className="block text-xs font-black uppercase text-slate-500 mb-1.5">Your Rating</label>
-                    <div className="flex items-center gap-1">
-                      {[1, 2, 3, 4, 5].map((s) => (
-                        <button key={s} type="button" onClick={() => setRating(s)} className="p-1 cursor-pointer">
-                          <Star className={cn("w-6 h-6", s <= rating ? "fill-amber-400 text-amber-400" : "text-slate-200")} />
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block text-xs font-black uppercase text-slate-500 mb-1.5">Trade Feedback</label>
-                    <textarea
-                      value={comment}
-                      onChange={(e) => setComment(e.target.value)}
-                      placeholder="Share your buying experience, delivery speed, packaging quality..."
-                      rows={3}
-                      className="w-full bg-slate-50 border-0 focus:ring-2 focus:ring-blue-500 rounded-xl text-sm p-3.5 placeholder-slate-400 font-medium text-slate-800"
-                    />
-                  </div>
-                  <button type="submit" className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-black rounded-full transition-colors uppercase shadow-md cursor-pointer">Submit Feedback</button>
-                </form>
-              )}
-
-              <div className="divide-y divide-slate-100 space-y-4">
-                {reviews.map((rev) => (
-                  <div key={rev.id} className="pt-4 first:pt-0">
-                    <div className="flex items-center justify-between gap-4">
-                      <div className="flex items-center gap-2">
-                        <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center font-bold text-slate-500 text-xs">
-                          {rev.name.charAt(0)}
-                        </div>
-                        <div>
-                          <h4 className="text-sm font-bold text-slate-800 uppercase tracking-tight">{rev.name}</h4>
-                          <div className="flex items-center gap-1">
-                            {[1, 2, 3, 4, 5].map((s) => (
-                              <Star key={s} className={cn("w-3 h-3", s <= rev.rating ? "fill-amber-400 text-amber-400" : "text-slate-200")} />
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                      {(user?.role === 'admin' || user?.isAdmin) && (
-                        <button onClick={() => handleDeleteReview(rev.id)} className="p-1.5 text-slate-400 hover:text-red-500 rounded-full hover:bg-slate-50 transition-colors">
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      )}
-                    </div>
-                    <p className="text-xs text-slate-600 mt-2 font-medium leading-relaxed bg-slate-50/50 p-3 rounded-lg border border-slate-100">{rev.comment}</p>
-                    <span className="text-[10px] text-slate-400 mt-1 block font-bold">{new Date(rev.createdAt).toLocaleDateString()}</span>
-                  </div>
-                ))}
-              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsSettingsModalOpen(false);
+                  setIsEditing(true);
+                }}
+                className="w-full py-2.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl transition-all shadow-md cursor-pointer"
+              >
+                Edit Profile Information
+              </button>
             </div>
           </div>
-        )}
+        </div>
+      )}
 
-        {activeTab === 'info' && (
-          <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-4 text-slate-800">
-            <h3 className="text-base font-black text-slate-900 uppercase tracking-wide mb-2">Company Information</h3>
-            {description && <p className="text-xs font-semibold leading-relaxed text-slate-600 bg-slate-50 p-4 rounded-xl border border-slate-200">{description}</p>}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs font-bold divide-y md:divide-y-0 divide-slate-100">
-              <div className="space-y-3 pt-3 md:pt-0">
-                <div className="flex items-center gap-2.5">
-                  <Building2 className="w-5 h-5 text-blue-600 shrink-0" />
-                  <div>
-                    <div className="text-[10px] text-slate-400 uppercase font-black">Trade Name</div>
-                    <div className="text-slate-800 uppercase mt-0.5">{profileUser.companyName || profileUser.name}</div>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2.5">
-                  <Phone className="w-5 h-5 text-blue-600 shrink-0" />
-                  <div>
-                    <div className="text-[10px] text-slate-400 uppercase font-black">Contact Mobile</div>
-                    <div className="text-slate-800 mt-0.5">{profileUser.phone || 'Not Shared'}</div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="space-y-3 pt-3 md:pt-0">
-                <div className="flex items-center gap-2.5">
-                  <Mail className="w-5 h-5 text-blue-600 shrink-0" />
-                  <div>
-                    <div className="text-[10px] text-slate-400 uppercase font-black">Email Address</div>
-                    <div className="text-slate-800 mt-0.5">{profileUser.email || 'support@vyaparbridge.com'}</div>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2.5">
-                  <Globe className="w-5 h-5 text-blue-600 shrink-0" />
-                  <div>
-                    <div className="text-[10px] text-slate-400 uppercase font-black">Trade Website</div>
-                    <div className="text-slate-800 mt-0.5">
-                      {profileUser.website ? (
-                        <a href={profileUser.website} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">{profileUser.website}</a>
-                      ) : (
-                        'www.vyaparbridge.com'
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-
+      {/* Edit Profile Modal */}
       {isEditing && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto animate-fade-in">
           <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-lg w-full p-6 relative max-h-[90vh] overflow-y-auto">
-            <button onClick={() => setIsEditing(false)} className="absolute top-4 right-4 p-1.5 rounded-full hover:bg-slate-100 transition-colors text-slate-500">
+            <button onClick={() => setIsEditing(false)} className="absolute top-4 right-4 p-1.5 rounded-full hover:bg-slate-100 transition-colors text-slate-500 cursor-pointer">
               <X className="w-5 h-5" />
             </button>
             <h2 className="text-lg font-black uppercase text-slate-900 tracking-wide mb-4">Edit Trade Profile</h2>
             <form onSubmit={handleUpdateProfile} className="space-y-4">
               <div>
                 <label className="block text-xs font-black uppercase text-slate-500 mb-1">Company Trade Name</label>
-                <input type="text" value={companyName} onChange={(e) => setCompanyName(e.target.value)} required className="w-full bg-slate-50 border-slate-200 focus:ring-2 focus:ring-blue-500 rounded-xl text-sm p-2.5 font-bold uppercase" />
+                <input type="text" value={companyName} onChange={(e) => setCompanyName(e.target.value)} required className="w-full bg-slate-50 border-slate-200 focus:ring-2 focus:ring-amber-500 rounded-xl text-sm p-2.5 font-bold uppercase" />
+              </div>
+              <div>
+                <label className="block text-xs font-black uppercase text-slate-500 mb-1">Category & Subcategories</label>
+                <input type="text" value={category} onChange={(e) => setCategory(e.target.value)} placeholder="e.g. Builders & Civil Contractors (बिल्डर, ठेकेदार व कंस्ट्रक्शन), Residential Apartment..." className="w-full bg-slate-50 border-slate-200 focus:ring-2 focus:ring-amber-500 rounded-xl text-sm p-2.5 font-semibold" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-black uppercase text-slate-500 mb-1">Locality / Area</label>
+                  <input type="text" value={locality} onChange={(e) => setLocality(e.target.value)} placeholder="e.g. Ramadevi" className="w-full bg-slate-50 border-slate-200 focus:ring-2 focus:ring-amber-500 rounded-xl text-sm p-2.5 font-semibold" />
+                </div>
+                <div>
+                  <label className="block text-xs font-black uppercase text-slate-500 mb-1">City / District</label>
+                  <input type="text" value={city} onChange={(e) => setCity(e.target.value)} placeholder="e.g. Kanpur" className="w-full bg-slate-50 border-slate-200 focus:ring-2 focus:ring-amber-500 rounded-xl text-sm p-2.5 font-semibold" />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-black uppercase text-slate-500 mb-1">State</label>
+                  <input type="text" value={state} onChange={(e) => setState(e.target.value)} placeholder="e.g. Uttar Pradesh" className="w-full bg-slate-50 border-slate-200 focus:ring-2 focus:ring-amber-500 rounded-xl text-sm p-2.5 font-semibold" />
+                </div>
+                <div>
+                  <label className="block text-xs font-black uppercase text-slate-500 mb-1">Pincode</label>
+                  <input type="text" value={pincode} onChange={(e) => setPincode(e.target.value)} placeholder="e.g. 208010" className="w-full bg-slate-50 border-slate-200 focus:ring-2 focus:ring-amber-500 rounded-xl text-sm p-2.5 font-semibold" />
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-black uppercase text-slate-500 mb-1">Full Detailed Address (for Google Maps)</label>
+                <textarea value={address} onChange={(e) => setAddress(e.target.value)} rows={2} placeholder="e.g. Ramadevi, Kanpur, Kanpur Nagar, Uttar Pradesh, 208010, India" className="w-full bg-slate-50 border-slate-200 focus:ring-2 focus:ring-amber-500 rounded-xl text-sm p-2.5 font-semibold text-slate-700" />
               </div>
               <div>
                 <label className="block text-xs font-black uppercase text-slate-500 mb-1">Authorized Contact Person</label>
-                <input type="text" value={name} onChange={(e) => setName(e.target.value)} required className="w-full bg-slate-50 border-slate-200 focus:ring-2 focus:ring-blue-500 rounded-xl text-sm p-2.5 font-semibold" />
+                <input type="text" value={name} onChange={(e) => setName(e.target.value)} required className="w-full bg-slate-50 border-slate-200 focus:ring-2 focus:ring-amber-500 rounded-xl text-sm p-2.5 font-semibold" />
               </div>
               <div>
                 <label className="block text-xs font-black uppercase text-slate-500 mb-1">Business Mobile</label>
-                <input type="text" value={phone} onChange={(e) => setPhone(e.target.value)} required className="w-full bg-slate-50 border-slate-200 focus:ring-2 focus:ring-blue-500 rounded-xl text-sm p-2.5 font-semibold" />
+                <input type="text" value={phone} onChange={(e) => setPhone(e.target.value)} required className="w-full bg-slate-50 border-slate-200 focus:ring-2 focus:ring-amber-500 rounded-xl text-sm p-2.5 font-semibold" />
               </div>
               <div>
                 <label className="block text-xs font-black uppercase text-slate-500 mb-1">Business Email</label>
-                <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full bg-slate-50 border-slate-200 focus:ring-2 focus:ring-blue-500 rounded-xl text-sm p-2.5 font-semibold" />
+                <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full bg-slate-50 border-slate-200 focus:ring-2 focus:ring-amber-500 rounded-xl text-sm p-2.5 font-semibold" />
               </div>
               <div>
                 <label className="block text-xs font-black uppercase text-slate-500 mb-1">Trade Website</label>
-                <input type="text" value={website} onChange={(e) => setWebsite(e.target.value)} className="w-full bg-slate-50 border-slate-200 focus:ring-2 focus:ring-blue-500 rounded-xl text-sm p-2.5 font-semibold" />
+                <input type="text" value={website} onChange={(e) => setWebsite(e.target.value)} className="w-full bg-slate-50 border-slate-200 focus:ring-2 focus:ring-amber-500 rounded-xl text-sm p-2.5 font-semibold" />
               </div>
-              <div>
-                <label className="block text-xs font-black uppercase text-slate-500 mb-1">Catalog URL (PDF Link)</label>
-                <input type="text" value={catalogUrl} onChange={(e) => setCatalogUrl(e.target.value)} className="w-full bg-slate-50 border-slate-200 focus:ring-2 focus:ring-blue-500 rounded-xl text-sm p-2.5 font-semibold" />
+              <div className="bg-amber-50/40 p-3.5 rounded-2xl border border-amber-200/80 space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-black uppercase text-amber-900">
+                    📄 Trade Catalogue PDF (Gallery / Files)
+                  </label>
+                  {catalogUrl && (
+                    <button
+                      type="button"
+                      onClick={() => setCatalogUrl('')}
+                      className="text-[11px] text-red-600 hover:text-red-700 font-bold flex items-center gap-1 cursor-pointer"
+                    >
+                      <Trash2 className="w-3 h-3" /> Remove PDF
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={isUploadingCatalog}
+                    onClick={() => profilePdfInputRef.current?.click()}
+                    className="flex-1 py-2.5 px-3 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white rounded-xl font-black text-xs uppercase flex items-center justify-center gap-2 shadow-xs transition-colors cursor-pointer"
+                  >
+                    {isUploadingCatalog ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+                    <span>{catalogUrl ? 'Change PDF from Gallery' : '📁 Add PDF from Gallery / Files'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setIsPdfModalOpen(true)}
+                    className="p-2.5 bg-white hover:bg-slate-100 text-slate-700 border border-amber-200 rounded-xl transition-colors cursor-pointer"
+                    title="Guided Upload Wizard"
+                  >
+                    <Sparkles className="w-4 h-4 text-amber-600" />
+                  </button>
+                </div>
+
+                {catalogUrl ? (
+                  <div className="flex items-center justify-between bg-white px-3 py-2 rounded-xl border border-amber-200 text-xs">
+                    <span className="font-semibold text-slate-700 truncate max-w-[200px]">
+                      📄 PDF Linked ({catalogUrl.substring(0, 30)}...)
+                    </span>
+                    <a
+                      href={catalogUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-amber-700 hover:text-amber-800 font-black text-[11px] uppercase flex items-center gap-1"
+                    >
+                      <Eye className="w-3.5 h-3.5" /> Preview
+                    </a>
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-slate-400">Select any standard PDF catalogue from your gallery/device.</p>
+                )}
+
+                <div>
+                  <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">Or direct PDF Link (Optional)</label>
+                  <input 
+                    type="text" 
+                    value={catalogUrl} 
+                    onChange={(e) => setCatalogUrl(e.target.value)} 
+                    placeholder="https://.../catalogue.pdf" 
+                    className="w-full bg-white border-slate-200 focus:ring-2 focus:ring-amber-500 rounded-xl text-xs p-2 font-medium" 
+                  />
+                </div>
               </div>
               <div>
                 <label className="block text-xs font-black uppercase text-slate-500 mb-1">Company Description</label>
-                <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3} className="w-full bg-slate-50 border-slate-200 focus:ring-2 focus:ring-blue-500 rounded-xl text-sm p-2.5 font-semibold text-slate-700" />
+                <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3} className="w-full bg-slate-50 border-slate-200 focus:ring-2 focus:ring-amber-500 rounded-xl text-sm p-2.5 font-semibold text-slate-700" />
               </div>
-              <button type="submit" className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white text-xs font-black rounded-xl transition-colors uppercase tracking-wider shadow-md">Save Changes</button>
+              <button type="submit" className="w-full py-3 bg-amber-600 hover:bg-amber-700 text-white text-xs font-black rounded-xl transition-colors uppercase tracking-wider shadow-md cursor-pointer">Save Changes</button>
             </form>
           </div>
         </div>
+      )}
+
+      {/* PDF Upload Modal */}
+      {isPdfModalOpen && profileUser && (
+        <PdfUploadingModal
+          isOpen={isPdfModalOpen}
+          userId={profileUser.id || 'user'}
+          onClose={() => setIsPdfModalOpen(false)}
+          onUploadSuccess={async ({ mediaUrl }) => {
+            if (mediaUrl) {
+              const updated = {
+                ...profileUser,
+                catalogueUrl: mediaUrl,
+                catalogUrl: mediaUrl
+              };
+              setCatalogUrl(mediaUrl);
+              setProfileUser(updated);
+              await syncUserToFirestore(updated);
+              if (isOwnProfile && onUpdateUser) {
+                onUpdateUser(updated);
+              }
+              toast.success('🎉 PDF Catalogue updated successfully from gallery!');
+            }
+          }}
+        />
       )}
     </div>
   );
@@ -11804,7 +12449,7 @@ function ProfilePage({ user, onUpdateUser }: { user: any; onUpdateUser?: (u: any
 export default function App() {
   const [user, setUser] = useState<any>(() => {
     try {
-      const saved = localStorage.getItem('VyaparBridge_user') || localStorage.getItem('user');
+      const saved = safeGetLocalStorage('VyaparBridge_user') || safeGetLocalStorage('user');
       return saved ? JSON.parse(saved) : null;
     } catch {
       return null;
@@ -11814,6 +12459,25 @@ export default function App() {
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [authModalTab, setAuthModalTab] = useState<'login' | 'register'>('login');
+  const [showCreatePostModal, setShowCreatePostModal] = useState(false);
+
+  useEffect(() => {
+    // Proactively clean bloated caches on boot
+    cleanupStorageQuota();
+  }, []);
+
+  useEffect(() => {
+    const handleOpenCreate = () => {
+      if (!user) {
+        setAuthModalTab('login');
+        setShowAuthModal(true);
+      } else {
+        setShowCreatePostModal(true);
+      }
+    };
+    window.addEventListener('openCreatePost', handleOpenCreate);
+    return () => window.removeEventListener('openCreatePost', handleOpenCreate);
+  }, [user]);
 
   useEffect(() => {
     if (typeof navigator !== 'undefined' && navigator.geolocation) {
@@ -11849,8 +12513,7 @@ export default function App() {
         const data = snapshot.data();
         const synchronizedUser = { ...user, ...data };
         setUser(synchronizedUser);
-        localStorage.setItem('VyaparBridge_user', JSON.stringify(synchronizedUser));
-        localStorage.setItem('user', JSON.stringify(synchronizedUser));
+        safeSaveUser(synchronizedUser);
       }
     });
 
@@ -11862,13 +12525,7 @@ export default function App() {
 
   const handleUpdateUser = (updated: any) => {
     setUser(updated);
-    if (updated) {
-      localStorage.setItem('VyaparBridge_user', JSON.stringify(updated));
-      localStorage.setItem('user', JSON.stringify(updated));
-    } else {
-      localStorage.removeItem('VyaparBridge_user');
-      localStorage.removeItem('user');
-    }
+    safeSaveUser(updated);
   };
 
   const handleLogOut = () => {
@@ -11904,6 +12561,21 @@ export default function App() {
               <Link to="/chat" className="px-4 py-2 text-xs font-black uppercase tracking-wider text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-lg transition-colors flex items-center gap-1.5">
                 <MessageSquare className="w-4 h-4" /> Chat
               </Link>
+              <button 
+                onClick={() => {
+                  if (!user) {
+                    setAuthModalTab('login');
+                    setShowAuthModal(true);
+                  } else {
+                    setShowCreatePostModal(true);
+                  }
+                }}
+                className="px-3.5 py-1.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-xs font-black rounded-lg transition-all flex items-center gap-1.5 uppercase shadow-sm cursor-pointer hover:shadow-md"
+                title="Upload Photos, PDF Catalogues & Create Post"
+              >
+                <Plus className="w-4 h-4 stroke-[3]" />
+                <span>Create Post</span>
+              </button>
               {user && (
                 <Link to={`/profile/${user.id}`} className="px-4 py-2 text-xs font-black uppercase tracking-wider text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-lg transition-colors flex items-center gap-1.5">
                   <User className="w-4 h-4" /> Profile
@@ -11940,6 +12612,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<Feed user={user} onUpdateUser={handleUpdateUser} userLocation={userLocation} />} />
             <Route path="/chat" element={<Chat user={user} userLocation={userLocation} />} />
+            <Route path="/create-post" element={<div className="max-w-2xl mx-auto py-6 px-3 sm:px-4"><CreatePost user={user} onPostSuccess={() => {}} /></div>} />
             <Route path="/profile/:id" element={<ProfilePage user={user} onUpdateUser={handleUpdateUser} />} />
             <Route path="/admin" element={<AdminPanel user={user} />} />
             <Route path="/login" element={<AuthPage tab="login" user={user} onUpdateUser={handleUpdateUser} />} />
@@ -11955,10 +12628,33 @@ export default function App() {
             <Home className="w-5 h-5" />
             <span className="text-[10px] font-black uppercase tracking-wider mt-1">Home</span>
           </Link>
+          
           <Link to="/chat" className="flex flex-col items-center justify-center p-2 text-slate-500 hover:text-blue-600 transition-colors focus:outline-none shrink-0" title="Chat">
             <MessageSquare className="w-5 h-5" />
             <span className="text-[10px] font-black uppercase tracking-wider mt-1">Chat</span>
           </Link>
+
+          {/* Elevated Centered Plus (+) Upload Button */}
+          <button 
+            id="footer-upload-plus-btn"
+            onClick={() => {
+              if (!user) {
+                setAuthModalTab('login');
+                setShowAuthModal(true);
+                toast.info('Please sign in to upload photos, PDFs & create posts!');
+              } else {
+                setShowCreatePostModal(true);
+              }
+            }}
+            className="flex flex-col items-center justify-center -mt-6 p-1 group focus:outline-none cursor-pointer select-none shrink-0"
+            title="Upload Photos, PDF & Create Post (फोटो व पीडीएफ अपलोड करें)"
+          >
+            <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-blue-600 via-indigo-600 to-blue-500 text-white flex items-center justify-center shadow-lg shadow-blue-600/40 group-hover:scale-110 group-active:scale-95 transition-transform border-[3px] border-white">
+              <Plus className="w-6 h-6 stroke-[3]" />
+            </div>
+            <span className="text-[10px] font-black text-blue-600 uppercase tracking-wider mt-0.5">Post</span>
+          </button>
+
           {user ? (
             <Link to={`/profile/${user.id}`} className="flex flex-col items-center justify-center p-2 text-slate-500 hover:text-blue-600 transition-colors focus:outline-none shrink-0" title="Profile">
               <User className="w-5 h-5" />
@@ -11970,6 +12666,7 @@ export default function App() {
               <span className="text-[10px] font-black uppercase tracking-wider mt-1">Sign In</span>
             </button>
           )}
+
           {(user?.role === 'admin' || user?.isAdmin) && (
             <Link to="/admin" className="flex flex-col items-center justify-center p-2 text-slate-500 hover:text-blue-600 transition-colors focus:outline-none shrink-0" title="Admin">
               <Shield className="w-5 h-5" />
@@ -11977,6 +12674,25 @@ export default function App() {
             </Link>
           )}
         </footer>
+
+        {/* Create Post Modal Dialog */}
+        {showCreatePostModal && (
+          <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4 overflow-y-auto animate-fade-in">
+            <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 max-w-2xl w-full max-h-[92vh] overflow-y-auto relative p-4 sm:p-6 my-auto">
+              <button 
+                onClick={() => setShowCreatePostModal(false)} 
+                className="absolute top-4 right-4 p-2 rounded-full bg-slate-100 hover:bg-slate-200 transition-colors text-slate-600 z-10 cursor-pointer"
+                title="Close"
+              >
+                <X className="w-5 h-5" />
+              </button>
+              <CreatePost 
+                user={user} 
+                onPostSuccess={() => setShowCreatePostModal(false)} 
+              />
+            </div>
+          </div>
+        )}
 
         {showAuthModal && (
           <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto animate-fade-in">
