@@ -205,9 +205,9 @@ async function uploadToFirebaseOrLocal(file: Express.Multer.File): Promise<strin
           }
         }
 
-        // 2. Cloudinary Upload Integration (if credentials are configured)
-        const cloudName = process.env.CLOUDINARY_CLOUD_NAME || process.env.VITE_CLOUDINARY_CLOUD_NAME;
-        const uploadPreset = process.env.CLOUDINARY_UPLOAD_PRESET || process.env.VITE_CLOUDINARY_UPLOAD_PRESET;
+        // 2. Cloudinary Upload Integration (Direct Cloud CDN)
+        const cloudName = process.env.CLOUDINARY_CLOUD_NAME || process.env.VITE_CLOUDINARY_CLOUD_NAME || 'wwssqpep';
+        const uploadPreset = process.env.CLOUDINARY_UPLOAD_PRESET || process.env.VITE_CLOUDINARY_UPLOAD_PRESET || 'ml_default';
 
         if (cloudName && uploadPreset) {
           try {

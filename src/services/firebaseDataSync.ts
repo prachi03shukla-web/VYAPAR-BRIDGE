@@ -1,5 +1,6 @@
 import { db, auth, storage } from '../firebase';
 import { optimizeImageForPersistence, getYouTubeThumbnail, isYouTubeUrl } from '../utils/imageOptimizer';
+import { uploadToCloudinary } from './cloudinaryService';
 import { saveVideoBlob, getVideoBlobUrl, cacheVideoUrlInMemory, getCachedVideoUrlInMemory } from '../utils/videoStorage';
 import { safeSaveUser, safeSetLocalStorage } from '../utils/safeStorage';
 import { setPostLikedInLocalStorage, setPostSavedInLocalStorage, isPostLikedByUser, isPostSavedByUser } from '../utils/likeSaveHelpers';
@@ -51,7 +52,18 @@ export async function uploadFileToFirebaseStorage(
     }
   }
 
-  // 2. PRIMARY: High-Speed Backend Stream Upload with accurate real-time XHR Progress (Fast & 100% Reliable!)
+  // 1. PRIMARY: Direct High-Speed Cloudinary CDN Upload (Bypasses Vercel payload limits, global CDN streaming)
+  try {
+    const cloudUrl = await uploadToCloudinary(fileToUpload, onProgress);
+    if (cloudUrl && cloudUrl.startsWith('http')) {
+      console.log('⚡ Cloudinary direct CDN upload succeeded:', cloudUrl);
+      return cloudUrl;
+    }
+  } catch (cloudinaryErr) {
+    console.warn('Cloudinary upload notice, proceeding to backend/firebase storage fallback:', cloudinaryErr);
+  }
+
+  // 2. SECONDARY: High-Speed Backend Stream Upload with accurate real-time XHR Progress
   try {
     const uploadViaBackend = await new Promise<string>((resolve, reject) => {
       const xhr = new XMLHttpRequest();
