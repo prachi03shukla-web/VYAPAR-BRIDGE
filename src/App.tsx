@@ -8333,6 +8333,10 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
         const cleanRealtime = filterOutHiddenContent(realtimePosts, user?.id);
         
         setPosts(prev => {
+          // Prevent wiping out the feed if Firestore snapshot is empty (e.g. quota limits)
+          if (cleanRealtime.length === 0 && prev.length > 0) {
+            return prev;
+          }
           const map = new Map<string, any>();
           DEFAULT_B2B_POSTS.forEach(p => {
             if (p && p.id) map.set(String(p.id), p);
@@ -8341,7 +8345,8 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
              map.set(String(p.id), p);
           });
           cleanRealtime.forEach(p => {
-             map.set(String(p.id), p);
+             const existing = map.get(String(p.id)) || {};
+             map.set(String(p.id), mergePostSafely(existing, p));
           });
           return Array.from(map.values()).sort((a, b) => {
             const timeA = typeof a.createdAt === 'number' ? a.createdAt : new Date(a.createdAt || 0).getTime();
@@ -11187,22 +11192,27 @@ function ProfilePage({ user, onUpdateUser }: { user: any; onUpdateUser?: (u: any
         return false;
       });
 
-      // Deduplicate by ID
-      const postMap = new Map<string, any>();
-      filtered.forEach(p => {
-        if (p && p.id) {
-          const existing = postMap.get(String(p.id)) || {};
-          postMap.set(String(p.id), { ...existing, ...p });
-        }
+      setProfilePosts(prev => {
+        // Avoid wiping out feed on empty snapshots
+        if (filtered.length === 0 && prev.length > 0) return prev;
+        
+        const postMap = new Map<string, any>();
+        prev.forEach(p => {
+          if (p && p.id) postMap.set(String(p.id), p);
+        });
+        filtered.forEach(p => {
+          if (p && p.id) {
+            const existing = postMap.get(String(p.id)) || {};
+            postMap.set(String(p.id), mergePostSafely(existing, p));
+          }
+        });
+        
+        return Array.from(postMap.values()).sort((a, b) => {
+          const timeA = typeof a.createdAt === 'number' ? a.createdAt : new Date(a.createdAt || 0).getTime();
+          const timeB = typeof b.createdAt === 'number' ? b.createdAt : new Date(b.createdAt || 0).getTime();
+          return timeB - timeA;
+        });
       });
-
-      const sorted = Array.from(postMap.values()).sort((a, b) => {
-        const timeA = typeof a.createdAt === 'number' ? a.createdAt : new Date(a.createdAt || 0).getTime();
-        const timeB = typeof b.createdAt === 'number' ? b.createdAt : new Date(b.createdAt || 0).getTime();
-        return timeB - timeA;
-      });
-
-      setProfilePosts(sorted);
     };
 
     const loadProfilePosts = async () => {
