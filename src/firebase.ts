@@ -1,6 +1,11 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-import { getFirestore, setLogLevel } from 'firebase/firestore';
+import { 
+  getFirestore, 
+  initializeFirestore, 
+  persistentLocalCache, 
+  persistentMultipleTabManager 
+} from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 
 // AI Studio provisioned config
@@ -16,22 +21,24 @@ const firebaseConfig = {
   firestoreDatabaseId: import.meta.env.VITE_FIRESTORE_DATABASE_ID || defaultConfig?.firestoreDatabaseId
 };
 
-// Diagnostic Check
-console.log("--- Firebase Configuration Audit ---");
-console.log("Project ID:", firebaseConfig.projectId);
-console.log("Database ID:", firebaseConfig.firestoreDatabaseId || "(default)");
-
-if (!firebaseConfig.projectId) {
-  console.error("CRITICAL: Firebase Project ID is missing!");
-}
-
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 export const auth = getAuth(app);
 export const storage = getStorage(app);
 
-// Force connection to exact database ID
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+// Force connection to exact database ID with persistent local cache
+let firestoreDb;
+try {
+  firestoreDb = initializeFirestore(app, {
+    localCache: persistentLocalCache({
+      tabManager: persistentMultipleTabManager()
+    })
+  }, firebaseConfig.firestoreDatabaseId);
+} catch (e) {
+  firestoreDb = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+}
 
-console.log("Firebase initialized successfully.");
+export const db = firestoreDb;
+
+console.log("✅ Firebase & Firestore initialized with multi-tab offline persistence.");
 
 

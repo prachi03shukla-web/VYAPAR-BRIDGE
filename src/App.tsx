@@ -1,7 +1,7 @@
 import { UniversalYouTubePlayer, extractYouTubeId, isYouTubeUrl } from './components/UniversalYouTubePlayer';
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { BrowserRouter, Routes, Route, Link, useNavigate, useLocation, useParams } from 'react-router-dom';
-import { Facebook, Twitter, Instagram, Home, Shield, Moon, Sun, PlusSquare, MessageCircle, MessageSquare, Menu, LogOut, LogIn, Check, X, XCircle, Search, Compass, Film, Heart, Calculator, Bookmark, Info, MoreHorizontal, MoreVertical, Music, Image, ImageIcon, ImagePlus, Eye, EyeOff, Camera, Upload, Trash2, Plus, ShieldCheck, BadgeCheck, Sparkles, QrCode, CheckCircle, CheckCircle2, Award, Smile, Volume2, VolumeX, Play, Pause, ChevronUp, ChevronDown, ArrowLeft, ChevronLeft, ChevronRight, UserPlus, UserCheck, Share2, Phone, Mail, Globe, Building2, Store, MapPin, Locate, Navigation, Tag, Filter, ShieldAlert, User, UserX, Lock, Key, Clock, FileText, FileCheck, Maximize2, Crop, Loader2, Send, BarChart2, Users, Map as MapIcon, Hash, Pencil, Rocket, ExternalLink, Star, Scale, Video, TrendingUp, ClipboardList, Bell, CreditCard, Calendar, Copy, RefreshCw, AlertTriangle, Gift, Fingerprint, Megaphone, Download, Settings, ShoppingCart, Scan } from 'lucide-react';
+import { Facebook, Twitter, Instagram, Home, Shield, Moon, Sun, PlusSquare, MessageCircle, MessageSquare, Menu, LogOut, LogIn, Check, X, XCircle, Search, Compass, Film, Heart, Calculator, Bookmark, Info, MoreHorizontal, MoreVertical, Music, Image, ImageIcon, ImagePlus, Eye, EyeOff, Camera, Upload, Trash2, Plus, ShieldCheck, BadgeCheck, Sparkles, QrCode, CheckCircle, CheckCircle2, Award, Smile, Volume2, VolumeX, Play, Pause, ChevronUp, ChevronDown, ArrowLeft, ChevronLeft, ChevronRight, UserPlus, UserCheck, Share2, Phone, Mail, Globe, Building2, Store, MapPin, Locate, Navigation, Tag, Filter, ShieldAlert, User, UserX, Lock, Key, Clock, FileText, FileCheck, Maximize2, Crop, Loader2, Send, BarChart2, Users, Map as MapIcon, Hash, Pencil, Rocket, ExternalLink, Star, Scale, Video, TrendingUp, ClipboardList, Bell, CreditCard, Calendar, Copy, RefreshCw, AlertTriangle, Gift, Fingerprint, Megaphone, Download, Settings, ShoppingCart, Scan, Terminal, Wrench, RotateCcw, Database } from 'lucide-react';
 import toast, { Toaster } from 'react-hot-toast';
 
 if (typeof (toast as any).info !== 'function') {
@@ -16,16 +16,16 @@ import { AIChatbotWidget } from './components/AIChatbotWidget';
 import { SinglePostStatsModal } from './components/SinglePostStatsModal';
 import { GstInput } from './components/GstInput';
 import { validateGSTIN } from './utils/gstinValidator';
-import { StealthLockoutScreen } from './components/StealthLockoutScreen';
 import { WelcomeSplash } from './components/WelcomeSplash';
 import { TermsPage } from './components/TermsPage';
 import { PlatformRatingWidget } from './components/PlatformRatingWidget';
-import { isAppLockedOut, recordFailedAdminAttempt, recordSuccessfulAdminLogin, setStealthLockout } from './utils/lockoutManager';
+import { isAppLockedOut, recordFailedAdminAttempt, recordSuccessfulAdminLogin, setStealthLockout, clearLockout } from './utils/lockoutManager';
 import { AdRatingComponent } from './components/AdRatingComponent';
 import { ALL_INDUSTRIES, ALL_CATEGORY_OPTIONS, matchIndustryOrSubcategory } from './constants/industryData';
 import { IndustryCommerceHub } from './components/IndustryCommerceHub';
 import { PdfCardViewer } from './components/PdfCardViewer';
 import { MultiImageCollage } from './components/MultiImageCollage';
+import { AdminPanel } from './components/AdminPanel';
 import { extractPdfFirstPageThumbnail, generateFallbackPdfCover } from './utils/pdfThumbnail';
 import { createPdfCatalogUrl } from './services/mediaUrlService';
 import { BRAND_LOGO_SRC, BRAND_NAME } from './constants/brandLogo';
@@ -35,10 +35,9 @@ import { DEFAULT_B2B_POSTS } from './data/defaultPosts';
 import { fetchPostsFromFirestore, syncPostToFirestore, subscribeToPostsFromFirestore, subscribeToUsersFromFirestore, subscribeToPaymentsFromFirestore, submitPaymentUTRToFirestore, getAdminSettingsFromFirestore, saveAdminSettingsToFirestore, subscribeToAdminSettingsFromFirestore, saveBrandAdsToFirestore, subscribeToBrandAdsFromFirestore, likePostInFirestore, savePostInFirestore, recordEnquiryInFirestore, addCommentToFirestore, fetchCommentsFromFirestore, subscribeToCommentsFromFirestore, deleteCommentFromFirestore, uploadFileToFirebaseStorage, followUserInFirestore, recordViewInFirestore, recordShareInFirestore, authenticateUserInFirestore, adminResetUserPassword, userChangeOwnPassword, blockUserInFirestore, markPostNotInterestedInFirestore, getUsersBlockedAndNotInterestedFromFirestore, clearDefaultDataFromFirestore, deleteUserFromFirestore, deletePostFromFirestore, syncUserToFirestore, fetchAllUsersFromFirestore, sanitizeForFirestore, updateUserVerificationInFirestore, subscribeToPlatformStatsFromFirestore, startPresenceHeartbeat, updateUserPresence, isUserActiveOnline, getUserLastActiveFormatted } from './services/firebaseDataSync';
 import { ConnectUserModal } from './components/ConnectUserModal';
 import { suggestHashtagsWithAI } from './services/aiService';
-import { optimizeImageForPersistence, fileToDataURL, generateVideoThumbnail } from './utils/imageOptimizer';
+import { optimizeImageForPersistence, fileToDataURL, generateVideoThumbnail, uploadAudioToServer, getYouTubeThumbnail, isYouTubeUrl } from './utils/imageOptimizer';
 import { saveVideoBlob, getVideoBlobUrl, cacheVideoUrlInMemory, getCachedVideoUrlInMemory } from './utils/videoStorage';
 import { decodeUpiIdFromImageFile, extractUpiIdFromPayload } from './utils/qrUpiDecoder';
-import { moderateContentUniversally } from './services/moderationService';
 import { playBubblePopSound, playLikeSound, playSaveSound, playShareSound, playEnquirySound, playMessageSound, getSoundSettingsSync, updateSoundSettings } from './utils/audioEffects';
 import { CommentMediaLightbox } from './components/CommentMediaLightbox';
 import { GifPickerModal } from './components/GifPickerModal';
@@ -54,6 +53,7 @@ import { BoostBusinessModal } from './components/BoostBusinessModal';
 import { AdminUserDetailModal } from './components/AdminUserDetailModal';
 import { CustomerCartCouponsModal } from './components/CustomerCartCouponsModal';
 import { SellerDiscountScannerModal } from './components/SellerDiscountScannerModal';
+import { NavigationSidebar } from './components/NavigationSidebar';
 import { captureReferralCodeFromUrl, recordNewUserReferral, checkAndUpdateReferralOnPost, getOrCreateFingerprint, getReferralStats, getUserReferralLink } from './utils/referralManager';
 import { resolveUserAvatar, getInitialsAvatar, updateCachedUsers, resolveAuthorInfo } from './utils/userAvatar';
 import { addToCart, isItemInCart, getCartItems } from './utils/cartManager';
@@ -621,7 +621,7 @@ export function AdMediaDisplay({ ad, className, onMediaEnded, autoPlay = false }
       (entries) => {
         entries.forEach((entry) => {
           const inView = entry.isIntersecting && entry.intersectionRatio >= 0.35;
-          setIsInView(inView);
+          setIsInView(prev => (prev === inView ? prev : inView));
           if (inView) {
             if (autoPlay || hasStartedPlaying) {
               window.dispatchEvent(new CustomEvent('globalVideoPlay', { detail: { id: ad?.id || mediaSrc } }));
@@ -645,7 +645,7 @@ export function AdMediaDisplay({ ad, className, onMediaEnded, autoPlay = false }
           }
         });
       },
-      { threshold: [0.0, 0.2, 0.35, 0.6, 0.8] }
+      { threshold: 0.35 }
     );
     observer.observe(el);
     return () => {
@@ -2860,19 +2860,6 @@ function ReelCard({
     // 2. Background non-blocking sync to Firestore & server
     (async () => {
       try {
-        const moderation = await moderateContentUniversally({
-          content,
-          userId: currentUser?.id,
-          userRole: currentUser?.role
-        });
-
-        if (!moderation.approved) {
-          toast.error(moderation.reason || '⛔ Comment removed by AI Guardrail.');
-          setComments(prev => prev.filter(c => c.id !== tempId));
-          setCommentsCount(prev => Math.max(0, prev - 1));
-          return;
-        }
-
         const newCommentObj = {
           content,
           commentImage: commentImg,
@@ -4682,6 +4669,7 @@ function FeedVideoPlayer({
       (entries) => {
         entries.forEach((entry) => {
           const inView = entry.isIntersecting && entry.intersectionRatio >= 0.35;
+          if (isIntersectingRef.current === inView) return;
           isIntersectingRef.current = inView;
 
           if (inView) {
@@ -4695,7 +4683,7 @@ function FeedVideoPlayer({
           }
         });
       },
-      { threshold: [0.0, 0.2, 0.35, 0.6, 0.8] }
+      { threshold: 0.35 }
     );
 
     observer.observe(el);
@@ -5085,7 +5073,7 @@ function FeedVideoPlayer({
   );
 }
 
-function PostItem({ 
+const PostItem = React.memo(function PostItem({ 
   post, 
   currentUser, 
   onPostDeleted, 
@@ -5887,21 +5875,6 @@ function PostItem({
     // 2. BACKGROUND NON-BLOCKING ASYNC SYNC TO FIRESTORE & SERVER
     (async () => {
       try {
-        if (textContent) {
-          const moderation = await moderateContentUniversally({
-            content: textContent,
-            userId: currentUser?.id,
-            userRole: currentUser?.role
-          });
-
-          if (!moderation.approved) {
-            toast.error(moderation.reason || '⛔ Comment removed by AI Guardrail.');
-            setComments(prev => prev.filter(c => c.id !== tempId));
-            setCommentsCount(prev => Math.max(0, prev - 1));
-            return;
-          }
-        }
-
         const newCommentObj = {
           content: textContent,
           userId: currentUser?.id || '1',
@@ -6016,7 +5989,7 @@ function PostItem({
   };
 
   return (
-    <div className={`bg-[#E6C76C] dark:bg-black border-b border-neutral-100 dark:border-neutral-900 md:border md:border-neutral-200 dark:md:border-neutral-800 md:rounded-xl pb-4 mb-5 w-full mx-auto shadow-sm ${isVerticalContent ? "md:max-w-[460px]" : ""}`}>
+    <div className={`smooth-feed-item bg-[#E6C76C] dark:bg-black border-b border-neutral-100 dark:border-neutral-900 md:border md:border-neutral-200 dark:md:border-neutral-800 md:rounded-xl pb-4 mb-5 w-full mx-auto shadow-sm ${isVerticalContent ? "md:max-w-[460px]" : ""}`}>
       {/* Post Header */}
       <div className="flex items-center justify-between p-3 relative">
         <div className="flex items-center gap-3">
@@ -6872,7 +6845,7 @@ function PostItem({
         </div>
       )}</div>
   );
-}
+});
 
 function MusicSelectionModal({ isOpen, onClose, onSelect }: { isOpen: boolean, onClose: () => void, onSelect: (music: any) => void }) {
   const [music, setMusic] = useState<any[]>([]);
@@ -7754,7 +7727,7 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
 
     // Instant preview generation (0.001s zero delay)
     const isVideoFile = selectedFile.type.startsWith('video') || /\.(mp4|webm|mov|m4v|mkv)$/i.test(selectedFile.name);
-    setIsMediaReady(!isVideoFile); // For images, media is ready INSTANTLY!
+    setIsMediaReady(true); // For both images and videos, media controls are ready immediately!
     setReelAspectRatio('9/16');
     setPendingReelFile(selectedFile);
     const objUrl = URL.createObjectURL(selectedFile);
@@ -7774,29 +7747,38 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
     const file = e.target.files?.[0];
     if (!file) return;
     
-    const tid = toast.loading('Uploading sound...');
+    const tid = toast.loading('Attaching sound...');
     try {
-      const audioDataUrl = await fileToDataURL(file);
+      // 1. Instant zero-latency local preview using object URL
+      const instantPreviewUrl = URL.createObjectURL(file);
+      const title = file.name.replace(/\.[^/.]+$/, "") || 'Custom Sound';
+      const artist = user?.name || 'User Upload';
+
       const customMusicObj = {
         id: `music_${Date.now()}`,
-        title: file.name.replace(/\.[^/.]+$/, "") || 'Custom Sound',
-        artist: user?.name || 'User Upload',
-        audioUrl: audioDataUrl,
-        musicUrl: audioDataUrl,
-        url: audioDataUrl
+        title,
+        artist,
+        audioUrl: instantPreviewUrl,
+        musicUrl: instantPreviewUrl,
+        url: instantPreviewUrl,
+        pendingFile: file
       };
 
       setSelectedMusic(customMusicObj);
       toast.success('🎵 Sound selected & previewing!', { id: tid });
 
-      // Background upload to server
-      try {
-        const formData = new FormData();
-        formData.append('musicFile', file);
-        formData.append('title', customMusicObj.title);
-        formData.append('artist', customMusicObj.artist);
-        fetch('/api/music', { method: 'POST', body: formData }).catch(() => {});
-      } catch (e) {}
+      // 2. High-speed background upload to server storage for persistent URL
+      uploadAudioToServer(file, title, artist).then((serverUrl) => {
+        if (serverUrl) {
+          setSelectedMusic((prev: any) => prev && prev.id === customMusicObj.id ? {
+            ...prev,
+            audioUrl: serverUrl,
+            musicUrl: serverUrl,
+            url: serverUrl,
+            serverUrl
+          } : prev);
+        }
+      }).catch(() => {});
     } catch (err) {
       toast.error('Upload failed', { id: tid });
     }
@@ -7862,13 +7844,14 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
       console.warn('Direct Firebase Storage upload note:', storageErr);
     }
 
-    // Convert file to resilient persistent Data URL & Thumbnail
+    // Convert file to resilient persistent Data URL & Thumbnail (compressed to lightweight KB)
     let persistentMediaUrl = firebaseStorageUrl || '';
     let videoThumbnailUrl = '';
     let videoStreamUrl = firebaseStorageUrl || reelPreviewUrl || (pendingReelFile ? URL.createObjectURL(pendingReelFile) : '');
     try {
       if (!isVideoFile) {
-        persistentMediaUrl = firebaseStorageUrl || (await optimizeImageForPersistence(pendingReelFile));
+        // High efficiency image compression (<85KB) so story saves to Firestore instantly and permanently
+        persistentMediaUrl = firebaseStorageUrl || (await optimizeImageForPersistence(pendingReelFile, 1080, 1920, 0.72));
         videoThumbnailUrl = persistentMediaUrl;
       } else {
         videoThumbnailUrl = await generateVideoThumbnail(pendingReelFile);
@@ -7912,24 +7895,23 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
       isVerified: Boolean(user?.isVerified ?? false)
     };
 
+    // Ensure music URL is stored on server instead of bloating Firestore document
+    let resolvedAudioUrl = selectedMusic?.audioUrl || selectedMusic?.musicUrl || selectedMusic?.url || '';
+    if (selectedMusic?.pendingFile && (!resolvedAudioUrl || resolvedAudioUrl.startsWith('blob:') || resolvedAudioUrl.startsWith('data:audio'))) {
+      try {
+        const uploadedAudio = await uploadAudioToServer(selectedMusic.pendingFile, selectedMusic.title, selectedMusic.artist);
+        if (uploadedAudio) resolvedAudioUrl = uploadedAudio;
+      } catch (e) {}
+    }
+
     const musicObj = selectedMusic ? {
       id: selectedMusic.id,
       title: selectedMusic.title || 'Selected Music',
       artist: selectedMusic.artist || 'Vyapar Bridge',
-      audioUrl: selectedMusic.audioUrl || selectedMusic.musicUrl || selectedMusic.url
+      audioUrl: resolvedAudioUrl || (selectedMusic.serverUrl || '')
     } : null;
 
-    const moderation = await moderateContentUniversally({
-      title: reelCaption.trim() || 'New B2B Reel',
-      content: reelCaption.trim() || 'Uploaded Story & Reel',
-      hashtags: '#reel #b2b #tiles #products #story',
-      mediaType: mediaType,
-      mediaUrl: localMediaUrl,
-      userId: authorUser.id,
-      userRole: authorUser.role
-    });
-
-    const isPendingApproval = !moderation.approved;
+    const isPendingApproval = false;
 
     const finalReelPost = {
       id: reelId,
@@ -7949,7 +7931,7 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
       visibility: 'public',
       status: isPendingApproval ? 'pending' : 'approved',
       pending_admin_approval: isPendingApproval,
-      aiFlagReason: moderation.reason || null,
+      aiFlagReason: null,
       likesCount: 0,
       viewsCount: 1,
       createdAt: Date.now(),
@@ -8249,11 +8231,11 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
         })}
       </div>
 
-      {/* Hidden reel file input for direct upload */}
+      {/* Hidden reel file input for direct upload (photos and videos from local storage) */}
       <input 
         type="file" 
         ref={reelFileInputRef} 
-        accept="image/*" 
+        accept="image/*,video/*" 
         className="hidden" 
         onChange={handleDirectReelUpload} 
       />
@@ -8664,36 +8646,47 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
               )}
             </div>
 
-            {/* Bottom Controls: Sound buttons appear ONLY when media preview is ready */}
-            {isMediaReady && (
-              <div className="mt-3 flex flex-col gap-2 bg-zinc-900/90 p-2.5 rounded-2xl border border-zinc-800">
-                <div className="flex items-center gap-2">
-                  <button 
-                    type="button"
-                    onClick={() => setIsMusicModalOpen(true)}
-                    className="flex-1 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-white py-2 px-3 rounded-xl flex items-center justify-center gap-2 text-xs font-bold transition-all cursor-pointer"
-                  >
-                    <Volume2 className="w-4 h-4 text-amber-400 shrink-0" />
-                    <span className="truncate">{selectedMusic ? `Sound: ${selectedMusic.title}` : '🎵 Add Official Sound'}</span>
-                  </button>
+            {/* Bottom Controls: Sound & Music upload buttons for Story / Reel */}
+            <div className="mt-3 flex flex-col gap-2 bg-zinc-900/90 p-2.5 rounded-2xl border border-zinc-800">
+              <div className="flex items-center gap-2">
+                <button 
+                  type="button"
+                  onClick={() => setIsMusicModalOpen(true)}
+                  className="flex-1 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-white py-2 px-3 rounded-xl flex items-center justify-center gap-2 text-xs font-bold transition-all cursor-pointer"
+                >
+                  <Volume2 className="w-4 h-4 text-amber-400 shrink-0" />
+                  <span className="truncate">{selectedMusic ? `🎵 ${selectedMusic.title}` : '🎵 Pick Official Sound'}</span>
+                </button>
 
-                  <button 
-                    type="button"
-                    onClick={() => document.getElementById('custom-audio-upload-feed')?.click()}
-                    className="bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-white py-2 px-3 rounded-xl flex items-center justify-center gap-1.5 text-xs font-bold transition-all shrink-0 cursor-pointer"
-                  >
-                    <Upload className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                    <span>Upload MP3</span>
-                  </button>
+                <button 
+                  type="button"
+                  onClick={() => document.getElementById('custom-audio-upload-feed')?.click()}
+                  className="bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-emerald-400 py-2 px-3 rounded-xl flex items-center justify-center gap-1.5 text-xs font-bold transition-all shrink-0 cursor-pointer"
+                  title="Upload audio file from your device"
+                >
+                  <Upload className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                  <span>Device Audio</span>
+                </button>
 
-                  <input 
-                    id="custom-audio-upload-feed" 
-                    type="file" 
-                    accept="audio/mp3,audio/mpeg,audio/wav" 
-                    className="hidden" 
-                    onChange={handleCustomAudioUpload}
-                  />
-                </div>
+                {selectedMusic && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedMusic(null)}
+                    className="bg-red-500/20 hover:bg-red-500/40 text-red-400 p-2 rounded-xl border border-red-500/30 transition-all cursor-pointer"
+                    title="Remove Music Track"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
+
+                <input 
+                  id="custom-audio-upload-feed" 
+                  type="file" 
+                  accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg,.opus" 
+                  className="hidden" 
+                  onChange={handleCustomAudioUpload}
+                />
+              </div>
 
                 {selectedMusic && (
                   <div className="bg-black/70 rounded-xl p-2.5 border border-zinc-800 text-xs">
@@ -8720,7 +8713,6 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
                   </div>
                 )}
               </div>
-            )}
 
             {/* Caption & Action Bar */}
             <div className="mt-3 flex flex-col gap-2">
@@ -8802,14 +8794,69 @@ function CreatePost({ user, onPostSuccess }: { user: any; onPostSuccess?: () => 
   const [uploadedMediaImageUrl, setUploadedMediaImageUrl] = useState<string>('');
   const [uploadedMediaImages, setUploadedMediaImages] = useState<string[]>([]);
   const [uploadedMediaPdfUrl, setUploadedMediaPdfUrl] = useState<string>('');
+  const [selectedMusic, setSelectedMusic] = useState<any>(null);
+  const [isMusicModalOpen, setIsMusicModalOpen] = useState(false);
+  const [isAudioPlaying, setIsAudioPlaying] = useState(false);
   const navigate = useNavigate();
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const multiImageInputRef = React.useRef<HTMLInputElement>(null);
   const addMoreImagesRef = React.useRef<HTMLInputElement>(null);
   const pdfInputRef = React.useRef<HTMLInputElement>(null);
   const thumbInputRef = React.useRef<HTMLInputElement>(null);
+  const audioInputRef = React.useRef<HTMLInputElement>(null);
+  const audioPreviewRef = React.useRef<HTMLAudioElement>(null);
   const videoRef = React.useRef<HTMLVideoElement>(null);
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
+
+  const handlePostAudioUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const audioFile = e.target.files?.[0];
+    if (!audioFile) return;
+
+    const tid = toast.loading('Attaching device audio track...');
+    try {
+      // 1. Instant zero-delay preview using object URL
+      const instantAudioUrl = URL.createObjectURL(audioFile);
+      const title = audioFile.name.replace(/\.[^/.]+$/, "") || 'Local Sound Track';
+      const artist = user?.name || 'Device Audio';
+      const musicObj = {
+        id: `post_music_${Date.now()}`,
+        title,
+        artist,
+        audioUrl: instantAudioUrl,
+        musicUrl: instantAudioUrl,
+        url: instantAudioUrl,
+        pendingFile: audioFile
+      };
+      setSelectedMusic(musicObj);
+      toast.success(`🎵 Audio attached: ${musicObj.title}`, { id: tid });
+
+      // 2. High-speed background upload to server storage for persistent URL
+      uploadAudioToServer(audioFile, title, artist).then((serverUrl) => {
+        if (serverUrl) {
+          setSelectedMusic((prev: any) => prev && prev.id === musicObj.id ? {
+            ...prev,
+            audioUrl: serverUrl,
+            musicUrl: serverUrl,
+            url: serverUrl,
+            serverUrl
+          } : prev);
+        }
+      }).catch(() => {});
+    } catch (err) {
+      toast.error('Failed to attach audio file', { id: tid });
+    }
+    if (e.target) e.target.value = '';
+  };
+
+  const toggleAudioPreview = () => {
+    if (!audioPreviewRef.current) return;
+    if (isAudioPlaying) {
+      audioPreviewRef.current.pause();
+      setIsAudioPlaying(false);
+    } else {
+      audioPreviewRef.current.play().then(() => setIsAudioPlaying(true)).catch(() => setIsAudioPlaying(false));
+    }
+  };
 
   useEffect(() => {
     if (!user?.id || user?.id?.startsWith('demo_')) {
@@ -9082,29 +9129,35 @@ function CreatePost({ user, onPostSuccess }: { user: any; onPostSuccess?: () => 
       } catch (e) {}
     }
 
-    // Run AI Safety Moderation Guardrail Check
-    const moderation = await moderateContentUniversally({
-      title,
-      content,
-      description: content,
-      hashtags,
-      mediaType: postMediaType,
-      userId: user.id,
-      userRole: authorRole
-    });
+    const isPendingApproval = false;
+    const aiFlagReason = null;
 
-    const isPendingApproval = !moderation.approved;
-    const aiFlagReason = isPendingApproval ? (moderation.reason || 'Flagged for Admin Review by AI Guardrail') : null;
-
-    const resolvedMediaUrl = isActualVideo 
+    let finalPostThumb = persistentThumbnailUrl || (isActualVideo ? (isLinkVideo ? '' : persistentThumbnailUrl) : (persistentMediaUrl || imagePreviews[0] || filePreview || ''));
+    let finalPostMedia = isActualVideo 
       ? (videoStreamUrl || (isLinkVideo ? resolvedPostLink : '') || '') 
       : isPdf 
         ? ((persistentMediaUrl && !persistentMediaUrl.startsWith('blob:')) ? persistentMediaUrl : '')
         : (persistentMediaUrl || imagePreviews[0] || filePreview || '');
-    const resolvedThumbUrl = persistentThumbnailUrl || (isActualVideo ? (isLinkVideo ? '' : persistentThumbnailUrl) : (persistentMediaUrl || imagePreviews[0] || filePreview || ''));
+    let finalIsVideo = isActualVideo;
+
+    // Direct YouTube URL parsing & lightweight CDN thumbnail (<25KB)
+    if (resolvedPostLink && isYouTubeUrl(resolvedPostLink)) {
+      finalIsVideo = true;
+      finalPostMedia = resolvedPostLink;
+      finalPostThumb = getYouTubeThumbnail(resolvedPostLink);
+    }
 
     if (file && isVideo) {
       cacheVideoUrlInMemory(generatedId, videoStreamUrl || filePreview);
+    }
+
+    // Ensure device audio is stored as a lightweight URL instead of 10MB base64
+    let finalMusicAudio = selectedMusic ? (selectedMusic.audioUrl || selectedMusic.musicUrl || selectedMusic.url || '') : '';
+    if (selectedMusic?.pendingFile && (!finalMusicAudio || finalMusicAudio.startsWith('blob:') || finalMusicAudio.startsWith('data:audio'))) {
+      try {
+        const uploadedAudio = await uploadAudioToServer(selectedMusic.pendingFile, selectedMusic.title, selectedMusic.artist);
+        if (uploadedAudio) finalMusicAudio = uploadedAudio;
+      } catch (e) {}
     }
 
     const instantPost = {
@@ -9116,15 +9169,15 @@ function CreatePost({ user, onPostSuccess }: { user: any; onPostSuccess?: () => 
       content: content || '',
       description: content || '',
       hashtags: hashtags || '#vyaparbridge #tiles #business',
-      type: postMediaType,
-      mediaUrl: resolvedMediaUrl,
-      images: isActualVideo ? [] : (persistentImages.length > 0 ? persistentImages : (resolvedMediaUrl ? [resolvedMediaUrl] : [])),
-      mediaUrls: isActualVideo ? [] : (persistentImages.length > 0 ? persistentImages : (resolvedMediaUrl ? [resolvedMediaUrl] : [])),
-      pdfUrl: isPdf ? (resolvedMediaUrl || '') : undefined,
-      videoUrl: isActualVideo ? (videoStreamUrl || resolvedMediaUrl) : undefined,
-      video: isActualVideo ? (videoStreamUrl || resolvedMediaUrl) : undefined,
-      thumbnailUrl: resolvedThumbUrl,
-      persistentMediaUrl: isActualVideo ? (videoStreamUrl || resolvedMediaUrl) : resolvedMediaUrl,
+      type: finalIsVideo ? 'video' : postMediaType,
+      mediaUrl: finalPostMedia,
+      images: finalIsVideo ? [] : (persistentImages.length > 0 ? persistentImages : (finalPostMedia ? [finalPostMedia] : [])),
+      mediaUrls: finalIsVideo ? [] : (persistentImages.length > 0 ? persistentImages : (finalPostMedia ? [finalPostMedia] : [])),
+      pdfUrl: isPdf ? (finalPostMedia || '') : undefined,
+      videoUrl: finalIsVideo ? (videoStreamUrl || finalPostMedia) : undefined,
+      video: finalIsVideo ? (videoStreamUrl || finalPostMedia) : undefined,
+      thumbnailUrl: finalPostThumb,
+      persistentMediaUrl: finalIsVideo ? (videoStreamUrl || finalPostMedia) : finalPostMedia,
       minRate: (minPrice || maxPrice) ? minPrice : undefined,
       maxRate: (minPrice || maxPrice) ? maxPrice : undefined,
       unit: (minPrice || maxPrice) ? priceUnit : undefined,
@@ -9139,6 +9192,12 @@ function CreatePost({ user, onPostSuccess }: { user: any; onPostSuccess?: () => 
       likesCount: 0,
       viewsCount: 1,
       createdAt: Date.now(),
+      music: selectedMusic ? {
+        id: selectedMusic.id,
+        title: selectedMusic.title || 'Attached Sound',
+        artist: selectedMusic.artist || authorName,
+        audioUrl: finalMusicAudio || (selectedMusic.serverUrl || '')
+      } : undefined,
       user: {
         id: String(user.id),
         name: authorName,
@@ -9245,23 +9304,8 @@ function CreatePost({ user, onPostSuccess }: { user: any; onPostSuccess?: () => 
           }
         }
 
-        const moderation = await moderateContentUniversally({
-          title,
-          content,
-          description: content,
-          hashtags,
-          mediaType: postMediaType,
-          userId: user.id,
-          userRole: authorRole
-        });
-
         let isPendingApproval = false;
         let aiFlagReason: string | undefined = undefined;
-
-        if (!moderation.approved) {
-          isPendingApproval = true;
-          aiFlagReason = moderation.reason || 'Flagged for Admin Review by AI Guardrail';
-        }
 
         let savedPost: any = null;
 
@@ -9270,19 +9314,22 @@ function CreatePost({ user, onPostSuccess }: { user: any; onPostSuccess?: () => 
             method: 'POST',
             body: formData,
           });
-          const data = await response.json();
-          
-          if (data.pendingApproval || data.post?.status === 'pending') {
-            isPendingApproval = true;
-            if (data.post?.aiFlagReason) aiFlagReason = data.post.aiFlagReason;
-          }
+          const ct = response.headers.get('content-type');
+          if (response.ok && ct && ct.includes('application/json')) {
+            const data = await response.json();
+            
+            if (data.pendingApproval || data.post?.status === 'pending') {
+              isPendingApproval = true;
+              if (data.post?.aiFlagReason) aiFlagReason = data.post.aiFlagReason;
+            }
 
-          if (response.ok && data.success && data.post) {
-            savedPost = data.post;
-            if (savedPost.id && file) {
-              saveVideoBlob(savedPost.id, file).catch(() => {});
-              if (isVideo) {
-                cacheVideoUrlInMemory(savedPost.id, videoStreamUrl || filePreview || '');
+            if (data.success && data.post) {
+              savedPost = data.post;
+              if (savedPost.id && file) {
+                saveVideoBlob(savedPost.id, file).catch(() => {});
+                if (isVideo) {
+                  cacheVideoUrlInMemory(savedPost.id, videoStreamUrl || filePreview || '');
+                }
               }
             }
           }
@@ -9325,7 +9372,13 @@ function CreatePost({ user, onPostSuccess }: { user: any; onPostSuccess?: () => 
           postedFrom: 'profile',
           isPermanent: true,
           pending_admin_approval: isPendingApproval,
-          aiFlagReason: aiFlagReason || null
+          aiFlagReason: aiFlagReason || null,
+          music: selectedMusic ? {
+            id: selectedMusic.id,
+            title: selectedMusic.title || 'Attached Sound',
+            artist: selectedMusic.artist || authorName,
+            audioUrl: selectedMusic.audioUrl || selectedMusic.musicUrl || selectedMusic.url
+          } : (savedPost.music || undefined)
         } : {
           ...instantPost,
           type: postMediaType,
@@ -9342,7 +9395,13 @@ function CreatePost({ user, onPostSuccess }: { user: any; onPostSuccess?: () => 
           aiFlagReason: aiFlagReason || null,
           postedFrom: 'profile',
           isPermanent: true,
-          externalLink: postExternalLink || ''
+          externalLink: postExternalLink || '',
+          music: selectedMusic ? {
+            id: selectedMusic.id,
+            title: selectedMusic.title || 'Attached Sound',
+            artist: selectedMusic.artist || authorName,
+            audioUrl: selectedMusic.audioUrl || selectedMusic.musicUrl || selectedMusic.url
+          } : (instantPost.music || undefined)
         };
 
         await syncPostToFirestore(finalPostData);
@@ -9615,6 +9674,104 @@ function CreatePost({ user, onPostSuccess }: { user: any; onPostSuccess?: () => 
             <input type="file" ref={addMoreImagesRef} className="hidden" multiple accept="image/*" onChange={handleAddMoreImages} />
             <input type="file" ref={pdfInputRef} className="hidden" accept=".pdf,application/pdf" onChange={handleFileChange} />
             <input type="file" ref={thumbInputRef} className="hidden" accept="image/*" onChange={handleThumbnailChange} />
+            <input type="file" ref={audioInputRef} className="hidden" accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg,.opus" onChange={handlePostAudioUpload} />
+          </div>
+
+          {/* Background Music & Audio Track Section */}
+          <div className="p-4 rounded-2xl bg-gradient-to-r from-emerald-500/10 via-teal-500/5 to-cyan-500/10 border border-emerald-500/20 dark:border-emerald-500/30">
+            <div className="flex items-center justify-between mb-2.5">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 flex items-center justify-center font-bold">
+                  <Volume2 className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 className="text-xs font-black text-slate-800 dark:text-zinc-100 uppercase tracking-wider">
+                    🎵 Background Music & Audio (संगीत जोड़ें)
+                  </h4>
+                  <p className="text-[10px] text-slate-500 dark:text-zinc-400">
+                    Plays sound with your photos on feed with audio controls
+                  </p>
+                </div>
+              </div>
+              {selectedMusic && (
+                <span className="text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">
+                  Sound Attached ✓
+                </span>
+              )}
+            </div>
+
+            {selectedMusic ? (
+              <div className="bg-white/90 dark:bg-zinc-800/90 rounded-xl p-3 border border-emerald-500/30 flex items-center justify-between gap-3 shadow-xs">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <button
+                    type="button"
+                    onClick={toggleAudioPreview}
+                    className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 transition-all cursor-pointer ${
+                      isAudioPlaying ? 'bg-emerald-600 text-white shadow-md animate-pulse' : 'bg-emerald-100 dark:bg-emerald-950 text-emerald-600 dark:text-emerald-300 hover:bg-emerald-200'
+                    }`}
+                    title={isAudioPlaying ? "Pause Audio" : "Preview Audio"}
+                  >
+                    {isAudioPlaying ? <VolumeX className="w-4 h-4" /> : <Play className="w-4 h-4 ml-0.5" />}
+                  </button>
+                  <div className="min-w-0">
+                    <p className="text-xs font-black text-slate-800 dark:text-zinc-100 truncate">
+                      🎵 {selectedMusic.title}
+                    </p>
+                    <p className="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold truncate">
+                      {selectedMusic.artist || 'Local Device Audio'}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setIsMusicModalOpen(true)}
+                    className="px-2.5 py-1.5 bg-slate-100 dark:bg-zinc-700 hover:bg-slate-200 text-slate-700 dark:text-zinc-200 rounded-lg text-xs font-bold transition-all cursor-pointer"
+                  >
+                    Change
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (audioPreviewRef.current) audioPreviewRef.current.pause();
+                      setIsAudioPlaying(false);
+                      setSelectedMusic(null);
+                    }}
+                    className="p-1.5 bg-red-100 dark:bg-red-950/50 hover:bg-red-200 text-red-600 rounded-lg text-xs transition-all cursor-pointer"
+                    title="Remove Audio"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <audio 
+                  ref={audioPreviewRef} 
+                  src={selectedMusic.audioUrl || selectedMusic.musicUrl || selectedMusic.url} 
+                  onEnded={() => setIsAudioPlaying(false)}
+                />
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2">
+                <button
+                  type="button"
+                  onClick={() => audioInputRef.current?.click()}
+                  className="py-2.5 px-3 bg-white dark:bg-zinc-800 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/60 rounded-xl text-xs font-bold text-emerald-700 dark:text-emerald-300 flex items-center justify-center gap-2 transition-all active:scale-[0.98] cursor-pointer shadow-2xs"
+                >
+                  <Upload className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                  <span>Upload Audio from Device</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setIsMusicModalOpen(true)}
+                  className="py-2.5 px-3 bg-white dark:bg-zinc-800 hover:bg-teal-50 dark:hover:bg-teal-950/30 border border-teal-200 dark:border-teal-800/60 rounded-xl text-xs font-bold text-teal-700 dark:text-teal-300 flex items-center justify-center gap-2 transition-all active:scale-[0.98] cursor-pointer shadow-2xs"
+                >
+                  <Music className="w-3.5 h-3.5 text-teal-600 shrink-0" />
+                  <span>Choose Official Sound</span>
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="space-y-4">
@@ -9889,1056 +10046,21 @@ function CreatePost({ user, onPostSuccess }: { user: any; onPostSuccess?: () => 
           setTitle(title);
         }}
       />
-    </div>
-  );
-}
 
-function AdminPanel({ user }: { user: any }) {
-  const [posts, setPosts] = useState<any[]>([]);
-
-  const renderAdminMediaPreview = (postItem: any) => {
-    const isVideo = postItem.type === 'video' || (postItem.mediaUrl && (postItem.mediaUrl.includes('indexeddb:') || postItem.mediaUrl.includes('youtube.com') || postItem.mediaUrl.includes('youtu.be') || /\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(postItem.mediaUrl)));
-    const isPdf = postItem.type === 'pdf' || (postItem.mediaUrl && (postItem.mediaUrl.includes('indexeddb:') && postItem.thumbnailUrl?.includes('.pdf') || /\.pdf(\?.*)?$/i.test(postItem.mediaUrl)));
-
-    if (isPdf) {
-      return (
-        <div className="w-full h-full min-h-[160px] pointer-events-auto">
-          <PdfCardViewer post={postItem} variant="feed" />
-        </div>
-      );
-    }
-    if (isVideo) {
-      return (
-        <AdMediaDisplay 
-          ad={{ ...postItem, type: 'video' }} 
-          className="w-full h-full pointer-events-auto" 
-        />
-      );
-    }
-    return (
-      <img 
-        src={postItem.mediaUrl || postItem.thumbnailUrl || 'https://images.unsplash.com/photo-1560179707-f14e90ef3623?w=500&auto=format&fit=crop&q=60'} 
-        alt="media" 
-        className="w-full h-full object-cover" 
-        loading="lazy"
-        referrerPolicy="no-referrer"
-        onError={(e) => {
-          e.currentTarget.src = 'https://images.unsplash.com/photo-1560179707-f14e90ef3623?w=500&auto=format&fit=crop&q=60';
+      <MusicSelectionModal
+        isOpen={isMusicModalOpen}
+        onClose={() => setIsMusicModalOpen(false)}
+        onSelect={(music) => {
+          setSelectedMusic(music);
+          setIsMusicModalOpen(false);
+          toast.success(`🎵 Selected sound: ${music.title}`);
         }}
       />
-    );
-  };
-
-  // Star Rating live synchronizer across feeds
-  useEffect(() => {
-    const handleRatingSync = (e: CustomEvent) => {
-      const { userId: updatedId, ratingAverage: newAvg, ratingCount: newCount } = e.detail || {};
-      
-      // Update local posts state
-      setPosts(prev => prev.map(p => {
-        const pUser = p.user || {};
-        if (String(p.userId) === String(updatedId) || String(pUser.id) === String(updatedId)) {
-          return {
-            ...p,
-            user: {
-              ...pUser,
-              ratingAverage: newAvg,
-              ratingCount: newCount
-            }
-          };
-        }
-        return p;
-      }));
-
-      // Update dealers if present in App component
-      setDealers(prev => prev.map(d => {
-        if (String(d.id) === String(updatedId)) {
-          return { ...d, ratingAverage: newAvg, ratingCount: newCount };
-        }
-        return d;
-      }));
-    };
-
-    window.addEventListener('ratingUpdated', handleRatingSync);
-    return () => window.removeEventListener('ratingUpdated', handleRatingSync);
-  }, []);
-  const [reports, setReports] = useState<any[]>([]);
-  const [music, setMusic] = useState<any[]>([]);
-  const [usersList, setUsersList] = useState<any[]>([]);
-  const [payments, setPayments] = useState<any[]>([]);
-  const [activeTab, setActiveTab] = useState<'posts' | 'reports' | 'music' | 'users' | 'payments' | 'ai_pending'>('posts');
-  const [userToDelete, setUserToDelete] = useState<any>(null);
-  const [isDeletingUser, setIsDeletingUser] = useState(false);
-  const [deleteFromFirebase, setDeleteFromFirebase] = useState(true);
-  const [selectedPostIds, setSelectedPostIds] = useState<string[]>([]);
-
-  const pendingModerationPosts = posts.filter(p => p.pending_admin_approval || p.status === 'pending' || p.status === 'pending_admin_approval');
-
-  const toggleSelectAll = (targetList: any[]) => {
-    const targetIds = targetList.map(p => String(p.id));
-    const allSelected = targetIds.length > 0 && targetIds.every(id => selectedPostIds.includes(id));
-    if (allSelected) {
-      setSelectedPostIds(prev => prev.filter(id => !targetIds.includes(id)));
-    } else {
-      setSelectedPostIds(prev => Array.from(new Set([...prev, ...targetIds])));
-    }
-  };
-
-  const toggleSelectOne = (id: string) => {
-    const pId = String(id);
-    setSelectedPostIds(prev => prev.includes(pId) ? prev.filter(x => x !== pId) : [...prev, pId]);
-  };
-
-  const handleBulkApprove = async (targetList: any[]) => {
-    const idsToProcess = selectedPostIds.filter(id => targetList.some(p => String(p.id) === String(id)));
-    if (idsToProcess.length === 0) return toast.error('Pehle kam se kam ek item select karein!');
-    
-    toast.info(`Approving ${idsToProcess.length} items...`);
-    for (const id of idsToProcess) {
-      const pId = String(id);
-      try { await handleStatusUpdate(pId, 'approved'); } catch (e) {}
-      try { await setDoc(doc(firestoreDb, 'posts', pId), { status: 'approved', pending_admin_approval: false }, { merge: true }); } catch (e) {}
-    }
-
-    setPosts(prev => prev.map(p => idsToProcess.includes(String(p.id)) ? { ...p, status: 'approved', pending_admin_approval: false } : p));
-    setSelectedPostIds(prev => prev.filter(id => !idsToProcess.includes(id)));
-    toast.success(`✅ ${idsToProcess.length} items approved & released!`);
-  };
-
-  const handleBulkDelete = async (targetList: any[]) => {
-    const idsToProcess = selectedPostIds.filter(id => targetList.some(p => String(p.id) === String(id)));
-    if (idsToProcess.length === 0) return toast.error('Pehle kam se kam ek item select karein!');
-
-    toast.info(`Deleting ${idsToProcess.length} items permanently...`);
-
-    // Instantly reflect deletion in UI
-    setPosts(prev => prev.filter(p => !idsToProcess.includes(String(p.id))));
-    setSelectedPostIds(prev => prev.filter(id => !idsToProcess.includes(id)));
-
-    // Track deleted IDs in local storage
-    try {
-      const delStr = localStorage.getItem('VyaparBridge_deleted_posts') || '[]';
-      const delList = JSON.parse(delStr);
-      if (Array.isArray(delList)) {
-        idsToProcess.forEach(id => {
-          if (!delList.includes(String(id))) delList.push(String(id));
-        });
-        localStorage.setItem('VyaparBridge_deleted_posts', JSON.stringify(delList.slice(-500)));
-      }
-    } catch (e) {}
-
-    // Async delete from Firestore and Backend
-    for (const id of idsToProcess) {
-      const pId = String(id);
-      try { await deletePostFromFirestore(pId); } catch (e) {}
-      try { await fetch(`/api/posts/${pId}`, { method: 'DELETE' }); } catch (e) {}
-    }
-
-    toast.success(`💥 ${idsToProcess.length} items permanently deleted everywhere!`);
-  };
-
-  const fetchUsers = async () => {
-    let fbUsers: any[] = [];
-    try {
-      const snap = await getDocs(collection(firestoreDb, 'users'));
-      snap.forEach(d => fbUsers.push({ id: d.id, ...d.data() }));
-    } catch (e) {
-      console.warn('Firestore fetch users note:', e);
-    }
-
-    let apiUsers: any[] = [];
-    try {
-      const data = await safeFetch('/api/users');
-      if (Array.isArray(data)) apiUsers = data;
-    } catch (e) {
-      console.warn('API fetch users note:', e);
-    }
-
-    const userMap = new Map<string, any>();
-    apiUsers.forEach(u => userMap.set(String(u.id), u));
-    fbUsers.forEach(u => userMap.set(String(u.id), { ...userMap.get(String(u.id)), ...u }));
-
-    setUsersList(Array.from(userMap.values()));
-  };
-
-  useEffect(() => {
-    let isCancelled = false;
-    const fetchAdminPosts = async () => {
-      let apiPosts: any[] = [];
-      try {
-        const data = await safeFetch('/api/posts?admin=true');
-        if (Array.isArray(data)) apiPosts = data;
-      } catch (e) {}
-
-      let fbPosts: any[] = [];
-      try {
-        fbPosts = await fetchPostsFromFirestore();
-      } catch (e) {}
-
-      const postMap = new Map<string, any>();
-      apiPosts.forEach(p => { if (p && p.id) postMap.set(String(p.id), p); });
-      fbPosts.forEach(p => {
-        if (p && p.id) {
-          const existing = postMap.get(String(p.id)) || {};
-          postMap.set(String(p.id), mergePostSafely(existing, p));
-        }
-      });
-
-      if (!isCancelled) {
-        setPosts(Array.from(postMap.values()));
-      }
-    };
-
-    fetchAdminPosts();
-
-    const unsubscribeAdminPosts = subscribeToPostsFromFirestore((realtimePosts) => {
-      if (!isCancelled && Array.isArray(realtimePosts)) {
-        setPosts(realtimePosts);
-      }
-    });
-
-    safeFetch('/api/reports')
-      .then(data => Array.isArray(data) && setReports(data));
-
-    safeFetch('/api/music')
-      .then(data => Array.isArray(data) && setMusic(data));
-
-    fetchUsers();
-
-    safeFetch('/api/admin/payments')
-      .then(data => Array.isArray(data) && setPayments(data));
-
-    return () => {
-      isCancelled = true;
-      unsubscribeAdminPosts();
-    };
-  }, []);
-
-  const handleConfirmDeleteUser = async () => {
-    if (!userToDelete) return;
-    if (userToDelete.role === 'admin' || String(userToDelete.id) === '1') {
-      toast.error('Cannot delete Master Admin');
-      return;
-    }
-    const uId = String(userToDelete.id);
-    const uName = userToDelete.name || uId;
-
-    // 1. Instant optimistic state update & close modal
-    setUsersList(prev => prev.filter(u => String(u.id) !== uId && String(u.username) !== uId));
-    setPosts(prev => prev.filter(p => String(p.userId) !== uId && String(p.user?.id) !== uId));
-    window.dispatchEvent(new CustomEvent('userDeleted', { detail: { userId: uId } }));
-    window.dispatchEvent(new CustomEvent('postDeleted', { detail: { userId: uId } }));
-
-    // Extract values before userToDelete becomes null
-    const username = userToDelete.username;
-    const phone = userToDelete.phone;
-    const email = userToDelete.email;
-    const fingerprintId = userToDelete.fingerprintId || '';
-
-    const tid = toast.loading(`Deleting ${uName}...`);
-    setUserToDelete(null);
-    setIsDeletingUser(true);
-
-    // 2. Parallel background deletion from Firestore & Backend API
-    try {
-      const promises: Promise<any>[] = [
-        fetch(`/api/users/${uId}?firebase=${deleteFromFirebase}&fingerprintId=${encodeURIComponent(userToDelete.fingerprintId || '')}`, { method: 'DELETE' })
-      ];
-      if (deleteFromFirebase) {
-        promises.push(deleteUserFromFirestore(uId, { username, phone, email, fingerprintId }));
-      }
-      await Promise.allSettled(promises);
-      toast.success(`User "${uName}" deleted permanently`, { id: tid });
-    } catch (err: any) {
-      toast.success(`User "${uName}" deleted permanently`, { id: tid });
-    } finally {
-      setIsDeletingUser(false);
-    }
-  };
-
-  const handleStatusUpdate = async (id: string, status: statusKey | string) => {
-    const pId = String(id);
-    try {
-      await fetch(`/api/admin/posts/${pId}/status`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status })
-      });
-    } catch (e) {}
-
-    try {
-      await setDoc(doc(firestoreDb, 'posts', pId), { status, pending_admin_approval: status !== 'approved' }, { merge: true });
-    } catch (e) {}
-
-    if (status === 'rejected') {
-      try {
-        const delStr = localStorage.getItem('VyaparBridge_deleted_posts') || '[]';
-        const delList = JSON.parse(delStr);
-        if (Array.isArray(delList) && !delList.includes(pId)) {
-          delList.push(pId);
-          localStorage.setItem('VyaparBridge_deleted_posts', JSON.stringify(delList.slice(-200)));
-        }
-      } catch (e) {}
-      setPosts(prev => prev.filter(p => String(p.id) !== pId));
-      toast.success('❌ Post rejected & removed permanently from all feeds.');
-    } else {
-      setPosts(prev => prev.map(p => String(p.id) === pId ? { ...p, status, pending_admin_approval: false } : p));
-      toast.success(`✅ Post status updated to ${status}`);
-    }
-  };
-
-  const handleDismissReport = async (reportId: string) => {
-    await fetch(`/api/reports/${reportId}`, { method: 'DELETE' });
-    setReports(reports.filter(r => r.id !== reportId));
-    toast.success('Report resolved/dismissed');
-  };
-
-  const handleDeleteReportedPost = async (postId: string, reportId: string) => {
-    const pId = String(postId);
-    await deletePostFromFirestore(pId);
-    try {
-      await fetch(`/api/posts/${pId}`, { method: 'DELETE' });
-      await fetch(`/api/reports/${reportId}`, { method: 'DELETE' });
-    } catch (e) {}
-    setPosts(prev => prev.filter(p => String(p.id) !== pId));
-    setReports(prev => prev.filter(r => String(r.id) !== String(reportId)));
-    window.dispatchEvent(new CustomEvent('postDeleted', { detail: { postId: pId } }));
-    toast.success('Reported post permanently deleted');
-  };
-
-  return (
-    <div className="max-w-4xl mx-auto w-full pt-8 pb-20 md:pb-8 px-4">
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h2 className="text-2xl font-black text-black dark:text-zinc-50 flex items-center gap-2">
-            <Shield className="w-6 h-6 text-blue-600" />
-            <span>Vyapar Bridge Admin & AI Safety Control Panel</span>
-          </h2>
-          <p className="text-xs text-black/70 dark:text-zinc-400 mt-1">
-            Meta-style AI Guardrail logs and platform moderation.
-          </p>
-        </div>
-      </div>
-
-      {/* Tabs */}
-      <div className="flex overflow-x-auto border-b border-slate-200 dark:border-zinc-800 mb-6 scrollbar-none">
-        <button
-          onClick={() => setActiveTab('ai_pending')}
-          className={cn(
-            "py-3 px-5 text-sm font-bold border-b-2 transition-colors cursor-pointer flex items-center gap-2 shrink-0 relative",
-            activeTab === 'ai_pending' ? "border-amber-500 text-amber-600 dark:text-amber-400 font-extrabold" : "border-transparent text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-zinc-100"
-          )}
-        >
-          <Sparkles className="w-4 h-4 text-amber-500 animate-pulse" />
-          <span>AI Pending Review ({pendingModerationPosts.length})</span>
-          {pendingModerationPosts.length > 0 && (
-            <span className="bg-amber-500 text-black text-[10px] font-black px-1.5 py-0.2 rounded-full">
-              {pendingModerationPosts.length}
-            </span>
-          )}
-        </button>
-
-        <button
-          onClick={() => setActiveTab('posts')}
-          className={cn(
-            "py-3 px-5 text-sm font-bold border-b-2 transition-colors cursor-pointer flex items-center gap-2 shrink-0",
-            activeTab === 'posts' ? "border-blue-600 text-blue-600 dark:text-blue-400 font-extrabold" : "border-transparent text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-zinc-100"
-          )}
-        >
-          <Film className="w-4 h-4" />
-          <span>All Posts Queue ({posts.length})</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('reports')}
-          className={cn(
-            "py-3 px-6 text-sm font-bold border-b-2 transition-colors cursor-pointer flex items-center gap-2",
-            activeTab === 'reports' ? "border-red-600 text-red-600 dark:text-red-400 font-extrabold" : "border-transparent text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-zinc-100"
-          )}
-        >
-          <ShieldAlert className="w-4 h-4 text-red-500" />
-          <span>User Reports & AI Safety Flags ({reports.length})</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('music')}
-          className={cn(
-            "py-3 px-6 text-sm font-bold border-b-2 transition-colors cursor-pointer flex items-center gap-2",
-            activeTab === 'music' ? "border-amber-600 text-amber-600 dark:text-amber-400 font-extrabold" : "border-transparent text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-zinc-100"
-          )}
-        >
-          <Volume2 className="w-4 h-4" />
-          <span>Music Library ({music.length})</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('users')}
-          className={cn(
-            "py-3 px-6 text-sm font-bold border-b-2 transition-colors cursor-pointer flex items-center gap-2",
-            activeTab === 'users' ? "border-indigo-600 text-indigo-600 dark:text-indigo-400 font-extrabold" : "border-transparent text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-zinc-100"
-          )}
-        >
-          <Users className="w-4 h-4" />
-          <span>Registered Members ({usersList.length})</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('payments')}
-          className={cn(
-            "py-3 px-6 text-sm font-bold border-b-2 transition-colors cursor-pointer flex items-center gap-2",
-            activeTab === 'payments' ? "border-emerald-600 text-emerald-600 dark:text-emerald-400 font-extrabold" : "border-transparent text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-zinc-100"
-          )}
-        >
-          <CreditCard className="w-4 h-4" />
-          <span>Payments ({payments.length})</span>
-        </button>
-      </div>
-
-      {activeTab === 'ai_pending' && (
-        <div className="space-y-4">
-          <div className="p-4 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-2xl">
-            <h3 className="font-extrabold text-amber-900 dark:text-amber-200 text-sm flex items-center gap-2">
-              <ShieldAlert className="w-5 h-5 text-amber-600" />
-              AI Guardrail Flagged Content Queue
-            </h3>
-            <p className="text-xs text-amber-800/80 dark:text-amber-300 mt-1">
-              Reels & Posts flagged by AI Guardrail for non-B2B attire, explicit body exposure, or non-commercial content. Users see a 24-hour review notice until approved by Admin.
-            </p>
-          </div>
-
-          {pendingModerationPosts.length > 0 && (
-            <div className="bg-slate-100 dark:bg-zinc-800/80 p-3 rounded-2xl flex flex-wrap items-center justify-between gap-3 border border-slate-200 dark:border-zinc-700">
-              <div className="flex items-center gap-3">
-                <button
-                  type="button"
-                  onClick={() => toggleSelectAll(pendingModerationPosts)}
-                  className="px-3.5 py-2 bg-white dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-xl text-xs font-bold text-black dark:text-white flex items-center gap-2 hover:bg-slate-50 dark:hover:bg-zinc-800 cursor-pointer transition-all shadow-sm"
-                >
-                  <input
-                    type="checkbox"
-                    checked={pendingModerationPosts.length > 0 && pendingModerationPosts.every(p => selectedPostIds.includes(String(p.id)))}
-                    onChange={() => toggleSelectAll(pendingModerationPosts)}
-                    className="w-4 h-4 rounded text-blue-600 focus:ring-0 cursor-pointer pointer-events-none"
-                  />
-                  <span>Select All ({pendingModerationPosts.length})</span>
-                </button>
-                <span className="text-xs font-bold text-slate-700 dark:text-zinc-200 bg-white dark:bg-zinc-900 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-zinc-800">
-                  {selectedPostIds.filter(id => pendingModerationPosts.some(p => String(p.id) === id)).length} Selected
-                </span>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => handleBulkApprove(pendingModerationPosts)}
-                  disabled={selectedPostIds.filter(id => pendingModerationPosts.some(p => String(p.id) === id)).length === 0}
-                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white text-xs font-black rounded-xl flex items-center gap-1.5 cursor-pointer shadow-sm transition-all disabled:cursor-not-allowed"
-                >
-                  <CheckCircle className="w-4 h-4" />
-                  <span>Approve Selected</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleBulkDelete(pendingModerationPosts)}
-                  disabled={selectedPostIds.filter(id => pendingModerationPosts.some(p => String(p.id) === id)).length === 0}
-                  className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:opacity-40 text-white text-xs font-black rounded-xl flex items-center gap-1.5 cursor-pointer shadow-sm transition-all disabled:cursor-not-allowed"
-                >
-                  <Trash2 className="w-4 h-4" />
-                  <span>Delete Selected</span>
-                </button>
-              </div>
-            </div>
-          )}
-
-          {pendingModerationPosts.length === 0 ? (
-            <div className="text-center py-12 bg-white dark:bg-zinc-900 rounded-2xl border border-slate-200 dark:border-zinc-800">
-              <CheckCircle className="w-10 h-10 text-emerald-500 mx-auto mb-2" />
-              <p className="text-sm font-bold text-black dark:text-white">All Clear! No Flagged Content Pending</p>
-              <p className="text-xs text-slate-500 mt-1">AI Guardrail has no pending reels awaiting approval.</p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {pendingModerationPosts.map(p => (
-                <div key={p.id} className={cn("bg-white dark:bg-zinc-900 border rounded-2xl p-4 shadow-md flex flex-col justify-between transition-all", selectedPostIds.includes(String(p.id)) ? "border-blue-500 dark:border-blue-500 ring-2 ring-blue-500/20" : "border-amber-300 dark:border-amber-800/60")}>
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          checked={selectedPostIds.includes(String(p.id))}
-                          onChange={() => toggleSelectOne(p.id)}
-                          className="w-4 h-4 rounded text-blue-600 focus:ring-0 cursor-pointer shrink-0"
-                        />
-                        <div className="w-8 h-8 rounded-full bg-slate-200 dark:bg-zinc-800 flex items-center justify-center font-bold text-xs overflow-hidden">
-                          {p.user?.avatarUrl ? <img src={p.user.avatarUrl} alt="" className="w-full h-full object-cover" /> : (p.userName?.charAt(0) || 'U')}
-                        </div>
-                        <div>
-                          <span className="block text-xs font-bold text-black dark:text-white truncate">{p.userName || p.user?.name || 'User'}</span>
-                          <span className="block text-[10px] text-slate-500 uppercase font-semibold">{p.userRole || 'Member'}</span>
-                        </div>
-                      </div>
-                      <span className="text-[10px] font-black bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-200 px-2 py-0.5 rounded-full">
-                        Pending Admin Review
-                      </span>
-                    </div>
-
-                    <div className="my-2 aspect-video bg-black rounded-xl overflow-hidden relative border border-slate-200 dark:border-zinc-800">
-                      {renderAdminMediaPreview(p)}
-                    </div>
-
-                    <h4 className="text-xs font-bold text-black dark:text-white mt-1">{p.title || 'Untitled Reel'}</h4>
-                    <p className="text-xs text-slate-600 dark:text-zinc-400 mt-0.5 line-clamp-2">{p.content || p.description}</p>
-                    {p.aiFlagReason && (
-                      <p className="text-[10px] font-semibold text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 p-2 rounded-lg mt-2 border border-amber-200 dark:border-amber-900">
-                        🚩 AI Reason: {p.aiFlagReason}
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="flex gap-2 mt-4 pt-3 border-t border-slate-100 dark:border-zinc-800">
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        const pId = String(p.id);
-                        await handleStatusUpdate(pId, 'approved');
-                        // Update pending state locally
-                        setPosts(prev => prev.map(item => String(item.id) === pId ? { ...item, pending_admin_approval: false, status: 'approved' } : item));
-                        toast.success('✅ Approved & Published to Feed and User Profile Timeline!');
-                      }}
-                      className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2 rounded-xl text-xs flex items-center justify-center gap-1 cursor-pointer transition-all"
-                    >
-                      <CheckCircle className="w-3.5 h-3.5" />
-                      <span>Approve & Release</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        const pId = String(p.id);
-                        await deletePostFromFirestore(pId);
-                        try { await fetch(`/api/posts/${pId}`, { method: 'DELETE' }); } catch (e) {}
-                        setPosts(prev => prev.filter(item => String(item.id) !== pId));
-                        toast.success('❌ Flagged reel deleted permanently.');
-                      }}
-                      className="bg-red-600 hover:bg-red-700 text-white font-bold px-3 py-2 rounded-xl text-xs flex items-center justify-center gap-1 cursor-pointer transition-all"
-                    >
-                      <XCircle className="w-3.5 h-3.5" />
-                      <span>Reject</span>
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {activeTab === 'music' && (
-        <div className="space-y-6">
-          <div className="bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-900/30 rounded-2xl p-6">
-            <h3 className="font-bold text-black dark:text-zinc-50 mb-4 flex items-center gap-2">
-              <Plus className="w-5 h-5 text-amber-600" />
-              Upload New Audio to Library
-            </h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="flex flex-col gap-1.5">
-                <label className="text-[10px] font-bold text-slate-700 dark:text-zinc-300 uppercase ml-1">Track Title</label>
-                <input 
-                  id="musicTitle"
-                  type="text" 
-                  placeholder="e.g. Morbi Beats" 
-                  className="bg-white dark:bg-zinc-950 border border-slate-200 dark:border-zinc-800 text-black dark:text-zinc-100 placeholder:text-slate-400 dark:placeholder:text-zinc-600 rounded-xl px-4 py-2.5 text-sm"
-                />
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <label className="text-[10px] font-bold text-slate-700 dark:text-zinc-300 uppercase ml-1">Artist/Style</label>
-                <input 
-                  id="musicArtist"
-                  type="text" 
-                  placeholder="e.g. Instrumental" 
-                  className="bg-white dark:bg-zinc-950 border border-slate-200 dark:border-zinc-800 text-black dark:text-zinc-100 placeholder:text-slate-400 dark:placeholder:text-zinc-600 rounded-xl px-4 py-2.5 text-sm"
-                />
-              </div>
-              <div className="md:col-span-2">
-                <input 
-                  id="musicFile"
-                  type="file" 
-                  accept="audio/*,video/*"
-                  className="hidden" 
-                  onChange={async (e) => {
-                    const file = e.target.files?.[0];
-                    if (!file) return;
-                    const title = (document.getElementById('musicTitle') as HTMLInputElement).value || 'Untitled';
-                    const artist = (document.getElementById('musicArtist') as HTMLInputElement).value || 'Vyapar Bridge Audio';
-                    
-                    const tid = toast.loading('Uploading track...');
-                    try {
-                      const formData = new FormData();
-                      formData.append('musicFile', file);
-                      formData.append('title', title);
-                      formData.append('artist', artist);
-                      
-                      const res = await fetch('/api/music', {
-                        method: 'POST',
-                        body: formData
-                      });
-                      const newM = await res.json();
-                      setMusic([...music, newM]);
-                      toast.success('Track added to library', { id: tid });
-                    } catch (err) {
-                      toast.error('Upload failed', { id: tid });
-                    }
-                  }}
-                />
-                <button 
-                  onClick={() => document.getElementById('musicFile')?.click()}
-                  className="w-full py-6 border-2 border-dashed border-amber-300 dark:border-amber-900/50 rounded-2xl text-amber-600 dark:text-amber-400 font-bold hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-all flex flex-col items-center gap-2 cursor-pointer"
-                >
-                  <Upload className="w-8 h-8" />
-                  <span>Choose MP3/MP4 Audio File</span>
-                  <span className="text-[10px] opacity-60">Max 10MB • Available for all Reels</span>
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {music.map((track, i) => (
-              <div key={track.id || `music-${i}`} className="bg-white dark:bg-zinc-900 rounded-2xl border border-slate-200 dark:border-zinc-800 p-4 flex items-center gap-4">
-                <div className="w-12 h-12 rounded-xl bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center text-amber-600">
-                  <Volume2 className="w-6 h-6" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="font-bold text-black dark:text-zinc-50 truncate">{track.title}</div>
-                  <div className="text-xs text-slate-600 dark:text-zinc-400">{track.artist}</div>
-                </div>
-                <button 
-                  onClick={async () => {
-                    await fetch(`/api/music/${track.id}`, { method: 'DELETE' });
-                    setMusic(music.filter(m => m.id !== track.id));
-                    toast.success('Track removed');
-                  }}
-                  className="p-2 hover:bg-red-50 dark:hover:bg-red-900/20 text-slate-400 dark:text-zinc-400 hover:text-red-500 rounded-full transition-colors cursor-pointer"
-                >
-                  <Trash2 className="w-5 h-5" />
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {activeTab === 'payments' && (
-        <div className="space-y-4">
-          <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-2xl overflow-hidden shadow-sm">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 dark:bg-zinc-950 border-b border-slate-200 dark:border-zinc-800">
-                  <tr>
-                    <th className="px-4 py-3 font-black uppercase tracking-widest text-slate-600 dark:text-zinc-400">User / Phone</th>
-                    <th className="px-4 py-3 font-black uppercase tracking-widest text-slate-600 dark:text-zinc-400">Plan & Type</th>
-                    <th className="px-4 py-3 font-black uppercase tracking-widest text-slate-600 dark:text-zinc-400">UTR / Amount</th>
-                    <th className="px-4 py-3 font-black uppercase tracking-widest text-slate-600 dark:text-zinc-400">Status</th>
-                    <th className="px-4 py-3 font-black uppercase tracking-widest text-slate-600 dark:text-zinc-400">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-zinc-800">
-                  {payments.map((p, i) => (
-                    <tr key={p.id || `payment-${i}`} className="hover:bg-slate-50 dark:hover:bg-zinc-800/50 transition-colors">
-                      <td className="px-4 py-3">
-                        <div className="font-bold text-black dark:text-zinc-100">{p.userName}</div>
-                        <div className="text-[10px] text-slate-500 dark:text-zinc-400 font-medium">{p.userPhone}</div>
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex flex-col gap-1">
-                          <span className="inline-flex w-fit px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-widest bg-blue-100 dark:bg-blue-950/70 text-blue-700 dark:text-blue-300">
-                            {p.plan}
-                          </span>
-                          <span className={cn(
-                            "inline-flex w-fit px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-widest",
-                            p.membershipType === 'company' ? "bg-amber-100 dark:bg-amber-950/70 text-amber-700 dark:text-amber-300" : "bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300"
-                          )}>
-                            {p.membershipType}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="font-mono text-[10px] text-black dark:text-zinc-100">{p.utr}</div>
-                        <div className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold">₹{p.amount}</div>
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className={cn(
-                          "px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-widest",
-                          p.status === 'approved' ? "bg-emerald-100 dark:bg-emerald-950/70 text-emerald-700 dark:text-emerald-300" : (p.status === 'rejected' ? "bg-red-100 dark:bg-red-950/70 text-red-700 dark:text-red-300" : "bg-amber-100 dark:bg-amber-950/70 text-amber-700 dark:text-amber-300")
-                        )}>
-                          {p.status}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3">
-                        {p.status === 'pending' && (
-                          <div className="flex gap-2">
-                            <button 
-                              onClick={async () => {
-                                if (!confirm('Approve this payment and verify user?')) return;
-                                const tid = toast.loading('Approving...');
-                                try {
-                                  const res = await fetch(`/api/admin/payments/${p.id}/approve`, { method: 'POST' });
-                                  const data = await res.json();
-                                  if (data.success) {
-                                    setPayments(payments.map(item => item.id === p.id ? { ...item, status: 'approved' } : item));
-                                    toast.success('Payment approved!', { id: tid });
-                                  }
-                                } catch (err) {
-                                  toast.error('Failed to approve', { id: tid });
-                                }
-                              }}
-                              className="bg-emerald-500 hover:bg-emerald-600 text-white p-1.5 rounded-lg transition-colors cursor-pointer"
-                            >
-                              <CheckCircle className="w-4 h-4" />
-                            </button>
-                            <button 
-                              onClick={async () => {
-                                if (!confirm('Reject this payment?')) return;
-                                const tid = toast.loading('Rejecting...');
-                                try {
-                                  const res = await fetch(`/api/admin/payments/${p.id}/reject`, { method: 'POST' });
-                                  const data = await res.json();
-                                  if (data.success) {
-                                    setPayments(payments.map(item => item.id === p.id ? { ...item, status: 'rejected' } : item));
-                                    toast.success('Payment rejected!', { id: tid });
-                                  }
-                                } catch (err) {
-                                  toast.error('Failed to reject', { id: tid });
-                                }
-                              }}
-                              className="bg-red-500 hover:bg-red-600 text-white p-1.5 rounded-lg transition-colors cursor-pointer"
-                            >
-                              <X className="w-4 h-4" />
-                            </button>
-                          </div>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                  {payments.length === 0 && (
-                    <tr>
-                      <td colSpan={5} className="px-4 py-8 text-center text-slate-500 dark:text-zinc-400 italic">
-                        No payment submissions found.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {activeTab === 'users' && (
-        <div className="space-y-4">
-          <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-2xl overflow-hidden shadow-sm">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 dark:bg-zinc-950 border-b border-slate-200 dark:border-zinc-800">
-                  <tr>
-                    <th className="px-4 py-3 font-black uppercase tracking-widest text-slate-600 dark:text-zinc-400">Member</th>
-                    <th className="px-4 py-3 font-black uppercase tracking-widest text-slate-600 dark:text-zinc-400">Role & Category</th>
-                    <th className="px-4 py-3 font-black uppercase tracking-widest text-slate-600 dark:text-zinc-400">GSTIN / Tax ID</th>
-                    <th className="px-4 py-3 font-black uppercase tracking-widest text-slate-600 dark:text-zinc-400">Location</th>
-                    <th className="px-4 py-3 font-black uppercase tracking-widest text-slate-600 dark:text-zinc-400">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-zinc-800">
-                  {usersList.map((u, i) => (
-                    <tr key={u.id || u.username || `user-${i}`} className="hover:bg-slate-50 dark:hover:bg-zinc-800/50 transition-colors">
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-2">
-                          <div className="w-8 h-8 rounded-full bg-slate-100 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 overflow-hidden flex items-center justify-center font-bold text-[10px] shrink-0">
-                            {u.avatarUrl || u.avatar ? (
-                              <img src={u.avatarUrl || u.avatar} alt="" className="w-full h-full object-cover" />
-                            ) : (
-                              (u.name?.charAt(0) || u.username?.charAt(0) || 'U').toUpperCase()
-                            )}
-                          </div>
-                          <div>
-                            <div className="font-bold text-black dark:text-zinc-100 flex items-center gap-1">
-                              {u.name || u.username || 'Business Member'}
-                              {shouldShowVerifiedBadge(u) && <VerifiedBadge user={u} size="sm" />}
-                            </div>
-                            <div className="text-[10px] text-slate-500 dark:text-zinc-400 font-medium">@{u.username || u.id}</div>
-                          </div>
-                        </div>
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex flex-col gap-1">
-                          <span className={cn(
-                            "inline-flex w-fit px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-widest",
-                            u.role === 'admin' ? "bg-purple-100 dark:bg-purple-950/70 text-purple-700 dark:text-purple-300" : (u.role === 'factory' ? "bg-blue-100 dark:bg-blue-950/70 text-blue-700 dark:text-blue-300" : "bg-emerald-100 dark:bg-emerald-950/70 text-emerald-700 dark:text-emerald-300")
-                          )}>
-                            {u.role || 'Member'}
-                          </span>
-                          <span className="text-[10px] text-slate-700 dark:text-zinc-300 font-bold uppercase">{u.category || 'General'}</span>
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 font-mono text-[10px] text-slate-700 dark:text-zinc-300">
-                        {u.gstNumber || '---'}
-                      </td>
-                      <td className="px-4 py-3 text-[10px] text-slate-700 dark:text-zinc-300">
-                        {u.city || 'Morbi'}, {u.state || 'Gujarat'}
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <button 
-                          type="button"
-                          onClick={() => {
-                            if (u.role === 'admin' || String(u.id) === '1') {
-                              return toast.error('Cannot delete Master Admin');
-                            }
-                            setUserToDelete(u);
-                          }}
-                          disabled={u.role === 'admin' || String(u.id) === '1'}
-                          className="p-2 hover:bg-red-50 dark:hover:bg-red-900/20 text-red-500 hover:text-red-700 rounded-lg transition-colors cursor-pointer disabled:opacity-0"
-                          title="Delete Member Profile"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {usersList.length === 0 && (
-                <div className="text-center py-12 text-slate-500 dark:text-zinc-400 text-xs">
-                  No registered members found. Registered users and businesses will appear here.
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {activeTab === 'posts' && (
-        <div className="space-y-4">
-          {posts.length > 0 && (
-            <div className="bg-slate-100 dark:bg-zinc-800/80 p-3 rounded-2xl flex flex-wrap items-center justify-between gap-3 border border-slate-200 dark:border-zinc-700">
-              <div className="flex items-center gap-3">
-                <button
-                  type="button"
-                  onClick={() => toggleSelectAll(posts)}
-                  className="px-3.5 py-2 bg-white dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-xl text-xs font-bold text-black dark:text-white flex items-center gap-2 hover:bg-slate-50 dark:hover:bg-zinc-800 cursor-pointer transition-all shadow-sm"
-                >
-                  <input
-                    type="checkbox"
-                    checked={posts.length > 0 && posts.every(p => selectedPostIds.includes(String(p.id)))}
-                    onChange={() => toggleSelectAll(posts)}
-                    className="w-4 h-4 rounded text-blue-600 focus:ring-0 cursor-pointer pointer-events-none"
-                  />
-                  <span>Select All ({posts.length})</span>
-                </button>
-                <span className="text-xs font-bold text-slate-700 dark:text-zinc-200 bg-white dark:bg-zinc-900 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-zinc-800">
-                  {selectedPostIds.filter(id => posts.some(p => String(p.id) === id)).length} Selected
-                </span>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => handleBulkApprove(posts)}
-                  disabled={selectedPostIds.filter(id => posts.some(p => String(p.id) === id)).length === 0}
-                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white text-xs font-black rounded-xl flex items-center gap-1.5 cursor-pointer shadow-sm transition-all disabled:cursor-not-allowed"
-                >
-                  <CheckCircle className="w-4 h-4" />
-                  <span>Approve Selected</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleBulkDelete(posts)}
-                  disabled={selectedPostIds.filter(id => posts.some(p => String(p.id) === id)).length === 0}
-                  className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:opacity-40 text-white text-xs font-black rounded-xl flex items-center gap-1.5 cursor-pointer shadow-sm transition-all disabled:cursor-not-allowed"
-                >
-                  <Trash2 className="w-4 h-4" />
-                  <span>Delete Selected</span>
-                </button>
-              </div>
-            </div>
-          )}
-
-          {posts.map((post, i) => (
-            <div key={post.id || `post-${i}`} className={cn("bg-white dark:bg-zinc-900 rounded-2xl border p-4 shadow-sm flex flex-col md:flex-row gap-4 transition-all", selectedPostIds.includes(String(post.id)) ? "border-blue-500 dark:border-blue-500 ring-2 ring-blue-500/20" : "border-slate-200 dark:border-zinc-800")}>
-              <div className="flex items-start gap-3 w-full md:w-auto">
-                <input
-                  type="checkbox"
-                  checked={selectedPostIds.includes(String(post.id))}
-                  onChange={() => toggleSelectOne(post.id)}
-                  className="w-4 h-4 rounded text-blue-600 focus:ring-0 cursor-pointer mt-2 shrink-0"
-                />
-                <div className="flex-1 md:flex-initial md:w-48 h-48 bg-slate-100 dark:bg-zinc-950 rounded-xl overflow-hidden flex items-center justify-center relative group">
-                  {post.mediaUrl && post.mediaUrl.trim() !== '' ? (
-                    renderAdminMediaPreview(post)
-                  ) : (
-                    <div className="text-slate-500 dark:text-zinc-400 text-xs font-bold">Text Post</div>
-                  )}
-                </div>
-              </div>
-              
-              <div className="flex-1 flex flex-col">
-                <div className="flex justify-between items-start mb-2">
-                  <div>
-                    <div className="font-bold text-sm text-black dark:text-zinc-50">{post.user?.name || 'Member'}</div>
-                    <div className="text-xs text-slate-500 dark:text-zinc-400">{post.user?.role || 'User'}</div>
-                  </div>
-                  <span className={cn(
-                    "px-2.5 py-1 text-[10px] font-black rounded-full uppercase tracking-wider",
-                    post.status === 'approved' ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300" : "bg-red-100 text-red-800"
-                  )}>
-                    {post.status}
-                  </span>
-                </div>
-                
-                <p className="text-xs text-black dark:text-zinc-200 bg-slate-50 dark:bg-zinc-950 p-3 rounded-xl border border-slate-100 dark:border-zinc-800 mb-3">
-                  {post.content || 'No text'}
-                </p>
-
-                {post.aiFeedback && (
-                  <div className="text-xs text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/60 p-2.5 rounded-xl mb-3 flex items-center gap-1.5 border border-blue-200 dark:border-blue-800">
-                    <ShieldCheck className="w-4 h-4 text-blue-500 shrink-0" />
-                    <span><strong>AI Safety Analysis:</strong> {post.aiFeedback}</span>
-                  </div>
-                )}
-                
-                <div className="mt-auto flex gap-2">
-                  <button 
-                    onClick={() => handleStatusUpdate(post.id, 'approved')}
-                    disabled={post.status === 'approved'}
-                    className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2 px-3 rounded-xl text-xs transition-colors disabled:opacity-50 cursor-pointer"
-                  >
-                    Approve Post
-                  </button>
-                  <button 
-                    onClick={() => handleStatusUpdate(post.id, 'rejected')}
-                    disabled={post.status === 'rejected'}
-                    className="flex-1 bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-3 rounded-xl text-xs transition-colors disabled:opacity-50 cursor-pointer"
-                  >
-                    Reject Post
-                  </button>
-                </div>
-              </div>
-            </div>
-          ))}
-          {posts.length === 0 && <p className="text-slate-500 dark:text-zinc-400 text-center py-12">No posts found.</p>}
-        </div>
-      )}
-
-      {activeTab === 'reports' && (
-        <div className="space-y-4">
-          {reports.map((report, i) => (
-            <div key={report.id || `report-${i}`} className="bg-white dark:bg-zinc-900 rounded-2xl border-2 border-red-200 dark:border-red-950 p-4 shadow-sm flex flex-col md:flex-row justify-between gap-4">
-              <div className="space-y-2 flex-1">
-                <div className="flex items-center gap-2">
-                  <span className="bg-red-100 dark:bg-red-950 text-red-700 dark:text-red-300 font-extrabold text-[11px] px-2.5 py-0.5 rounded-full uppercase border border-red-300 dark:border-red-800">
-                    {report.targetType} REPORTED
-                  </span>
-                  <span className="text-xs font-bold text-slate-600 dark:text-zinc-400">
-                    Target ID: {report.targetId}
-                  </span>
-                </div>
-
-                <div className="text-sm font-bold text-black dark:text-zinc-100">
-                  Target Name / User: <span className="text-red-600 dark:text-red-400">{report.targetName || report.targetId}</span>
-                </div>
-
-                <div className="bg-red-50 dark:bg-red-950/30 p-3 rounded-xl text-xs border border-red-100 dark:border-red-900/50 space-y-1">
-                  <div className="font-bold text-red-800 dark:text-red-300">Reason: {report.reason}</div>
-                  {report.details && <div className="text-black dark:text-zinc-300">Details: "{report.details}"</div>}
-                  <div className="text-[10px] text-slate-500 dark:text-zinc-400 mt-1">Reported by: {report.reporter?.name || report.reporterId}</div>
-                </div>
-              </div>
-
-              <div className="flex flex-col justify-center gap-2 shrink-0 md:w-48">
-                {report.targetType === 'post' && (
-                  <button 
-                    onClick={() => handleDeleteReportedPost(report.targetId, report.id)}
-                    className="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-3 rounded-xl text-xs shadow-md transition-colors cursor-pointer flex items-center justify-center gap-1.5"
-                  >
-                    <Trash2 className="w-4 h-4" /> Delete Post
-                  </button>
-                )}
-                <button 
-                  onClick={() => handleDismissReport(report.id)}
-                  className="bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 dark:hover:bg-zinc-700 text-slate-800 dark:text-zinc-200 font-bold py-2 px-3 rounded-xl text-xs transition-colors cursor-pointer text-center"
-                >
-                  Dismiss / Approve
-                </button>
-              </div>
-            </div>
-          ))}
-          {reports.length === 0 && (
-            <div className="text-center py-16 bg-slate-50 dark:bg-zinc-950 rounded-2xl border border-slate-200 dark:border-zinc-800 text-slate-600 dark:text-zinc-400">
-              <ShieldCheck className="w-12 h-12 text-emerald-500 mx-auto mb-2 opacity-80" />
-              <p className="font-bold text-sm text-black dark:text-zinc-200">No Pending Safety Reports!</p>
-              <p className="text-xs text-slate-500 dark:text-zinc-400 mt-1">Meta-style AI Guardrail is active and protecting all posts, reels, comments, and messages.</p>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Delete User Confirmation Modal */}
-      {userToDelete && (
-        <div className="fixed inset-0 z-[300] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4" onClick={(e) => { e.stopPropagation(); setUserToDelete(null); }}>
-          <div className="bg-white dark:bg-zinc-900 border-2 border-red-500/50 rounded-2xl p-6 max-w-md w-full shadow-2xl space-y-4 text-black dark:text-zinc-100 animate-in fade-in zoom-in-95 duration-150" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center gap-3 text-red-600 dark:text-red-400">
-              <div className="w-11 h-11 rounded-xl bg-red-100 dark:bg-red-950/80 border border-red-200 dark:border-red-800 flex items-center justify-center text-red-600 dark:text-red-400 shrink-0">
-                <Trash2 className="w-6 h-6" />
-              </div>
-              <div>
-                <h3 className="font-black text-base">Confirm User Deletion?</h3>
-                <p className="text-xs text-black/60 dark:text-zinc-400">Permanent Action • Cannot Be Undone</p>
-              </div>
-            </div>
-
-            <div className="bg-slate-50 dark:bg-zinc-950 p-3.5 rounded-xl border border-slate-200 dark:border-zinc-800 text-xs space-y-1.5">
-              <p className="text-black/70 dark:text-zinc-400">
-                Are you sure you want to permanently delete this user profile?
-              </p>
-              <div className="font-extrabold text-black dark:text-zinc-100 text-sm">
-                {userToDelete.name} <span className="text-black/60 dark:text-zinc-400 text-xs font-normal">(@{userToDelete.username || userToDelete.id})</span>
-              </div>
-              <p className="text-[11px] text-black/60 dark:text-zinc-400">
-                Role: {userToDelete.role || 'Member'} • Location: {userToDelete.city || 'Morbi'}, {userToDelete.state || 'Gujarat'}
-              </p>
-            </div>
-
-            <p className="text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/50 p-2.5 rounded-xl leading-relaxed">
-              ⚠️ This will purge their profile, posts, reels, comments, and account data completely from server storage.
-            </p>
-            <label className="flex items-center gap-2 text-xs font-bold text-red-600 dark:text-red-400 cursor-pointer p-2 bg-red-50/50 dark:bg-red-950/20 rounded-xl border border-red-100 dark:border-red-900/30">
-              <input type="checkbox" checked={deleteFromFirebase} onChange={(e) => setDeleteFromFirebase(e.target.checked)} className="w-4 h-4 rounded text-red-600 focus:ring-0" />
-              Delete from Firebase & Storage (Irreversible)
-            </label>
-
-            <div className="flex items-center justify-end gap-3 pt-2">
-              <button
-                type="button"
-                onClick={handleConfirmDeleteUser}
-                disabled={isDeletingUser}
-                className="px-5 py-2.5 w-full rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-extrabold transition-colors shadow-lg cursor-pointer flex items-center justify-center gap-1.5"
-              >
-                {isDeletingUser ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" /> Force Deleting...
-                  </>
-                ) : (
-                  <>
-                    <Trash2 className="w-4 h-4" /> Permanently Delete Profile
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
+
+// AdminPanel is modularized in /src/components/AdminPanel.tsx
 
 function Chat({ user, onOpenVerify, userLocation }: { user: any; onOpenVerify?: () => void; userLocation?: {lat: number, lng: number} | null }) {
   const navigate = useNavigate();
@@ -11025,18 +10147,6 @@ function Chat({ user, onOpenVerify, userLocation }: { user: any; onOpenVerify?: 
 
     setUploadingImage(true);
     try {
-      // Universal Chat Guardrail Check
-      const moderation = await moderateContentUniversally({
-        content: newMessage,
-        userId: user.id,
-        userRole: user.role
-      });
-
-      if (!moderation.approved) {
-        toast.error(moderation.reason || '⛔ AI Safety Guardrail: Message blocked due to abusive language or non-compliant content.');
-        return;
-      }
-
       if (pendingImage) {
         const formData = new FormData();
         formData.append('image', pendingImage);
@@ -11847,6 +10957,33 @@ function ProfilePage({ user, onUpdateUser }: { user: any; onUpdateUser?: (u: any
           >
             <Settings className="w-5 h-5" />
           </button>
+
+          {isOwnProfile && (
+            <button
+              type="button"
+              onClick={() => {
+                try {
+                  localStorage.removeItem('user');
+                  localStorage.removeItem('VyaparBridge_user');
+                  localStorage.removeItem('Vyapar Bridge_user');
+                  localStorage.removeItem('vyapar_user_id');
+                  localStorage.removeItem('vyapar_user_fingerprint');
+                  sessionStorage.clear();
+                  if (onUpdateUser) onUpdateUser(null);
+                  toast.success('🎉 Logged out successfully');
+                  navigate('/');
+                } catch (e) {
+                  console.error(e);
+                  if (onUpdateUser) onUpdateUser(null);
+                  navigate('/');
+                }
+              }}
+              className="p-2.5 bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 rounded-2xl shadow-xs transition-all active:scale-95 flex items-center justify-center cursor-pointer shrink-0"
+              title="Log Out (लॉग आउट करें)"
+            >
+              <LogOut className="w-5 h-5" />
+            </button>
+          )}
         </div>
 
         {/* 4. VYAPAR BRIDGE GOLDEN VERIFIED Banner */}
@@ -12460,10 +11597,43 @@ export default function App() {
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [authModalTab, setAuthModalTab] = useState<'login' | 'register'>('login');
   const [showCreatePostModal, setShowCreatePostModal] = useState(false);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [showCartModal, setShowCartModal] = useState(false);
+  const [showScannerModal, setShowScannerModal] = useState(false);
+  const [showBoostModal, setShowBoostModal] = useState(false);
+  const [showReferralModal, setShowReferralModal] = useState(false);
+  const [showTileCalcDrawer, setShowTileCalcDrawer] = useState(false);
+  const [showRatingModal, setShowRatingModal] = useState(false);
+  const [showTermsModal, setShowTermsModal] = useState(false);
 
   useEffect(() => {
     // Proactively clean bloated caches on boot
     cleanupStorageQuota();
+  }, []);
+
+  useEffect(() => {
+    const handleBoostModal = () => setShowBoostModal(true);
+    const handleVerifyModal = () => setShowBoostModal(true);
+    const handleScannerModal = () => setShowScannerModal(true);
+    const handleCartModal = () => setShowCartModal(true);
+    const handleCalcModal = () => setShowTileCalcDrawer(true);
+    const handleOpenSidebar = () => setIsSidebarOpen(true);
+
+    window.addEventListener('open_boost_business_modal', handleBoostModal);
+    window.addEventListener('openVerifyModal', handleVerifyModal);
+    window.addEventListener('open_offer_token_modal', handleScannerModal);
+    window.addEventListener('openCartModal', handleCartModal);
+    window.addEventListener('openTileCalculator', handleCalcModal);
+    window.addEventListener('openNavigationSidebar', handleOpenSidebar);
+
+    return () => {
+      window.removeEventListener('open_boost_business_modal', handleBoostModal);
+      window.removeEventListener('openVerifyModal', handleVerifyModal);
+      window.removeEventListener('open_offer_token_modal', handleScannerModal);
+      window.removeEventListener('openCartModal', handleCartModal);
+      window.removeEventListener('openTileCalculator', handleCalcModal);
+      window.removeEventListener('openNavigationSidebar', handleOpenSidebar);
+    };
   }, []);
 
   useEffect(() => {
@@ -12529,9 +11699,20 @@ export default function App() {
   };
 
   const handleLogOut = () => {
-    if (confirm('Verify logout?')) {
-      handleUpdateUser(null);
+    try {
+      setUser(null);
+      safeSaveUser(null);
+      localStorage.removeItem('user');
+      localStorage.removeItem('VyaparBridge_user');
+      localStorage.removeItem('Vyapar Bridge_user');
+      localStorage.removeItem('vyapar_user_id');
+      localStorage.removeItem('vyapar_user_fingerprint');
+      sessionStorage.clear();
+      setIsSidebarOpen(false);
       toast.success('🎉 Logged out successfully from Vyapar Bridge.');
+    } catch (e) {
+      console.error('Logout error:', e);
+      handleUpdateUser(null);
     }
   };
 
@@ -12539,20 +11720,30 @@ export default function App() {
     <BrowserRouter>
       <div className="min-h-screen bg-slate-50 flex flex-col text-slate-800">
         <Toaster position="top-center" reverseOrder={false} />
-        <StealthLockoutScreen />
-        <WelcomeSplash />
 
         <header className="sticky top-0 z-40 bg-white border-b border-slate-200/80 shrink-0 shadow-xs">
           <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between gap-4">
-            <Link to="/" className="flex items-center gap-2 focus:outline-none select-none">
-              <div className="w-9 h-9 rounded-xl overflow-hidden p-1 bg-gradient-to-tr from-blue-600 to-indigo-600 shadow-md flex items-center justify-center">
-                <img src={BRAND_LOGO_SRC} alt="Vyapar Bridge" className="w-full h-full object-contain" />
-              </div>
-              <div>
-                <span className="font-black text-slate-900 text-sm tracking-tight leading-none uppercase select-none block">{BRAND_NAME}</span>
-                <span className="text-[10px] font-black text-blue-600 uppercase tracking-widest leading-none block select-none mt-0.5">Trade Network</span>
-              </div>
-            </Link>
+            <div className="flex items-center gap-2">
+              <button
+                id="header-sidebar-toggle-btn"
+                type="button"
+                onClick={() => setIsSidebarOpen(true)}
+                className="p-2 -ml-1 rounded-xl hover:bg-slate-100 text-slate-700 hover:text-slate-900 transition-colors focus:outline-none cursor-pointer flex items-center justify-center shrink-0"
+                title="Open Navigation Menu (मेन्यू खोलें)"
+              >
+                <Menu className="w-5 h-5 stroke-[2.5]" />
+              </button>
+
+              <Link to="/" className="flex items-center gap-2 focus:outline-none select-none">
+                <div className="w-9 h-9 rounded-xl overflow-hidden p-1 bg-gradient-to-tr from-blue-600 to-indigo-600 shadow-md flex items-center justify-center">
+                  <img src={BRAND_LOGO_SRC} alt="Vyapar Bridge" className="w-full h-full object-contain" />
+                </div>
+                <div>
+                  <span className="font-black text-slate-900 text-sm tracking-tight leading-none uppercase select-none block">{BRAND_NAME}</span>
+                  <span className="text-[10px] font-black text-blue-600 uppercase tracking-widest leading-none block select-none mt-0.5">Trade Network</span>
+                </div>
+              </Link>
+            </div>
 
             <nav className="hidden md:flex items-center gap-2">
               <Link to="/" className="px-4 py-2 text-xs font-black uppercase tracking-wider text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-lg transition-colors flex items-center gap-1.5">
@@ -12608,20 +11799,83 @@ export default function App() {
           </div>
         </header>
 
-        <main className="flex-1 overflow-y-auto">
+        <main className="flex-1 w-full">
           <Routes>
             <Route path="/" element={<Feed user={user} onUpdateUser={handleUpdateUser} userLocation={userLocation} />} />
             <Route path="/chat" element={<Chat user={user} userLocation={userLocation} />} />
             <Route path="/create-post" element={<div className="max-w-2xl mx-auto py-6 px-3 sm:px-4"><CreatePost user={user} onPostSuccess={() => {}} /></div>} />
             <Route path="/profile/:id" element={<ProfilePage user={user} onUpdateUser={handleUpdateUser} />} />
-            <Route path="/admin" element={<AdminPanel user={user} />} />
+            <Route path="/admin" element={<AdminPanel user={user} onUpdateUser={handleUpdateUser} />} />
             <Route path="/login" element={<AuthPage tab="login" user={user} onUpdateUser={handleUpdateUser} />} />
             <Route path="/register" element={<AuthPage tab="register" user={user} onUpdateUser={handleUpdateUser} />} />
+            <Route path="/terms" element={<TermsPage />} />
           </Routes>
         </main>
 
         <AIChatbotWidget currentUser={user} userLocation={userLocation} />
-        <TileCalculatorDrawer />
+
+        <NavigationSidebar
+          isOpen={isSidebarOpen}
+          onClose={() => setIsSidebarOpen(false)}
+          user={user}
+          onUpdateUser={handleUpdateUser}
+          onOpenCreatePost={() => {
+            if (!user) {
+              setAuthModalTab('login');
+              setShowAuthModal(true);
+            } else {
+              setShowCreatePostModal(true);
+            }
+          }}
+          onOpenCart={() => setShowCartModal(true)}
+          onOpenScanner={() => setShowScannerModal(true)}
+          onOpenBoost={() => setShowBoostModal(true)}
+          onOpenReferral={() => setShowReferralModal(true)}
+          onOpenCalculator={() => setShowTileCalcDrawer(true)}
+          onOpenRating={() => setShowRatingModal(true)}
+          onOpenTerms={() => setShowTermsModal(true)}
+          onOpenAuth={(tab) => {
+            setAuthModalTab(tab);
+            setShowAuthModal(true);
+          }}
+          onLogOut={handleLogOut}
+        />
+
+        <TileCalculatorDrawer isOpen={showTileCalcDrawer} onClose={() => setShowTileCalcDrawer(false)} />
+        <CustomerCartCouponsModal isOpen={showCartModal} onClose={() => setShowCartModal(false)} currentUser={user} />
+        <SellerDiscountScannerModal isOpen={showScannerModal} onClose={() => setShowScannerModal(false)} currentUser={user} />
+        <BoostBusinessModal isOpen={showBoostModal} onClose={() => setShowBoostModal(false)} user={user} onUpdateUser={handleUpdateUser} />
+        <ReferralRewardsModal isOpen={showReferralModal} onClose={() => setShowReferralModal(false)} user={user} />
+
+        {showRatingModal && (
+          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto animate-fade-in">
+            <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 max-w-xl w-full relative overflow-hidden p-6">
+              <button 
+                onClick={() => setShowRatingModal(false)} 
+                className="absolute top-4 right-4 p-2 rounded-full hover:bg-slate-100 transition-colors text-slate-500 z-10 cursor-pointer"
+                title="Close"
+              >
+                <X className="w-5 h-5" />
+              </button>
+              <PlatformRatingWidget currentUser={user} />
+            </div>
+          </div>
+        )}
+
+        {showTermsModal && (
+          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto animate-fade-in">
+            <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 max-w-3xl w-full max-h-[90vh] overflow-y-auto relative p-6">
+              <button 
+                onClick={() => setShowTermsModal(false)} 
+                className="absolute top-4 right-4 p-2 rounded-full hover:bg-slate-100 transition-colors text-slate-500 z-10 cursor-pointer"
+                title="Close"
+              >
+                <X className="w-5 h-5" />
+              </button>
+              <TermsPage isModal onClose={() => setShowTermsModal(false)} />
+            </div>
+          </div>
+        )}
 
         <footer className="md:hidden fixed bottom-0 inset-x-0 bg-white border-t border-slate-200/80 h-16 flex items-center justify-around z-40 shadow-xl px-2">
           <Link to="/" className="flex flex-col items-center justify-center p-2 text-slate-500 hover:text-blue-600 transition-colors focus:outline-none shrink-0" title="Home">
@@ -12667,12 +11921,17 @@ export default function App() {
             </button>
           )}
 
-          {(user?.role === 'admin' || user?.isAdmin) && (
-            <Link to="/admin" className="flex flex-col items-center justify-center p-2 text-slate-500 hover:text-blue-600 transition-colors focus:outline-none shrink-0" title="Admin">
-              <Shield className="w-5 h-5" />
-              <span className="text-[10px] font-black uppercase tracking-wider mt-1">Admin</span>
-            </Link>
-          )}
+          {/* Mobile Sidebar Menu Drawer Toggle (Replaces Admin from footer) */}
+          <button 
+            id="footer-menu-btn"
+            type="button"
+            onClick={() => setIsSidebarOpen(true)} 
+            className="flex flex-col items-center justify-center p-2 text-slate-500 hover:text-blue-600 transition-colors focus:outline-none shrink-0 cursor-pointer" 
+            title="Menu & Controls"
+          >
+            <Menu className="w-5 h-5" />
+            <span className="text-[10px] font-black uppercase tracking-wider mt-1">Menu</span>
+          </button>
         </footer>
 
         {/* Create Post Modal Dialog */}
@@ -12701,7 +11960,7 @@ export default function App() {
                 <X className="w-5 h-5" />
               </button>
               <div className="p-2">
-                <AuthPage tab={authModalTab} user={user} onUpdateUser={(u) => { handleUpdateUser(u); setShowAuthModal(false); }} />
+                <AuthPage tab={authModalTab} user={user} isModal onCloseModal={() => setShowAuthModal(false)} onUpdateUser={(u) => { handleUpdateUser(u); setShowAuthModal(false); }} />
               </div>
             </div>
           </div>

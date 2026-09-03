@@ -10,18 +10,13 @@ interface AuthPageProps {
   tab?: 'login' | 'register';
   user: any;
   onUpdateUser: (u: any) => void;
+  isModal?: boolean;
+  onCloseModal?: () => void;
 }
 
-export function AuthPage({ tab = 'login', user, onUpdateUser }: AuthPageProps) {
+export function AuthPage({ tab = 'login', user, onUpdateUser, isModal = false, onCloseModal }: AuthPageProps) {
   const navigate = useNavigate();
   const location = useLocation();
-
-  // Redirect to home if user is already logged in
-  useEffect(() => {
-    if (user) {
-      navigate('/');
-    }
-  }, [user, navigate]);
 
   const [authTab, setAuthTab] = useState<'login' | 'register'>(tab);
 
@@ -59,8 +54,21 @@ export function AuthPage({ tab = 'login', user, onUpdateUser }: AuthPageProps) {
       const res = await authenticateUserInFirestore(loginId, loginPassword);
       if (res.success && res.user) {
         onUpdateUser(res.user);
+        const isAdmin = res.user.role === 'admin' || res.user.isAdmin === true || res.user.username === 'manit' || res.user.phone === '9889104477';
+        if (isAdmin) {
+          toast.success(`👑 Swagat hai Admin Manit! Opening Admin Console...`);
+          if (onCloseModal) {
+            onCloseModal();
+          }
+          navigate('/admin');
+          return;
+        }
         toast.success(`🎉 Welcome back, ${res.user.name || res.user.companyName}!`);
-        navigate('/');
+        if (onCloseModal) {
+          onCloseModal();
+        } else {
+          navigate('/');
+        }
       } else {
         setLoginError(res.error || 'Login failed. Please check credentials.');
       }
@@ -100,7 +108,11 @@ export function AuthPage({ tab = 'login', user, onUpdateUser }: AuthPageProps) {
       if (success) {
         onUpdateUser(newUser);
         toast.success('🎉 Registration Successful! Welcome to Vyapar Bridge B2B Commerce!');
-        navigate('/');
+        if (onCloseModal) {
+          onCloseModal();
+        } else {
+          navigate('/');
+        }
       } else {
         toast.error('Failed to register. Username or Phone number might already exist.');
       }
@@ -113,44 +125,91 @@ export function AuthPage({ tab = 'login', user, onUpdateUser }: AuthPageProps) {
 
   const handleTabChange = (targetTab: 'login' | 'register') => {
     setAuthTab(targetTab);
-    navigate(targetTab === 'login' ? '/login' : '/register');
+    if (!isModal) {
+      navigate(targetTab === 'login' ? '/login' : '/register');
+    }
+  };
+
+  const handleLogOutCurrent = () => {
+    onUpdateUser(null);
+    toast.success('Logged out. You can now sign in with a different account.');
   };
 
   return (
-    <div id="auth-page" className="min-h-screen bg-slate-50 dark:bg-zinc-950 flex flex-col items-center justify-center p-4 sm:p-6 transition-colors duration-200">
-      {/* Back button */}
-      <div className="absolute top-4 left-4">
-        <Link to="/" className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-500 hover:text-slate-900 dark:hover:text-white transition-colors bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 px-4 py-2.5 rounded-full shadow-sm">
-          <ArrowLeft className="w-4 h-4" />
-          <span>Home Feed</span>
-        </Link>
-      </div>
+    <div 
+      id="auth-page" 
+      className={`${isModal ? 'w-full p-2 sm:p-4' : 'min-h-screen bg-slate-50 dark:bg-zinc-950 flex flex-col items-center justify-center p-4 sm:p-6'} transition-colors duration-200`}
+    >
+      {/* Back button (Only in full page mode) */}
+      {!isModal && (
+        <div className="w-full max-w-md mb-2 flex items-center justify-between">
+          <Link to="/" className="inline-flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-500 hover:text-slate-900 dark:hover:text-white transition-colors bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 px-4 py-2 rounded-full shadow-2xs">
+            <ArrowLeft className="w-4 h-4" />
+            <span>Home Feed</span>
+          </Link>
+          <span className="text-xs text-slate-400 font-bold uppercase tracking-wider">
+            {authTab === 'login' ? 'Sign In' : 'Register Account'}
+          </span>
+        </div>
+      )}
 
-      <div className="w-full max-w-md bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-6 sm:p-8 shadow-xl relative flex flex-col space-y-6 my-8 animate-fade-in">
+      <div className={`w-full max-w-md bg-white dark:bg-zinc-900 ${isModal ? 'border-0 p-3 sm:p-5 shadow-none' : 'border border-slate-200 dark:border-zinc-800 rounded-3xl p-6 sm:p-8 shadow-xl my-4'} relative flex flex-col space-y-5 animate-fade-in`}>
         {/* Brand Header */}
         <div className="text-center space-y-2">
-          <div className="w-16 h-16 mx-auto rounded-full overflow-hidden border-2 border-amber-500 p-0.5 bg-white shadow-md flex items-center justify-center">
-            <img src={BRAND_LOGO_SRC} alt="Vyapar Bridge" className="w-full h-full object-cover rounded-full" />
+          <div className="w-14 h-14 mx-auto rounded-2xl overflow-hidden border border-slate-200 p-1 bg-white shadow-xs flex items-center justify-center">
+            <img src={BRAND_LOGO_SRC} alt="Vyapar Bridge" className="w-full h-full object-contain" />
           </div>
           <div>
-            <h2 className="text-2xl font-black text-slate-900 dark:text-white uppercase tracking-wide">{BRAND_NAME}</h2>
-            <p className="text-xs text-slate-500 font-bold tracking-widest uppercase text-amber-500 dark:text-amber-400 mt-0.5">{BRAND_MOTTO}</p>
+            <h2 className="text-xl font-black text-slate-900 dark:text-white uppercase tracking-wide">{BRAND_NAME}</h2>
+            <p className="text-[11px] text-slate-500 font-bold tracking-widest uppercase text-blue-600 mt-0.5">{BRAND_MOTTO}</p>
           </div>
         </div>
+
+        {/* Existing Active Session Banner */}
+        {user && (
+          <div className="p-3 bg-blue-50 border border-blue-200 rounded-2xl text-xs space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="font-bold text-blue-800">
+                Active Session: <span className="font-extrabold">{user.name || user.companyName || user.username}</span>
+              </span>
+              <span className="text-[10px] uppercase font-black px-2 py-0.5 bg-blue-200 text-blue-800 rounded-md">
+                {user.role || 'Member'}
+              </span>
+            </div>
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => { if (onCloseModal) onCloseModal(); else navigate('/'); }}
+                className="flex-1 py-1.5 px-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-center transition-colors text-[11px]"
+              >
+                Go to Home Feed
+              </button>
+              <button
+                type="button"
+                onClick={handleLogOutCurrent}
+                className="py-1.5 px-2.5 bg-white hover:bg-slate-100 border border-slate-200 text-red-600 font-bold rounded-lg transition-colors text-[11px]"
+              >
+                Log Out
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Login/Register Tabs */}
         <div className="flex bg-slate-100 dark:bg-zinc-800 p-1 rounded-xl">
           <button 
             id="tab-btn-signin"
+            type="button"
             onClick={() => handleTabChange('login')} 
-            className={`flex-1 py-2.5 rounded-lg font-bold text-xs uppercase transition-colors ${authTab === 'login' ? 'bg-white dark:bg-zinc-700 text-slate-900 dark:text-white shadow-sm' : 'text-slate-500 hover:text-slate-700 dark:hover:text-zinc-300'}`}
+            className={`flex-1 py-2.5 rounded-lg font-bold text-xs uppercase transition-colors ${authTab === 'login' ? 'bg-white dark:bg-zinc-700 text-slate-900 dark:text-white shadow-xs' : 'text-slate-500 hover:text-slate-700 dark:hover:text-zinc-300'}`}
           >
             Sign In
           </button>
           <button 
             id="tab-btn-register"
+            type="button"
             onClick={() => handleTabChange('register')} 
-            className={`flex-1 py-2.5 rounded-lg font-bold text-xs uppercase transition-colors ${authTab === 'register' ? 'bg-white dark:bg-zinc-700 text-slate-900 dark:text-white shadow-sm' : 'text-slate-500 hover:text-slate-700 dark:hover:text-zinc-300'}`}
+            className={`flex-1 py-2.5 rounded-lg font-bold text-xs uppercase transition-colors ${authTab === 'register' ? 'bg-white dark:bg-zinc-700 text-slate-900 dark:text-white shadow-xs' : 'text-slate-500 hover:text-slate-700 dark:hover:text-zinc-300'}`}
           >
             Register
           </button>
@@ -165,7 +224,7 @@ export function AuthPage({ tab = 'login', user, onUpdateUser }: AuthPageProps) {
                 </div>
               )}
               <div>
-                <label className="block text-xs font-bold text-slate-700 dark:text-zinc-300 mb-1">Username / Mobile Number / Email</label>
+                <label className="block text-xs font-bold text-slate-700 dark:text-zinc-300 mb-1">Username / Mobile Number</label>
                 <div className="relative">
                   <input 
                     id="login-id-input"
@@ -174,7 +233,7 @@ export function AuthPage({ tab = 'login', user, onUpdateUser }: AuthPageProps) {
                     value={loginId} 
                     onChange={(e) => setLoginId(e.target.value)} 
                     className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl pl-10 pr-3.5 py-2.5 text-sm focus:outline-none focus:border-blue-500 text-slate-900 dark:text-zinc-100" 
-                    placeholder="e.g. factory_owner or 9876543210" 
+                    placeholder="e.g. your_username or 9876543210" 
                   />
                   <User className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4.5 h-4.5 text-slate-400" />
                 </div>
@@ -198,43 +257,19 @@ export function AuthPage({ tab = 'login', user, onUpdateUser }: AuthPageProps) {
                 id="login-submit-btn"
                 type="submit" 
                 disabled={isAuthenticating} 
-                className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 dark:disabled:bg-zinc-800 text-white font-extrabold uppercase py-3.5 rounded-xl text-xs shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer mt-2"
+                className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 dark:disabled:bg-zinc-800 text-white font-extrabold uppercase py-3 rounded-xl text-xs shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer mt-2"
               >
                 {isAuthenticating ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Log In Securely 🔒'}
               </button>
             </form>
-
-            {/* Quick Demo Logins for Testing */}
-            <div className="pt-4 border-t border-slate-100 dark:border-zinc-800/80 space-y-2.5">
-              <p className="text-center text-[10px] uppercase font-bold text-slate-400 dark:text-zinc-500 tracking-wider">
-                Quick Testing / Administrative Logins
-              </p>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setLoginId('manit');
-                    setLoginPassword('5503');
-                    toast.success('👑 Admin Manit credentials (manit / 5503) loaded! Press Log In.');
-                  }}
-                  className="flex flex-col items-center justify-center p-2.5 rounded-xl border border-dashed border-red-200 dark:border-red-950/40 bg-red-50/40 dark:bg-red-950/10 hover:bg-red-50 dark:hover:bg-red-950/20 transition-all hover:scale-[1.02] cursor-pointer text-center"
-                >
-                  <span className="text-xs font-black text-red-600 dark:text-red-400 uppercase">Admin Panel</span>
-                  <span className="text-[9px] text-slate-400 dark:text-zinc-500 font-mono mt-0.5">manit / 5503</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setLoginId('manufacturer');
-                    setLoginPassword('123456');
-                    toast.success('Manufacturer credentials loaded! Press Log In to enter.');
-                  }}
-                  className="flex flex-col items-center justify-center p-2.5 rounded-xl border border-dashed border-amber-200 dark:border-amber-950/40 bg-amber-50/40 dark:bg-amber-950/10 hover:bg-amber-50 dark:hover:bg-amber-950/20 transition-all hover:scale-[1.02] cursor-pointer text-center"
-                >
-                  <span className="text-xs font-black text-amber-600 dark:text-amber-400 uppercase">Manufacturer</span>
-                  <span className="text-[9px] text-slate-400 dark:text-zinc-500 font-mono mt-0.5">manufacturer / 123456</span>
-                </button>
-              </div>
+            <div className="text-center pt-2">
+              <button
+                type="button"
+                onClick={() => handleTabChange('register')}
+                className="text-xs text-blue-600 hover:text-blue-700 font-bold hover:underline cursor-pointer"
+              >
+                Don't have a business account? Register here
+              </button>
             </div>
           </>
         ) : (
@@ -341,15 +376,26 @@ export function AuthPage({ tab = 'login', user, onUpdateUser }: AuthPageProps) {
             >
               {isAuthenticating ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Register B2B Account ✨'}
             </button>
+            <div className="text-center pt-2">
+              <button
+                type="button"
+                onClick={() => handleTabChange('login')}
+                className="text-xs text-blue-600 hover:text-blue-700 font-bold hover:underline cursor-pointer"
+              >
+                Already have an account? Sign In
+              </button>
+            </div>
           </form>
         )}
       </div>
 
-      <div className="text-center text-slate-400 dark:text-zinc-500 text-[11px] font-semibold uppercase tracking-wider space-x-4">
-        <span>Vyapar Bridge B2B Commerce Platform</span>
-        <span>•</span>
-        <span>India's Vocal for Local Hub</span>
-      </div>
+      {!isModal && (
+        <div className="text-center text-slate-400 dark:text-zinc-500 text-[11px] font-semibold uppercase tracking-wider space-x-4 mt-4">
+          <span>Vyapar Bridge B2B Commerce Platform</span>
+          <span>•</span>
+          <span>India's Vocal for Local Hub</span>
+        </div>
+      )}
     </div>
   );
 }

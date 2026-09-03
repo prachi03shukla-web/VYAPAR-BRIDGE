@@ -2,22 +2,36 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
+html {
+  scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
+}
+
 html, body {
   margin: 0;
   padding: 0;
   width: 100%;
-  max-width: 100vw;
-  overflow-x: hidden !important;
   background-color: #FAFAFA;
   color: #18181b;
+  -webkit-overflow-scrolling: touch;
+}
+
+body {
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 #root {
   width: 100%;
-  max-width: 100vw;
-  overflow-x: hidden !important;
   min-height: 100vh;
+  overflow-x: hidden;
   background-color: #FAFAFA;
+}
+
+/* Feed performance acceleration for natural 60-120Hz scrolling */
+.smooth-feed-item {
+  transform: translateZ(0);
+  backface-visibility: hidden;
 }
 
 @keyframes tirangaShineLeftToRight {

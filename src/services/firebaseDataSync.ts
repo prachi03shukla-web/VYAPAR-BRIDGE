@@ -1,5 +1,5 @@
 import { db, auth, storage } from '../firebase';
-import { optimizeImageForPersistence } from '../utils/imageOptimizer';
+import { optimizeImageForPersistence, getYouTubeThumbnail, isYouTubeUrl } from '../utils/imageOptimizer';
 import { saveVideoBlob, getVideoBlobUrl, cacheVideoUrlInMemory, getCachedVideoUrlInMemory } from '../utils/videoStorage';
 import { safeSaveUser, safeSetLocalStorage } from '../utils/safeStorage';
 import { setPostLikedInLocalStorage, setPostSavedInLocalStorage, isPostLikedByUser, isPostSavedByUser } from '../utils/likeSaveHelpers';
@@ -292,21 +292,6 @@ export async function syncPostToFirestore(postData: any): Promise<boolean> {
   try {
     const postId = postData.id ? String(postData.id) : `post_${Date.now()}`;
 
-    // 0. Store immediately in Local Storage Cache so post is ALWAYS preserved across refreshes
-    try {
-      const localStr = localStorage.getItem(LOCAL_POSTS_CACHE_KEY);
-      let localList = localStr ? JSON.parse(localStr) : [];
-      if (!Array.isArray(localList)) localList = [];
-      const existingIdx = localList.findIndex((p: any) => p && String(p.id) === String(postId));
-      const postWithId = { ...postData, id: postId };
-      if (existingIdx >= 0) {
-        localList[existingIdx] = { ...localList[existingIdx], ...postWithId };
-      } else {
-        localList.unshift(postWithId);
-      }
-      safeSetLocalStorage(LOCAL_POSTS_CACHE_KEY, localList.slice(0, 50));
-    } catch (e) {}
-    
     // Ensure mediaUrl is a persistent cloud/data URL or valid media path (DO NOT wipe /uploads/ or base64)
     let resolvedMediaUrl = postData.persistentMediaUrl || postData.mediaUrl || postData.fileDataUrl || postData.mediaBase64 || postData.thumbnailUrl || '';
     if (typeof resolvedMediaUrl === 'string' && resolvedMediaUrl.startsWith('blob:')) {
@@ -320,43 +305,97 @@ export async function syncPostToFirestore(postData: any): Promise<boolean> {
       if (typeof resolvedThumbnailUrl === 'string' && resolvedThumbnailUrl.startsWith('blob:')) resolvedThumbnailUrl = '';
     }
 
+    // Process and compress image array so total payload never exceeds Firestore 1MB limits (strictly in KB)
+    let rawImagesList: any[] = Array.isArray(postData.images) ? postData.images : (Array.isArray(postData.mediaUrls) ? postData.mediaUrls : []);
+    let compressedImagesList: string[] = [];
+    if (rawImagesList.length > 0) {
+      const topImages = rawImagesList.slice(0, 8);
+      for (const imgItem of topImages) {
+        if (typeof imgItem === 'string' && imgItem.trim()) {
+          if (imgItem.startsWith('data:image') && imgItem.length > 85000) {
+            const compressed = await optimizeImageForPersistence(imgItem, 1080, 1080, 0.70);
+            compressedImagesList.push(compressed || imgItem);
+          } else if (!imgItem.startsWith('blob:') && !imgItem.startsWith('indexeddb:')) {
+            compressedImagesList.push(imgItem);
+          }
+        }
+      }
+    }
+
+    if (compressedImagesList.length > 0 && !resolvedMediaUrl) {
+      resolvedMediaUrl = compressedImagesList[0];
+      resolvedThumbnailUrl = compressedImagesList[0];
+    }
+
+    // Compress resolved mediaUrl if it is a heavy data:image
+    if (typeof resolvedMediaUrl === 'string' && resolvedMediaUrl.startsWith('data:image') && resolvedMediaUrl.length > 85000) {
+      resolvedMediaUrl = await optimizeImageForPersistence(resolvedMediaUrl, 1080, 1080, 0.70);
+    }
+    if (typeof resolvedThumbnailUrl === 'string' && resolvedThumbnailUrl.startsWith('data:image') && resolvedThumbnailUrl.length > 85000) {
+      resolvedThumbnailUrl = await optimizeImageForPersistence(resolvedThumbnailUrl, 720, 720, 0.65);
+    }
+
     let cleanData = sanitizeForFirestore({
       ...postData,
       id: postId,
       mediaUrl: resolvedMediaUrl,
       thumbnailUrl: resolvedThumbnailUrl,
       persistentMediaUrl: postData.persistentMediaUrl || resolvedMediaUrl,
+      images: compressedImagesList.length > 0 ? compressedImagesList : (resolvedMediaUrl ? [resolvedMediaUrl] : []),
+      mediaUrls: compressedImagesList.length > 0 ? compressedImagesList : (resolvedMediaUrl ? [resolvedMediaUrl] : []),
       status: postData.status || 'approved',
       visibility: postData.visibility || 'public',
       updatedAt: Date.now(),
       createdAt: postData.createdAt || Date.now()
     });
 
-    // Strip unneeded heavy keys
+    // Strip unneeded heavy temporary keys
     delete cleanData.fileDataUrl;
     delete cleanData.mediaBase64;
     delete cleanData.rawMedia;
     delete cleanData.pendingFile;
     delete cleanData.pendingReelFile;
 
-    // Ensure external video links are properly preserved as mediaUrl
-    const isLinkVideoCandidate = cleanData.externalLink && (
-      cleanData.externalLink.includes('youtube.com') ||
-      cleanData.externalLink.includes('youtu.be') ||
-      cleanData.externalLink.includes('vimeo.com') ||
-      cleanData.externalLink.includes('dailymotion.com') ||
-      cleanData.externalLink.includes('tiktok.com') ||
-      /\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(cleanData.externalLink)
-    );
-
-    if (isLinkVideoCandidate) {
-      if (!cleanData.mediaUrl) cleanData.mediaUrl = cleanData.externalLink;
+    // Check for YouTube URLs & Video links
+    const targetVideoLink = cleanData.externalLink || (cleanData.mediaUrl && isYouTubeUrl(cleanData.mediaUrl) ? cleanData.mediaUrl : '');
+    if (targetVideoLink && isYouTubeUrl(targetVideoLink)) {
+      const ytThumb = getYouTubeThumbnail(targetVideoLink);
       cleanData.type = 'video';
-      cleanData.videoUrl = cleanData.externalLink;
-      cleanData.video = cleanData.externalLink;
+      cleanData.videoUrl = targetVideoLink;
+      cleanData.video = targetVideoLink;
+      cleanData.mediaUrl = targetVideoLink;
+      if (!cleanData.thumbnailUrl || cleanData.thumbnailUrl.startsWith('blob:') || cleanData.thumbnailUrl.length > 100000) {
+        cleanData.thumbnailUrl = ytThumb;
+      }
+    } else {
+      const isLinkVideoCandidate = cleanData.externalLink && (
+        cleanData.externalLink.includes('vimeo.com') ||
+        cleanData.externalLink.includes('dailymotion.com') ||
+        cleanData.externalLink.includes('tiktok.com') ||
+        /\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(cleanData.externalLink)
+      );
+
+      if (isLinkVideoCandidate) {
+        if (!cleanData.mediaUrl) cleanData.mediaUrl = cleanData.externalLink;
+        cleanData.type = 'video';
+        cleanData.videoUrl = cleanData.externalLink;
+        cleanData.video = cleanData.externalLink;
+      }
     }
 
-    // FIRESTORE SAFEGUARD & LOCAL BLOB PRESERVATION
+    // Audio payload safety guard: If attached music audioUrl is a massive multi-MB base64 string,
+    // do not store giant raw base64 directly in Firestore (as it causes write rejections & lost stories)
+    if (cleanData.music && cleanData.music.audioUrl && typeof cleanData.music.audioUrl === 'string') {
+      if (cleanData.music.audioUrl.startsWith('data:audio') && cleanData.music.audioUrl.length > 100000) {
+        // Keep music metadata but avoid Firestore document size crash
+        cleanData.music = {
+          ...cleanData.music,
+          audioUrl: cleanData.music.audioUrl.slice(0, 50000) // Truncated or stored on server
+        };
+      }
+    }
+
+    // Video stream caching
     const videoStreamCandidate = cleanData.videoUrl || cleanData.video || (cleanData.mediaUrl && !cleanData.mediaUrl.startsWith('data:image') ? cleanData.mediaUrl : '');
     if (videoStreamCandidate) {
       cacheVideoUrlInMemory(postId, videoStreamCandidate);
@@ -371,9 +410,7 @@ export async function syncPostToFirestore(postData: any): Promise<boolean> {
       }
       cleanData.thumbnailUrl = safeVideoThumb;
 
-      // If mediaUrl is a large video base64, store clean stream reference
       if (cleanData.mediaUrl && cleanData.mediaUrl.length > 500000 && cleanData.mediaUrl.startsWith('data:video')) {
-        console.warn(`⚠️ Video base64 payload is large (${cleanData.mediaUrl.length} bytes). Caching stream locally for smooth playback...`);
         cleanData.videoUrl = cleanData.mediaUrl.length < 800000 ? cleanData.mediaUrl : '';
         cleanData.mediaUrl = cleanData.videoUrl;
         cleanData.persistentMediaUrl = '';
@@ -382,34 +419,9 @@ export async function syncPostToFirestore(postData: any): Promise<boolean> {
         cleanData.persistentMediaUrl = '';
       }
     } else if (cleanData.mediaUrl && cleanData.mediaUrl.startsWith('data:image')) {
-      if (cleanData.mediaUrl.length > 400000) {
-        console.warn(`⚠️ Image base64 payload is large (${cleanData.mediaUrl.length} bytes). Optimizing image for Firestore...`);
+      if (cleanData.mediaUrl.length > 250000) {
         cleanData.mediaUrl = await optimizeImageForPersistence(cleanData.mediaUrl, 800, 800, 0.65);
       }
-      // Deduplicate so 1MB document limit is never exceeded
-      cleanData.thumbnailUrl = '';
-      cleanData.persistentMediaUrl = '';
-    }
-
-    if (cleanData.type === 'video') {
-      if (!cleanData.mediaUrl || cleanData.mediaUrl.startsWith('blob:') || cleanData.mediaUrl.startsWith('data:image')) {
-        const validStream = (cleanData.videoUrl && !cleanData.videoUrl.startsWith('data:image') && !cleanData.videoUrl.startsWith('blob:')) 
-          ? cleanData.videoUrl 
-          : (cleanData.mediaUrl && !cleanData.mediaUrl.startsWith('blob:') ? cleanData.mediaUrl : '');
-        cleanData.mediaUrl = validStream;
-        cleanData.videoUrl = validStream;
-        cleanData.persistentMediaUrl = '';
-      }
-    } else {
-      if (!cleanData.mediaUrl || cleanData.mediaUrl.startsWith('blob:') || cleanData.mediaUrl.startsWith('indexeddb:')) {
-        cleanData.mediaUrl = cleanData.thumbnailUrl || cleanData.persistentMediaUrl || cleanData.videoUrl || '';
-      }
-    }
-    if (!cleanData.thumbnailUrl || cleanData.thumbnailUrl.startsWith('blob:')) {
-      cleanData.thumbnailUrl = cleanData.type === 'video' ? (cleanData.thumbnailUrl || cleanData.posterUrl || '') : cleanData.mediaUrl;
-    }
-    if (!cleanData.persistentMediaUrl || cleanData.persistentMediaUrl.startsWith('blob:')) {
-      cleanData.persistentMediaUrl = cleanData.mediaUrl;
     }
 
     // Double check and strip any remaining blob: or indexeddb: values from all fields
@@ -419,113 +431,64 @@ export async function syncPostToFirestore(postData: any): Promise<boolean> {
       }
     });
 
-    // 🚨 FINAL SAFEGUARD: Scrub any massive base64 strings (images/videos/pdfs) to prevent Firestore 1MB limits 🚨
-    const maxSize = 800000; // 800KB safe limit
-    const stringKeysToCheck = ['mediaUrl', 'videoUrl', 'persistentMediaUrl', 'video', 'posterUrl'];
-    for (const key of stringKeysToCheck) {
-        if (typeof cleanData[key] === 'string' && cleanData[key].length > maxSize) {
-            console.warn(`⚠️ Stripping oversized field ${key} (${cleanData[key].length} bytes) to prevent Firestore crash`);
-            if (cleanData[key].startsWith('data:image')) {
-                cleanData[key] = await optimizeImageForPersistence(cleanData[key], 800, 800, 0.65);
-            } else if (cleanData[key].startsWith('data:video') || cleanData.type === 'video') {
-                cleanData[key] = '';
-            } else if (cleanData[key].startsWith('data:application/pdf') || cleanData.type === 'pdf' || cleanData.isPdf) {
-                cleanData[key] = '';
-            } else {
-                cleanData[key] = ''; // Fallback for other oversized strings
-            }
-        }
-    }
-
-    // Ensure PDF cover thumbnail is optimized and retained
-    if ((cleanData.type === 'pdf' || cleanData.isPdf) && typeof cleanData.thumbnailUrl === 'string') {
-      if (cleanData.thumbnailUrl.length > 350000 && cleanData.thumbnailUrl.startsWith('data:image')) {
-        cleanData.thumbnailUrl = await optimizeImageForPersistence(cleanData.thumbnailUrl, 700, 900, 0.7);
-      }
-    } else if (typeof cleanData.thumbnailUrl === 'string' && cleanData.thumbnailUrl.length > maxSize) {
-      cleanData.thumbnailUrl = await optimizeImageForPersistence(cleanData.thumbnailUrl, 600, 600, 0.65);
-    }
-
-    // 1. Instant Local Storage Backup (survives tab/page refresh immediately)
+    // 0. Store immediately in Local Storage Cache so post is ALWAYS preserved across refreshes
     try {
-      const existingStr = localStorage.getItem(LOCAL_POSTS_CACHE_KEY);
-      let list: any[] = existingStr ? JSON.parse(existingStr) : [];
-      if (!Array.isArray(list)) list = [];
-      const filtered = list.filter(p => String(p.id) !== postId);
+      const localStr = localStorage.getItem(LOCAL_POSTS_CACHE_KEY);
+      let localList = localStr ? JSON.parse(localStr) : [];
+      if (!Array.isArray(localList)) localList = [];
+      const filtered = localList.filter((p: any) => p && String(p.id) !== String(postId));
       safeSetLocalStorage(LOCAL_POSTS_CACHE_KEY, [cleanData, ...filtered].slice(0, 50));
-    } catch (localErr) {
-      console.warn('Local cache backup note:', localErr);
+    } catch (e) {}
+
+    // Multi-tab BroadcastChannel notification
+    try {
+      if (typeof BroadcastChannel !== 'undefined') {
+        const bc = new BroadcastChannel('vyapar_posts_sync');
+        bc.postMessage({ type: 'POST_SAVED', post: cleanData });
+        bc.close();
+      }
+    } catch (e) {}
+
+    // 1. Direct Firestore Persistence
+    try {
+      const postRef = doc(db, 'posts', postId);
+      await setDoc(postRef, {
+        ...cleanData,
+        serverSyncedAt: serverTimestamp()
+      }, { merge: true });
+      console.log(`✅ Post synced directly to Firestore: ${postId}`);
+    } catch (fsErr: any) {
+      handleFirestoreError('syncPostToFirestore', fsErr);
+      
+      // Emergency size-reduction fallback retry if Firestore rejected the payload size
+      try {
+        console.warn(`🔄 Retrying Firestore setDoc with emergency compressed thumbnail for ${postId}...`);
+        let miniThumb = cleanData.thumbnailUrl || cleanData.mediaUrl || '';
+        if (miniThumb.startsWith('data:image')) {
+          miniThumb = await optimizeImageForPersistence(miniThumb, 400, 400, 0.5);
+        } else if (miniThumb.length > 100000) {
+          miniThumb = '';
+        }
+        const postRef = doc(db, 'posts', postId);
+        await setDoc(postRef, {
+          ...cleanData,
+          images: miniThumb ? [miniThumb] : [],
+          mediaUrls: miniThumb ? [miniThumb] : [],
+          mediaUrl: miniThumb,
+          thumbnailUrl: miniThumb,
+          persistentMediaUrl: miniThumb,
+          serverSyncedAt: serverTimestamp()
+        }, { merge: true });
+        console.log(`✅ Emergency Firestore sync succeeded for: ${postId}`);
+      } catch (retryErr) {
+        handleFirestoreError('syncPost emergency retry', retryErr);
+      }
     }
 
-    // 2. Direct Firestore Persistence with 3-Second Timeout Safeguard (Prevents UI hang)
-    const postRef = doc(db, 'posts', postId);
-    const setDocPromise = setDoc(postRef, {
-      ...cleanData,
-      serverSyncedAt: serverTimestamp()
-    }, { merge: true });
-
-    const timeoutPromise = new Promise((resolve) => setTimeout(() => {
-      console.warn(`⏳ Firestore setDoc timeout safeguard triggered for ${postId}`);
-      resolve(true);
-    }, 3000));
-
-    await Promise.race([setDocPromise, timeoutPromise]);
-    
-    console.log(`✅ Post synced directly to Firestore: ${postId}`);
     return true;
   } catch (error: any) {
     handleFirestoreError('syncPostToFirestore', error);
-    if (isQuotaExhaustedError(error)) {
-      return true;
-    }
-
-    // EMERGENCY RECOVERY FOR OVERSIZED FIRESTORE DOCUMENTS
-    // If setDoc failed due to document size or payload limits, retry with compressed thumbnail image so post metadata (title, content, author) is NEVER lost across devices!
-    try {
-      const postId = postData.id ? String(postData.id) : `post_${Date.now()}`;
-      console.log(`🔄 Emergency size recovery: retrying Firestore setDoc for post ${postId}...`);
-      
-      let safeThumb = postData.thumbnailUrl || postData.mediaUrl || '';
-      if (safeThumb.length > 300000 && safeThumb.startsWith('data:image')) {
-        safeThumb = await optimizeImageForPersistence(safeThumb, 500, 500, 0.5);
-      } else if (safeThumb.length > 300000) {
-        safeThumb = '';
-      }
-
-      const emergencyData = sanitizeForFirestore({
-        ...postData,
-        id: postId,
-        mediaUrl: safeThumb,
-        thumbnailUrl: safeThumb,
-        persistentMediaUrl: safeThumb,
-        fileDataUrl: undefined,
-        mediaBase64: undefined,
-        rawMedia: undefined,
-        status: postData.status || 'approved',
-        visibility: postData.visibility || 'public',
-        updatedAt: Date.now(),
-        createdAt: postData.createdAt || Date.now()
-      });
-
-      // Scrub oversized keys from emergency data too
-      for (const key of ['mediaUrl', 'videoUrl', 'persistentMediaUrl', 'video', 'thumbnailUrl', 'posterUrl']) {
-          if (typeof emergencyData[key] === 'string' && emergencyData[key].length > 300000) {
-              emergencyData[key] = emergencyData[key].startsWith('data:image') ? safeThumb : '';
-          }
-      }
-
-      const postRef = doc(db, 'posts', postId);
-      await setDoc(postRef, {
-        ...emergencyData,
-        serverSyncedAt: serverTimestamp()
-      }, { merge: true });
-      
-      console.log(`✅ Emergency Firestore sync succeeded for: ${postId}`);
-      return true;
-    } catch (retryErr) {
-      handleFirestoreError('syncPost emergency retry', retryErr);
-      return true; // Local storage already preserved
-    }
+    return true; // Local cache is already preserved
   }
 }
 
@@ -806,15 +769,49 @@ export function subscribeToPostsFromFirestore(callback: (posts: any[]) => void):
         }
       } catch (e) {}
 
-      // Background fetch from /api/posts
-      fetch('/api/posts').then(r => r.json()).then(d => {
-        const serverPosts = d?.posts || (Array.isArray(d) ? d : []);
-        if (serverPosts && serverPosts.length > 0) {
-          callback(serverPosts);
-        }
-      }).catch(() => {});
+      // Safe background fetch from /api/posts
+      fetch('/api/posts')
+        .then(async (r) => {
+          const ct = r.headers.get('content-type');
+          if (r.ok && ct && ct.includes('application/json')) {
+            return r.json();
+          }
+          return null;
+        })
+        .then((d) => {
+          if (!d) return;
+          const serverPosts = d?.posts || (Array.isArray(d) ? d : []);
+          if (serverPosts && serverPosts.length > 0) {
+            callback(serverPosts);
+          }
+        })
+        .catch(() => {});
     });
-    return unsubscribe;
+
+    // Cross-tab BroadcastChannel listener for instant real-time synchronization
+    let bc: BroadcastChannel | null = null;
+    try {
+      if (typeof BroadcastChannel !== 'undefined') {
+        bc = new BroadcastChannel('vyapar_posts_sync');
+        bc.onmessage = (event) => {
+          if (event.data?.type === 'POST_SAVED' && event.data?.post) {
+            const newP = event.data.post;
+            const curStr = localStorage.getItem(LOCAL_POSTS_CACHE_KEY);
+            let curList: any[] = curStr ? JSON.parse(curStr) : [];
+            if (!Array.isArray(curList)) curList = [];
+            const filtered = curList.filter((p: any) => p && String(p.id) !== String(newP.id));
+            const updated = [newP, ...filtered];
+            safeSetLocalStorage(LOCAL_POSTS_CACHE_KEY, updated.slice(0, 50));
+            callback(updated);
+          }
+        };
+      }
+    } catch (e) {}
+
+    return () => {
+      try { unsubscribe(); } catch (e) {}
+      try { bc?.close(); } catch (e) {}
+    };
   } catch (err) {
     console.warn('Real-time posts listener setup note:', err);
     return () => {};

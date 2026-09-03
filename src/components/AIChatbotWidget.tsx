@@ -1,15 +1,23 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { MessageSquare, X, Send, Bot, Loader2, Sparkles, SendHorizontal, Settings, Key, Check } from 'lucide-react';
+import { MessageSquare, X, Send, Bot, Loader2, Sparkles, SendHorizontal, Settings, Key, Check, Menu, ArrowDownToDot, ExternalLink } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
+import toast from 'react-hot-toast';
 import { BRAND_LOGO_SRC, BRAND_NAME } from '../constants/brandLogo';
 
-export const AIChatbotWidget: React.FC = () => {
+export const AIChatbotWidget: React.FC<{ currentUser?: any; userLocation?: any }> = () => {
   const navigate = useNavigate();
   const [isOpen, setIsOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [customApiKey, setCustomApiKey] = useState(() => localStorage.getItem('user_gemini_api_key') || '');
   const [keySavedToast, setKeySavedToast] = useState(false);
+
+  // State: whether AI is pinned to Home Screen or housed inside 3-Line Menu (Default: false = inside 3-line menu)
+  const [isOnHomeScreen, setIsOnHomeScreen] = useState<boolean>(() => {
+    return localStorage.getItem('vyapar_ai_pinned_home') === 'true';
+  });
+  const [isDragging, setIsDragging] = useState(false);
+  const [nearMenuDropZone, setNearMenuDropZone] = useState(false);
 
   const [messages, setMessages] = useState<{ role: 'user' | 'assistant'; text: string }[]>([
     {
@@ -21,6 +29,45 @@ export const AIChatbotWidget: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const isDraggingRef = useRef(false);
+
+  // Listen for global custom events to sync with 3-line menu
+  useEffect(() => {
+    const handleOpen = () => setIsOpen(true);
+    const handleExtract = () => {
+      setIsOnHomeScreen(true);
+      localStorage.setItem('vyapar_ai_pinned_home', 'true');
+    };
+    const handleDock = () => {
+      setIsOnHomeScreen(false);
+      localStorage.setItem('vyapar_ai_pinned_home', 'false');
+      setIsOpen(false);
+    };
+
+    window.addEventListener('openVyaparAiChat', handleOpen);
+    window.addEventListener('extractAiToHomeScreen', handleExtract);
+    window.addEventListener('dockAiToMenu', handleDock);
+
+    return () => {
+      window.removeEventListener('openVyaparAiChat', handleOpen);
+      window.removeEventListener('extractAiToHomeScreen', handleExtract);
+      window.removeEventListener('dockAiToMenu', handleDock);
+    };
+  }, []);
+
+  const dockBackToMenu = () => {
+    setIsOnHomeScreen(false);
+    localStorage.setItem('vyapar_ai_pinned_home', 'false');
+    setIsOpen(false);
+    window.dispatchEvent(new CustomEvent('dockAiToMenu'));
+    toast.success('📥 AI Assistant वापस 3-लाइन मेन्यू में सुरक्षित रख दिया गया!');
+  };
+
+  const extractToHomeScreen = () => {
+    setIsOnHomeScreen(true);
+    localStorage.setItem('vyapar_ai_pinned_home', 'true');
+    window.dispatchEvent(new CustomEvent('extractAiToHomeScreen'));
+    toast.success('🤖 AI Assistant अब होम स्क्रीन पर आ गया!');
+  };
 
   const quickPrompts = [
     "👤 Profile kaise banaye?",
@@ -334,216 +381,350 @@ Instructions:
     }
   };
 
-  return (
-    <motion.div
-      drag
-      dragMomentum={false}
-      onDragStart={() => {
-        isDraggingRef.current = true;
-      }}
-      onDragEnd={() => {
-        setTimeout(() => {
-          isDraggingRef.current = false;
-        }, 150);
-      }}
-      className="fixed bottom-6 right-4 z-[9999] flex flex-col items-end pointer-events-auto select-none"
-    >
-      <AnimatePresence>
-        {isOpen && (
-          <motion.div
-            initial={{ opacity: 0, y: 20, scale: 0.95 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 20, scale: 0.95 }}
-            transition={{ duration: 0.2 }}
-            className="mb-4 w-[92vw] sm:w-96 bg-zinc-900 text-white rounded-2xl shadow-2xl border border-amber-500/40 overflow-hidden flex flex-col max-h-[530px]"
-          >
-            {/* Header */}
-            <div className="bg-gradient-to-r from-amber-600 via-yellow-600 to-amber-700 p-3.5 flex items-center justify-between text-white shadow-md">
-              <div className="flex items-center space-x-3">
-                <div className="w-9 h-9 bg-black/40 rounded-full flex items-center justify-center border border-amber-300 shadow-inner overflow-hidden text-lg">
-                  <span>🤖</span>
-                </div>
-                <div>
-                  <h3 className="font-bold text-sm leading-tight flex items-center gap-1.5">
-                    <span>{BRAND_NAME} Gemini AI</span>
-                    <span className="px-1.5 py-0.2 bg-black/40 border border-amber-300/50 rounded-full text-[9px] text-amber-200">
-                      LIVE
-                    </span>
-                  </h3>
-                  <p className="text-amber-100 text-[11px]">General Knowledge & B2B AI Guide</p>
-                </div>
-              </div>
-              <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => setIsSettingsOpen(!isSettingsOpen)}
-                  title="Gemini API Key Settings"
-                  className="p-1.5 hover:bg-black/30 rounded-full transition-colors active:scale-95 cursor-pointer text-white"
-                >
-                  <Settings className="w-4 h-4 text-amber-200 hover:text-white" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setIsOpen(false)}
-                  className="p-1.5 hover:bg-black/30 rounded-full transition-colors active:scale-95 cursor-pointer text-white"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
+  const renderChatContent = () => (
+    <>
+      {/* Settings Overlay View */}
+      {isSettingsOpen ? (
+        <div className="p-4 bg-zinc-950 text-xs space-y-3 min-h-[300px]">
+          <div className="flex items-center gap-2 text-amber-400 font-bold border-b border-zinc-800 pb-2">
+            <Key className="w-4 h-4" />
+            <span>Gemini API Key Setup (Vercel & Client)</span>
+          </div>
+          <p className="text-zinc-300 leading-relaxed">
+            Agar aapne app Vercel par deploy ki hai, to yahan apni Google Gemini API Key add karke pure <strong>Gemini AI</strong> ko live activate kar sakte hain:
+          </p>
+          <div>
+            <label className="block text-[11px] text-zinc-400 mb-1">Gemini API Key:</label>
+            <input
+              type="password"
+              value={customApiKey}
+              onChange={(e) => setCustomApiKey(e.target.value)}
+              placeholder="AIzaSy..."
+              className="w-full bg-zinc-900 border border-zinc-700 text-white rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-amber-500 focus:outline-none"
+            />
+          </div>
+          {keySavedToast && (
+            <div className="flex items-center gap-1.5 text-emerald-400 font-bold text-xs">
+              <Check className="w-4 h-4" /> Key Saved Successfully! Activating Gemini AI...
             </div>
-
-            {/* Settings Overlay View */}
-            {isSettingsOpen ? (
-              <div className="p-4 bg-zinc-950 text-xs space-y-3 min-h-[300px]">
-                <div className="flex items-center gap-2 text-amber-400 font-bold border-b border-zinc-800 pb-2">
-                  <Key className="w-4 h-4" />
-                  <span>Gemini API Key Setup (Vercel & Client)</span>
-                </div>
-                <p className="text-zinc-300 leading-relaxed">
-                  Agar aapne app Vercel par deploy ki hai, to yahan apni Google Gemini API Key add karke pure <strong>Gemini AI</strong> ko live activate kar sakte hain:
-                </p>
-                <div>
-                  <label className="block text-[11px] text-zinc-400 mb-1">Gemini API Key:</label>
-                  <input
-                    type="password"
-                    value={customApiKey}
-                    onChange={(e) => setCustomApiKey(e.target.value)}
-                    placeholder="AIzaSy..."
-                    className="w-full bg-zinc-900 border border-zinc-700 text-white rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-amber-500 focus:outline-none"
+          )}
+          <div className="flex justify-end gap-2 pt-2">
+            <button
+              type="button"
+              onClick={() => setIsSettingsOpen(false)}
+              className="px-3 py-1.5 bg-zinc-800 text-zinc-300 rounded-lg hover:bg-zinc-700 cursor-pointer"
+            >
+              Back to Chat
+            </button>
+            <button
+              type="button"
+              onClick={saveCustomKey}
+              className="px-4 py-1.5 bg-gradient-to-r from-amber-500 to-yellow-500 text-black font-bold rounded-lg hover:from-amber-400 hover:to-yellow-400 cursor-pointer shadow"
+            >
+              Save Key
+            </button>
+          </div>
+        </div>
+      ) : (
+        <>
+          {/* Chat Area */}
+          <div className="flex-1 p-3.5 overflow-y-auto bg-zinc-950/90 space-y-3 min-h-[280px] max-h-[340px]">
+            {messages.map((msg, idx) => (
+              <div
+                key={idx}
+                className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                onClick={handleLinkClick}
+              >
+                <div
+                  className={`max-w-[88%] rounded-2xl px-3.5 py-2.5 text-xs sm:text-sm whitespace-pre-wrap leading-relaxed ${
+                    msg.role === 'user'
+                      ? 'bg-gradient-to-r from-amber-500 to-amber-600 text-black font-semibold rounded-tr-none shadow-md'
+                      : 'bg-zinc-900 border border-amber-500/30 text-zinc-100 rounded-tl-none shadow-sm'
+                  }`}
+                >
+                  <div
+                    className="chatbot-message-content"
+                    dangerouslySetInnerHTML={{
+                      __html: msg.text
+                        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                        .replace(/\*(.*?)\*/g, '<em>$1</em>')
+                        .replace(/\[([^\]]*)\]\(([^)]+)\)/g, '<a href="$2" class="text-amber-400 font-semibold underline hover:text-amber-300 mx-0.5">$1</a>')
+                        .replace(/\n/g, '<br />')
+                    }}
                   />
                 </div>
-                {keySavedToast && (
-                  <div className="flex items-center gap-1.5 text-emerald-400 font-bold text-xs">
-                    <Check className="w-4 h-4" /> Key Saved Successfully! Activating Gemini AI...
+              </div>
+            ))}
+            {isLoading && (
+              <div className="flex justify-start">
+                <div className="bg-zinc-900 border border-amber-500/30 rounded-2xl rounded-tl-none px-3.5 py-2.5 shadow-sm flex items-center space-x-2">
+                  <Loader2 className="w-4 h-4 text-amber-400 animate-spin" />
+                  <span className="text-xs text-zinc-400">Vyapar Gemini AI is thinking...</span>
+                </div>
+              </div>
+            )}
+            <div ref={messagesEndRef} />
+          </div>
+
+          {/* Quick Prompt Chips */}
+          <div className="px-3 py-2 bg-zinc-900/80 border-t border-zinc-800 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+            {quickPrompts.map((prompt, pIdx) => (
+              <button
+                key={pIdx}
+                onClick={() => handleSend(prompt)}
+                disabled={isLoading}
+                className="whitespace-nowrap px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 active:scale-95 border border-zinc-700 hover:border-amber-500/50 rounded-full text-[10px] sm:text-xs text-zinc-300 hover:text-amber-300 transition-all cursor-pointer disabled:opacity-50"
+              >
+                {prompt}
+              </button>
+            ))}
+          </div>
+
+          {/* Input Area */}
+          <div className="p-2.5 bg-zinc-900 border-t border-zinc-800">
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleSend();
+              }}
+              className="flex items-center space-x-2"
+            >
+              <input
+                type="text"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder="Ask anything (App guide, Science, Math, Business)..."
+                className="flex-1 bg-zinc-800 text-white placeholder-zinc-400 text-xs sm:text-sm rounded-full px-3.5 py-2 focus:outline-none focus:ring-2 focus:ring-amber-500 transition-all border border-zinc-700"
+                disabled={isLoading}
+              />
+              <button
+                type="submit"
+                disabled={!input.trim() || isLoading}
+                className="p-2 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-black font-bold rounded-full disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-md active:scale-95 cursor-pointer"
+              >
+                <Send className="w-4 h-4" />
+              </button>
+            </form>
+          </div>
+        </>
+      )}
+    </>
+  );
+
+  // When AI is docked inside 3-line menu and chat is closed: Keep screen 100% clean!
+  if (!isOnHomeScreen && !isOpen) {
+    return null;
+  }
+
+  // When AI is in 3-line menu mode and user tapped "Chat with AI" from 3-line drawer
+  if (!isOnHomeScreen && isOpen) {
+    return (
+      <div className="fixed inset-0 z-[99999] flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-xs animate-fade-in select-none">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.95, y: 15 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          exit={{ opacity: 0, scale: 0.95, y: 15 }}
+          className="w-full max-w-lg bg-zinc-900 text-white rounded-3xl shadow-2xl border border-amber-500/40 overflow-hidden flex flex-col max-h-[85vh] h-[560px]"
+        >
+          {/* Header */}
+          <div className="bg-gradient-to-r from-amber-600 via-yellow-600 to-amber-700 p-3.5 flex items-center justify-between text-white shadow-md">
+            <div className="flex items-center space-x-3">
+              <div className="w-9 h-9 bg-black/40 rounded-full flex items-center justify-center border border-amber-300 shadow-inner overflow-hidden text-lg">
+                <span>🤖</span>
+              </div>
+              <div>
+                <h3 className="font-bold text-sm leading-tight flex items-center gap-1.5">
+                  <span>{BRAND_NAME} Gemini AI</span>
+                  <span className="px-1.5 py-0.2 bg-black/40 border border-amber-300/50 rounded-full text-[9px] text-amber-200">
+                    3-LINE MENU
+                  </span>
+                </h3>
+                <p className="text-amber-100 text-[11px]">General Knowledge & B2B AI Guide</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={extractToHomeScreen}
+                className="flex items-center gap-1 px-2.5 py-1 bg-black/30 hover:bg-black/50 active:scale-95 text-amber-200 hover:text-white rounded-xl text-[11px] font-bold border border-amber-300/40 transition-all cursor-pointer"
+                title="होम स्क्रीन पर निकालें (Drag to Home Screen)"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Drag to Screen</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsSettingsOpen(!isSettingsOpen)}
+                title="Gemini API Key Settings"
+                className="p-1.5 hover:bg-black/30 rounded-full transition-colors active:scale-95 cursor-pointer text-white"
+              >
+                <Settings className="w-4 h-4 text-amber-200 hover:text-white" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsOpen(false)}
+                className="p-1.5 hover:bg-black/30 rounded-full transition-colors active:scale-95 cursor-pointer text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
+
+          {renderChatContent()}
+        </motion.div>
+      </div>
+    );
+  }
+
+  // When AI is extracted onto Home Screen: floating draggable robot with dock controls
+  return (
+    <>
+      {/* Drop Zone indicator near 3-Line Menu button when dragging on Home Screen */}
+      {isDragging && (
+        <div
+          className={`fixed top-2 left-2 z-[100000] pointer-events-none p-3 rounded-2xl border-2 transition-all duration-200 shadow-2xl flex items-center gap-3 ${
+            nearMenuDropZone
+              ? 'bg-amber-500 text-black border-amber-300 scale-105 shadow-amber-500/50 ring-4 ring-amber-400/40'
+              : 'bg-slate-900/95 text-white border-dashed border-amber-400/80 shadow-black/60 animate-pulse'
+          }`}
+        >
+          <div className={`p-2 rounded-xl ${nearMenuDropZone ? 'bg-black text-amber-400' : 'bg-amber-400/20 text-amber-300'}`}>
+            <Menu className="w-5 h-5 stroke-[2.5]" />
+          </div>
+          <div>
+            <p className="text-xs font-black leading-tight">
+              {nearMenuDropZone ? '🎯 Release now to dock into 3-Line Menu!' : '📥 Drop here to dock inside 3-Line Menu'}
+            </p>
+            <p className={`text-[10px] ${nearMenuDropZone ? 'text-black/80 font-bold' : 'text-slate-300'}`}>
+              मेन्यू में वापस डालने के लिए यहाँ छोड़ें
+            </p>
+          </div>
+        </div>
+      )}
+
+      <motion.div
+        drag
+        dragMomentum={false}
+        onDragStart={() => {
+          isDraggingRef.current = true;
+          setIsDragging(true);
+        }}
+        onDrag={(_, info) => {
+          const isNearTopLeft = info.point.x < 200 && info.point.y < 180;
+          const isNearFooter = info.point.x > window.innerWidth - 130 && info.point.y > window.innerHeight - 120;
+          setNearMenuDropZone(isNearTopLeft || isNearFooter);
+        }}
+        onDragEnd={(_, info) => {
+          setIsDragging(false);
+          const isNearTopLeft = info.point.x < 200 && info.point.y < 180;
+          const isNearFooter = info.point.x > window.innerWidth - 130 && info.point.y > window.innerHeight - 120;
+          if (isNearTopLeft || isNearFooter) {
+            dockBackToMenu();
+          }
+          setNearMenuDropZone(false);
+          setTimeout(() => {
+            isDraggingRef.current = false;
+          }, 150);
+        }}
+        className="fixed bottom-6 right-4 z-[9999] flex flex-col items-end pointer-events-auto select-none"
+      >
+        <AnimatePresence>
+          {isOpen && (
+            <motion.div
+              initial={{ opacity: 0, y: 20, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 20, scale: 0.95 }}
+              transition={{ duration: 0.2 }}
+              className="mb-4 w-[92vw] sm:w-96 bg-zinc-900 text-white rounded-2xl shadow-2xl border border-amber-500/40 overflow-hidden flex flex-col max-h-[530px]"
+            >
+              {/* Header */}
+              <div className="bg-gradient-to-r from-amber-600 via-yellow-600 to-amber-700 p-3.5 flex items-center justify-between text-white shadow-md">
+                <div className="flex items-center space-x-3">
+                  <div className="w-9 h-9 bg-black/40 rounded-full flex items-center justify-center border border-amber-300 shadow-inner overflow-hidden text-lg">
+                    <span>🤖</span>
                   </div>
-                )}
-                <div className="flex justify-end gap-2 pt-2">
+                  <div>
+                    <h3 className="font-bold text-sm leading-tight flex items-center gap-1.5">
+                      <span>{BRAND_NAME} Gemini AI</span>
+                      <span className="px-1.5 py-0.2 bg-black/40 border border-amber-300/50 rounded-full text-[9px] text-amber-200">
+                        LIVE
+                      </span>
+                    </h3>
+                    <p className="text-amber-100 text-[11px]">General Knowledge & B2B AI Guide</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1">
                   <button
                     type="button"
-                    onClick={() => setIsSettingsOpen(false)}
-                    className="px-3 py-1.5 bg-zinc-800 text-zinc-300 rounded-lg hover:bg-zinc-700 cursor-pointer"
+                    onClick={dockBackToMenu}
+                    title="Dock inside 3-Line Menu (मेन्यू में वापस रखें)"
+                    className="flex items-center gap-1 px-2 py-1 bg-black/30 hover:bg-black/50 rounded-lg text-[10px] font-bold text-amber-200 border border-amber-400/30 transition-colors"
                   >
-                    Back to Chat
+                    <ArrowDownToDot className="w-3 h-3 text-amber-400" />
+                    <span>3-लाइन में रखें</span>
                   </button>
                   <button
                     type="button"
-                    onClick={saveCustomKey}
-                    className="px-4 py-1.5 bg-gradient-to-r from-amber-500 to-yellow-500 text-black font-bold rounded-lg hover:from-amber-400 hover:to-yellow-400 cursor-pointer shadow"
+                    onClick={() => setIsSettingsOpen(!isSettingsOpen)}
+                    title="Gemini API Key Settings"
+                    className="p-1.5 hover:bg-black/30 rounded-full transition-colors active:scale-95 cursor-pointer text-white"
                   >
-                    Save Key
+                    <Settings className="w-4 h-4 text-amber-200 hover:text-white" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsOpen(false)}
+                    className="p-1.5 hover:bg-black/30 rounded-full transition-colors active:scale-95 cursor-pointer text-white"
+                  >
+                    <X className="w-5 h-5" />
                   </button>
                 </div>
               </div>
+
+              {renderChatContent()}
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Floating Action Button with Quick Dock Badge */}
+        <div className="relative group">
+          {/* Dock back into 3-line menu badge */}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              dockBackToMenu();
+            }}
+            className="absolute -top-1.5 -left-1.5 z-20 w-6 h-6 bg-zinc-950 hover:bg-zinc-800 text-amber-300 rounded-full border border-amber-400/80 shadow-md flex items-center justify-center text-[11px] cursor-pointer hover:scale-110 active:scale-95 transition-transform"
+            title="3-लाइन मेन्यू में वापस डालें (Dock into 3-Line Menu)"
+          >
+            <ArrowDownToDot className="w-3.5 h-3.5 text-amber-400" />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              if (!isDraggingRef.current) {
+                setIsOpen((prev) => !prev);
+              }
+            }}
+            className="w-14 h-14 bg-gradient-to-tr from-amber-600 via-amber-500 to-yellow-400 text-black rounded-full shadow-[0_0_25px_rgba(245,158,11,0.6)] hover:shadow-[0_0_35px_rgba(245,158,11,0.9)] hover:scale-105 active:scale-95 flex items-center justify-center border-2 border-amber-300 transition-transform cursor-grab active:cursor-grabbing relative touch-none"
+            aria-label="Open Vyapar Bridge AI Assistant"
+          >
+            {isOpen ? (
+              <X className="w-6 h-6 text-black" />
             ) : (
-              <>
-                {/* Chat Area */}
-                <div className="flex-1 p-3.5 overflow-y-auto bg-zinc-950/90 space-y-3 min-h-[280px] max-h-[340px]">
-                  {messages.map((msg, idx) => (
-                    <div
-                      key={idx}
-                      className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-                      onClick={handleLinkClick}
-                    >
-                      <div
-                        className={`max-w-[88%] rounded-2xl px-3.5 py-2.5 text-xs sm:text-sm whitespace-pre-wrap leading-relaxed ${
-                          msg.role === 'user'
-                            ? 'bg-gradient-to-r from-amber-500 to-amber-600 text-black font-semibold rounded-tr-none shadow-md'
-                            : 'bg-zinc-900 border border-amber-500/30 text-zinc-100 rounded-tl-none shadow-sm'
-                        }`}
-                      >
-                        <div
-                          className="chatbot-message-content"
-                          dangerouslySetInnerHTML={{
-                            __html: msg.text
-                              .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-                              .replace(/\*(.*?)\*/g, '<em>$1</em>')
-                              .replace(/\[([^\]]*)\]\(([^)]+)\)/g, '<a href="$2" class="text-amber-400 font-semibold underline hover:text-amber-300 mx-0.5">$1</a>')
-                              .replace(/\n/g, '<br />')
-                          }}
-                        />
-                      </div>
-                    </div>
-                  ))}
-                  {isLoading && (
-                    <div className="flex justify-start">
-                      <div className="bg-zinc-900 border border-amber-500/30 rounded-2xl rounded-tl-none px-3.5 py-2.5 shadow-sm flex items-center space-x-2">
-                        <Loader2 className="w-4 h-4 text-amber-400 animate-spin" />
-                        <span className="text-xs text-zinc-400">Vyapar Gemini AI is thinking...</span>
-                      </div>
-                    </div>
-                  )}
-                  <div ref={messagesEndRef} />
-                </div>
-
-                {/* Quick Prompt Chips */}
-                <div className="px-3 py-2 bg-zinc-900/80 border-t border-zinc-800 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
-                  {quickPrompts.map((prompt, pIdx) => (
-                    <button
-                      key={pIdx}
-                      onClick={() => handleSend(prompt)}
-                      disabled={isLoading}
-                      className="whitespace-nowrap px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 active:scale-95 border border-zinc-700 hover:border-amber-500/50 rounded-full text-[10px] sm:text-xs text-zinc-300 hover:text-amber-300 transition-all cursor-pointer disabled:opacity-50"
-                    >
-                      {prompt}
-                    </button>
-                  ))}
-                </div>
-
-                {/* Input Area */}
-                <div className="p-2.5 bg-zinc-900 border-t border-zinc-800">
-                  <form
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      handleSend();
-                    }}
-                    className="flex items-center space-x-2"
-                  >
-                    <input
-                      type="text"
-                      value={input}
-                      onChange={(e) => setInput(e.target.value)}
-                      placeholder="Ask anything (App guide, Science, Math, Business)..."
-                      className="flex-1 bg-zinc-800 text-white placeholder-zinc-400 text-xs sm:text-sm rounded-full px-3.5 py-2 focus:outline-none focus:ring-2 focus:ring-amber-500 transition-all border border-zinc-700"
-                      disabled={isLoading}
-                    />
-                    <button
-                      type="submit"
-                      disabled={!input.trim() || isLoading}
-                      className="p-2 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-black font-bold rounded-full disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-md active:scale-95 cursor-pointer"
-                    >
-                      <Send className="w-4 h-4" />
-                    </button>
-                  </form>
-                </div>
-              </>
+              <div className="relative flex items-center justify-center w-full h-full text-2xl select-none">
+                <span>🤖</span>
+                <span className="absolute -top-1 -right-2 flex h-3.5 w-3.5">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-3.5 w-3.5 bg-emerald-500 border border-black"></span>
+                </span>
+              </div>
             )}
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Floating Action Button */}
-      <button
-        type="button"
-        onClick={() => {
-          if (!isDraggingRef.current) {
-            setIsOpen((prev) => !prev);
-          }
-        }}
-        className="w-14 h-14 bg-gradient-to-tr from-amber-600 via-amber-500 to-yellow-400 text-black rounded-full shadow-[0_0_25px_rgba(245,158,11,0.6)] hover:shadow-[0_0_35px_rgba(245,158,11,0.9)] hover:scale-105 active:scale-95 flex items-center justify-center border-2 border-amber-300 transition-transform cursor-grab active:cursor-grabbing relative touch-none"
-        aria-label="Open Vyapar Bridge AI Assistant"
-      >
-        {isOpen ? (
-          <X className="w-6 h-6 text-black" />
-        ) : (
-          <div className="relative flex items-center justify-center w-full h-full text-2xl select-none">
-            <span>🤖</span>
-            <span className="absolute -top-1 -right-2 flex h-3.5 w-3.5">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-3.5 w-3.5 bg-emerald-500 border border-black"></span>
-            </span>
-          </div>
-        )}
-      </button>
-    </motion.div>
+          </button>
+        </div>
+      </motion.div>
+    </>
   );
 };
