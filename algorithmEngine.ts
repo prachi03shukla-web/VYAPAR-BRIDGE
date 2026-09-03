@@ -23,6 +23,27 @@ export interface FeedOptions {
   page?: number;
 }
 
+export function parseTimestampMs(createdAt: any): number {
+  if (!createdAt) return Date.now();
+  if (typeof createdAt === 'number' && !isNaN(createdAt) && createdAt > 1000000000) {
+    return createdAt;
+  }
+  if (typeof createdAt === 'object') {
+    if (typeof createdAt.seconds === 'number') return createdAt.seconds * 1000;
+    if (typeof createdAt._seconds === 'number') return createdAt._seconds * 1000;
+    if (typeof createdAt.toDate === 'function') {
+      try { return createdAt.toDate().getTime(); } catch (e) {}
+    }
+  }
+  if (typeof createdAt === 'string') {
+    const num = Number(createdAt);
+    if (!isNaN(num) && num > 1000000000) return num;
+    const parsed = new Date(createdAt).getTime();
+    if (!isNaN(parsed) && parsed > 1000000000) return parsed;
+  }
+  return Date.now();
+}
+
 /**
  * Generate a personalized, algorithmically ranked feed for a user.
  */
@@ -79,12 +100,26 @@ export function generateInstagramFeed(
     // Filter by specific creator if requested (e.g. profile wall feed)
     if (options.queryUserId) {
       const qTarget = String(options.queryUserId).trim().toLowerCase();
+      const matchedDbUser = (db.users || []).find(u => 
+        String(u.id).toLowerCase() === qTarget || 
+        String(u.username || '').toLowerCase() === qTarget ||
+        String(u.phone || '').toLowerCase() === qTarget ||
+        String(u.companyName || '').toLowerCase() === qTarget
+      );
+      
       const isTargetUser = 
         postUserId.toLowerCase() === qTarget ||
         String(p.user?.id || '').toLowerCase() === qTarget ||
+        (matchedDbUser && (
+          postUserId.toLowerCase() === String(matchedDbUser.id).toLowerCase() ||
+          String(p.user?.id || '').toLowerCase() === String(matchedDbUser.id).toLowerCase() ||
+          (p.userName && p.userName.toLowerCase() === String(matchedDbUser.name || '').toLowerCase()) ||
+          (p.userName && p.userName.toLowerCase() === String(matchedDbUser.companyName || '').toLowerCase())
+        )) ||
         (p.userName && p.userName.toLowerCase() === qTarget) ||
         (p.user?.name && p.user.name.toLowerCase() === qTarget) ||
         (p.user?.username && p.user.username.toLowerCase() === qTarget) ||
+        (p.user?.companyName && p.user.companyName.toLowerCase() === qTarget) ||
         ((qTarget === '1' || qTarget === 'admin' || qTarget === 'master_admin') && (p.userRole === 'admin' || p.user?.role === 'admin' || postUserId === '1' || postUserId === 'admin'));
       if (!isTargetUser) return false;
     }
@@ -92,28 +127,7 @@ export function generateInstagramFeed(
     // Filter out rejected posts
     if (p.status === 'rejected') return false;
 
-function parseTimestampMs(createdAt: any): number {
-  if (!createdAt) return Date.now();
-  if (typeof createdAt === 'number' && !isNaN(createdAt) && createdAt > 1000000000) {
-    return createdAt;
-  }
-  if (typeof createdAt === 'object') {
-    if (typeof createdAt.seconds === 'number') return createdAt.seconds * 1000;
-    if (typeof createdAt._seconds === 'number') return createdAt._seconds * 1000;
-    if (typeof createdAt.toDate === 'function') {
-      try { return createdAt.toDate().getTime(); } catch (e) {}
-    }
-  }
-  if (typeof createdAt === 'string') {
-    const num = Number(createdAt);
-    if (!isNaN(num) && num > 1000000000) return num;
-    const parsed = new Date(createdAt).getTime();
-    if (!isNaN(parsed) && parsed > 1000000000) return parsed;
-  }
-  return Date.now();
-}
-
-    // Retain all posts and reels permanently on feed and profiles
+    // Retain all valid posts and reels permanently on feed and profiles
     return true;
   });
 

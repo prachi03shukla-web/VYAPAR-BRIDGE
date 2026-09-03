@@ -207,7 +207,7 @@ async function uploadToFirebaseOrLocal(file: Express.Multer.File): Promise<strin
 
         // 2. Cloudinary Upload Integration (Direct Cloud CDN)
         const cloudName = process.env.CLOUDINARY_CLOUD_NAME || process.env.VITE_CLOUDINARY_CLOUD_NAME || 'wwssqpep';
-        const uploadPreset = process.env.CLOUDINARY_UPLOAD_PRESET || process.env.VITE_CLOUDINARY_UPLOAD_PRESET || 'ml_default';
+        const uploadPreset = process.env.CLOUDINARY_UPLOAD_PRESET || process.env.VITE_CLOUDINARY_UPLOAD_PRESET || 'Vyapar-bridge';
 
         if (cloudName && uploadPreset) {
           try {
@@ -1247,7 +1247,9 @@ Return ONLY a valid raw JSON object (NO markdown, NO \`\`\`json backticks, NO ex
     const limit = req.query.limit ? parseInt(String(req.query.limit), 10) : undefined;
     const page = req.query.page ? parseInt(String(req.query.page), 10) : undefined;
 
-    // syncFromFirestore removed to save quota
+    if (db.posts.length === 0 && firestoreDb && !isFirestoreQuotaExceeded) {
+      await syncFromFirestore().catch(() => {});
+    }
 
     const rankedPosts = generateInstagramFeed(currentUserId, db, { queryUserId, admin, limit, page });
     res.json(rankedPosts);
@@ -2149,16 +2151,21 @@ Return ONLY a valid raw JSON object (NO markdown, NO \`\`\`json backticks, NO ex
     const { user } = req.body;
     if (!user || !user.id) return res.status(400).json({ error: 'User data required' });
     
-    let existingUser = db.users.find(u => u.id === String(user.id));
+    const uId = String(user.id);
+    let existingUser = db.users.find(u => String(u.id) === uId || (u.username && user.username && String(u.username).toLowerCase() === String(user.username).toLowerCase()));
     if (!existingUser) {
-      existingUser = { ...user, id: String(user.id), role: 'user', createdAt: Date.now() };
+      existingUser = {
+        ...user,
+        id: uId,
+        role: user.role || 'dealer',
+        createdAt: user.createdAt || Date.now()
+      };
       db.users.push(existingUser);
     } else {
-      // Sync basic info
-      existingUser.name = user.name || existingUser.name;
-      existingUser.avatarUrl = user.avatarUrl || existingUser.avatarUrl;
-      existingUser.email = user.email || existingUser.email;
+      // Sync all user profile fields
+      Object.assign(existingUser, user, { id: existingUser.id || uId });
     }
+    saveDatabase();
     res.json({ success: true, user: existingUser });
   });
 

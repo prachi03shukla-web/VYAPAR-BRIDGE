@@ -314,6 +314,13 @@ export const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
               <span>Home Feed (होम फ़ीड)</span>
             </button>
             <button
+              onClick={() => handleNav('/directory')}
+              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-slate-700 hover:text-amber-600 hover:bg-amber-50/70 transition-colors text-xs font-bold"
+            >
+              <Building2 className="w-4.5 h-4.5 text-amber-500" />
+              <span>Business Directory (व्यापार डायरेक्टरी)</span>
+            </button>
+            <button
               onClick={() => handleNav('/chat')}
               className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-slate-700 hover:text-blue-600 hover:bg-blue-50/70 transition-colors text-xs font-bold"
             >

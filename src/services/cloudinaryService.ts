@@ -6,7 +6,7 @@
 
 export const CLOUDINARY_CONFIG = {
   cloudName: (typeof import.meta !== 'undefined' && import.meta.env?.VITE_CLOUDINARY_CLOUD_NAME) || 'wwssqpep',
-  uploadPreset: (typeof import.meta !== 'undefined' && import.meta.env?.VITE_CLOUDINARY_UPLOAD_PRESET) || 'ml_default',
+  uploadPreset: (typeof import.meta !== 'undefined' && import.meta.env?.VITE_CLOUDINARY_UPLOAD_PRESET) || 'Vyapar-bridge',
   apiKey: '277689186734617'
 };
 
@@ -40,7 +40,7 @@ export async function uploadToCloudinary(
   folder?: string
 ): Promise<string> {
   const cloudName = CLOUDINARY_CONFIG.cloudName || 'wwssqpep';
-  const uploadPreset = CLOUDINARY_CONFIG.uploadPreset || 'ml_default';
+  const uploadPreset = CLOUDINARY_CONFIG.uploadPreset || 'Vyapar-bridge';
 
   if (!file) return '';
 

@@ -510,9 +510,13 @@ export async function fetchPostsFromFirestore(): Promise<any[]> {
 
   // 1. Fetch latest real-time documents from Firestore (All Posts & Members Uncapped)
   try {
-    // Optimization: limit the number of posts fetched to reduce read quota and improve load speed
-    const postsQuery = query(collection(db, 'posts'), orderBy('createdAt', 'desc'), limit(50));
-    const snap = await getDocs(postsQuery);
+    let snap;
+    try {
+      snap = await getDocs(collection(db, 'posts'));
+    } catch (directErr) {
+      const postsQuery = query(collection(db, 'posts'), limit(50));
+      snap = await getDocs(postsQuery);
+    }
     snap.forEach((docSnap) => {
       const data = docSnap.data();
       if (data && docSnap.id) {
@@ -593,6 +597,20 @@ export async function fetchPostsFromFirestore(): Promise<any[]> {
         }
       } catch (serverErr) {}
     }
+  }
+
+  // If still empty (e.g. fresh device login), query backend server API directly
+  if (postsMap.size === 0) {
+    try {
+      const resp = await fetch('/api/posts');
+      if (resp.ok) {
+        const sData = await resp.json();
+        const pList = sData?.posts || (Array.isArray(sData) ? sData : []);
+        pList.forEach((p: any) => {
+          if (p && p.id) postsMap.set(String(p.id), p);
+        });
+      }
+    } catch (serverErr) {}
   }
 
   let deletedPostsSet = new Set<string>();
@@ -832,40 +850,110 @@ export function subscribeToPostsFromFirestore(callback: (posts: any[]) => void):
 
 export function subscribeToUsersFromFirestore(callback: (users: any[]) => void): () => void {
   try {
-    const usersQuery = query(collection(db, 'users'));
-
-    const now = Date.now();
-    if (cachedUsers.length > 0 && now - lastUsersFetch < 300000) {
+    // 1. Immediately deliver local cache / memory cache if present
+    if (cachedUsers.length > 0) {
       setTimeout(() => callback(cachedUsers), 0);
-      return () => {};
-    }
-    getDocs(usersQuery).then((snapshot) => {
-
-      const list: any[] = [];
-      snapshot.forEach((docSnap) => {
-        const data = docSnap.data();
-        if (data) {
-          list.push({ ...data, id: docSnap.id });
+    } else {
+      try {
+        const localStr = localStorage.getItem(LOCAL_USERS_CACHE_KEY);
+        if (localStr) {
+          const parsed = JSON.parse(localStr);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            callback(parsed);
+          }
         }
-      });
+      } catch (e) {}
+    }
 
-      updateCachedUsers(list);
-      cachedUsers = list;
-      lastUsersFetch = Date.now();
-      callback(list);
-
-    }, (error: any) => {
-      if (error?.message?.includes('Quota') || error?.code === 'resource-exhausted') {
-        console.warn('Firestore real-time users: Free daily read units limit reached. Local cache active.');
-      } else if (error?.code === 'cancelled' || error?.message?.includes('CANCELLED') || error?.message?.includes('Disconnecting idle stream')) {
-        // Normal gRPC stream lifecycle event when idle, ignore
-      } else {
-        console.warn('Firestore real-time users subscription note:', error);
+    // 2. Fetch authoritative merged users asynchronously (Firestore + local storage + /api/users)
+    fetchAllUsersFromFirestore().then((allUsers) => {
+      if (Array.isArray(allUsers) && allUsers.length > 0) {
+        cachedUsers = allUsers;
+        lastUsersFetch = Date.now();
+        callback(allUsers);
       }
-    }).catch(err => console.warn(err));
-    return () => {};
+    }).catch(() => {});
+
+    // 3. Setup Firestore real-time listener if available
+    const usersQuery = query(collection(db, 'users'));
+    let unsubscribe: () => void = () => {};
+
+    try {
+      unsubscribe = onSnapshot(usersQuery, (snapshot) => {
+        const list: any[] = [];
+        const deletedSet = getDeletedUserIds();
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data();
+          if (data && docSnap.id) {
+            const uId = String(data.id || docSnap.id);
+            if (!deletedSet.has(uId)) {
+              list.push({ ...data, id: uId });
+            }
+          }
+        });
+
+        // Merge with local cached users
+        const map = new Map<string, any>();
+        list.forEach(u => map.set(String(u.id), u));
+
+        try {
+          const localStr = localStorage.getItem(LOCAL_USERS_CACHE_KEY);
+          if (localStr) {
+            const localList = JSON.parse(localStr);
+            if (Array.isArray(localList)) {
+              localList.forEach(u => {
+                if (u && u.id && !deletedSet.has(String(u.id)) && !map.has(String(u.id))) {
+                  map.set(String(u.id), u);
+                }
+              });
+            }
+          }
+        } catch (e) {}
+
+        const merged = Array.from(map.values());
+        updateCachedUsers(merged);
+        cachedUsers = merged;
+        lastUsersFetch = Date.now();
+        callback(merged);
+      }, (error: any) => {
+        if (error?.message?.includes('Quota') || error?.code === 'resource-exhausted') {
+          console.warn('Firestore real-time users: Free daily read quota reached. Using cached & local directory.');
+        }
+        fetchAllUsersFromFirestore().then(fallbackUsers => {
+          if (Array.isArray(fallbackUsers) && fallbackUsers.length > 0) {
+            callback(fallbackUsers);
+          }
+        }).catch(() => {});
+      });
+    } catch (listenerErr) {
+      console.warn('Real-time users listener setup note:', listenerErr);
+    }
+
+    // 4. Cross-tab BroadcastChannel listener for instant user synchronization
+    let bc: BroadcastChannel | null = null;
+    try {
+      if (typeof BroadcastChannel !== 'undefined') {
+        bc = new BroadcastChannel('vyapar_users_sync');
+        bc.onmessage = (event) => {
+          if (event.data?.type === 'USER_SYNCED' && event.data?.user) {
+            const newUser = event.data.user;
+            fetchAllUsersFromFirestore().then(updatedUsers => {
+              callback(updatedUsers);
+            }).catch(() => {});
+          }
+        };
+      }
+    } catch (e) {}
+
+    return () => {
+      try { unsubscribe(); } catch (e) {}
+      try { bc?.close(); } catch (e) {}
+    };
   } catch (err) {
-    console.warn('Real-time users listener setup note:', err);
+    console.warn('subscribeToUsersFromFirestore error:', err);
+    fetchAllUsersFromFirestore().then(fallbackUsers => {
+      if (Array.isArray(fallbackUsers)) callback(fallbackUsers);
+    }).catch(() => {});
     return () => {};
   }
 }
@@ -1971,16 +2059,38 @@ export async function syncUserToFirestore(userData: any): Promise<boolean> {
     }
 
     // 2. Direct Firestore Persistence
-    const userRef = doc(db, 'users', uId);
-    await setDoc(userRef, {
-      ...cleanData,
-      serverSyncedAt: serverTimestamp()
-    }, { merge: true });
+    try {
+      const userRef = doc(db, 'users', uId);
+      await setDoc(userRef, {
+        ...cleanData,
+        serverSyncedAt: serverTimestamp()
+      }, { merge: true });
+      console.log(`✅ User profile synced to Firestore: ${uId}`);
+    } catch (fsErr) {
+      console.warn('Firestore syncUser notice (using server & local fallback):', fsErr);
+    }
 
-    console.log(`✅ User profile synced to Firestore: ${uId}`);
+    // 3. Sync to Node.js backend server API
+    try {
+      fetch('/api/users/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user: cleanData })
+      }).catch(() => {});
+    } catch (e) {}
+
+    // 4. Broadcast to other open tabs
+    try {
+      if (typeof BroadcastChannel !== 'undefined') {
+        const bc = new BroadcastChannel('vyapar_users_sync');
+        bc.postMessage({ type: 'USER_SYNCED', user: cleanData });
+        bc.close();
+      }
+    } catch (e) {}
+
     return true;
   } catch (err) {
-    console.warn('Firestore syncUser note:', err);
+    console.warn('syncUserToFirestore error:', err);
     return false;
   }
 }

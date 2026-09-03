@@ -5,6 +5,7 @@ import { toast } from 'react-hot-toast';
 import { authenticateUserInFirestore, syncUserToFirestore } from '../services/firebaseDataSync';
 import { GstInput } from './GstInput';
 import { BRAND_LOGO_SRC, BRAND_NAME, BRAND_MOTTO } from '../constants/brandLogo';
+import { ALL_CATEGORY_OPTIONS, ALL_INDUSTRIES } from '../constants/industryData';
 
 interface AuthPageProps {
   tab?: 'login' | 'register';
@@ -37,6 +38,8 @@ export function AuthPage({ tab = 'login', user, onUpdateUser, isModal = false, o
   const [regPhone, setRegPhone] = useState('');
   const [regPassword, setRegPassword] = useState('');
   const [regRole, setRegRole] = useState<'customer' | 'dealer' | 'manufacturer' | 'architect'>('customer');
+  const [regCategory, setRegCategory] = useState('Tiles & Ceramics (टाइल व सेनेटरी वेयर)');
+  const [customCategory, setCustomCategory] = useState('');
   const [regGstin, setRegGstin] = useState('');
   const [isGstValid, setIsGstValid] = useState(true);
 
@@ -99,6 +102,7 @@ export function AuthPage({ tab = 'login', user, onUpdateUser, isModal = false, o
         phone: regPhone.trim(),
         password: regPassword.trim(),
         role: regRole,
+        category: (regCategory === 'other' ? customCategory.trim() : regCategory) || 'Tiles & Ceramics (टाइल व सेनेटरी वेयर)',
         gstin: regGstin.trim().toUpperCase(),
         isVerified: false,
         membershipType: 'free',
@@ -363,6 +367,33 @@ export function AuthPage({ tab = 'login', user, onUpdateUser, isModal = false, o
                 <option value="manufacturer">Company / Factory / Manufacturer</option>
                 <option value="architect">Architect / Interior Designer</option>
               </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-700 dark:text-zinc-300 mb-1">Business Industry / Category</label>
+              <select 
+                id="reg-category-select"
+                value={regCategory} 
+                onChange={(e) => setRegCategory(e.target.value)} 
+                className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:border-blue-500 text-slate-900 dark:text-zinc-100 font-semibold"
+              >
+                {ALL_CATEGORY_OPTIONS.map((cat, idx) => (
+                  <option key={idx} value={cat}>
+                    {cat}
+                  </option>
+                ))}
+                <option value="other">➕ Other / Custom Category...</option>
+              </select>
+              {regCategory === 'other' && (
+                <input
+                  type="text"
+                  required
+                  value={customCategory}
+                  onChange={(e) => setCustomCategory(e.target.value)}
+                  placeholder="Enter your custom business category / trade"
+                  className="w-full mt-2 bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl px-3.5 py-2 text-xs focus:outline-none focus:border-blue-500 text-slate-900 dark:text-zinc-100 font-semibold"
+                />
+              )}
             </div>
 
             {/* GST input component integration */}

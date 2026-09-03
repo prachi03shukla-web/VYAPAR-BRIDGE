@@ -23,6 +23,7 @@ import { isAppLockedOut, recordFailedAdminAttempt, recordSuccessfulAdminLogin, s
 import { AdRatingComponent } from './components/AdRatingComponent';
 import { ALL_INDUSTRIES, ALL_CATEGORY_OPTIONS, matchIndustryOrSubcategory } from './constants/industryData';
 import { IndustryCommerceHub } from './components/IndustryCommerceHub';
+import { BusinessDirectoryPage } from './components/BusinessDirectoryPage';
 import { PdfCardViewer } from './components/PdfCardViewer';
 import { MultiImageCollage } from './components/MultiImageCollage';
 import { AdminPanel } from './components/AdminPanel';
@@ -58,6 +59,8 @@ import { captureReferralCodeFromUrl, recordNewUserReferral, checkAndUpdateReferr
 import { resolveUserAvatar, getInitialsAvatar, updateCachedUsers, resolveAuthorInfo } from './utils/userAvatar';
 import { addToCart, isItemInCart, getCartItems } from './utils/cartManager';
 import { safeSaveUser, safeSetLocalStorage, safeGetLocalStorage, safeRemoveLocalStorage, cleanupStorageQuota } from './utils/safeStorage';
+import { BackgroundUploadFloatingWidget } from './components/BackgroundUploadFloatingWidget';
+import { backgroundUploader } from './services/backgroundUploadManager';
 
 
 export function renderSafeCommentText(content: string, isAuthorOrAdmin = false): { text: string; masked: boolean } {
@@ -238,8 +241,8 @@ export function filterOutHiddenContent(items: any[], userId?: string | number) {
       return false;
     }
 
-    // Ephemeral story check (only true 24-hour stories expire after 24h, regular posts and reels remain permanent)
-    const isEphemeralStory = item.type === 'story' || item.isStory === true;
+    // Ephemeral story check (only true 24-hour stories expire after 24h, regular posts remain permanent)
+    const isEphemeralStory = (item.type === 'story' || item.isStory === true) && !item.isPermanent;
     if (isEphemeralStory) {
       const createdAtMs = getTimestampMs(item.createdAt);
       const ageMs = Date.now() - createdAtMs;
@@ -519,7 +522,7 @@ export function AdMediaDisplay({ ad, className, onMediaEnded, autoPlay = false }
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Listen to global mute changes & global video playback
+  // Listen to global mute changes, global video playback, and visibility
   useEffect(() => {
     const handleMuteChange = (e: any) => {
       const newMuted = !!e.detail?.muted;
@@ -536,17 +539,47 @@ export function AdMediaDisplay({ ad, className, onMediaEnded, autoPlay = false }
       const playingId = e.detail?.id;
       if (playingId && playingId !== (ad?.id || mediaSrc)) {
         setIsPlaying(false);
-        if (videoRef.current) videoRef.current.pause();
+        if (videoRef.current) {
+          try { videoRef.current.pause(); } catch(e) {}
+        }
         if (iframeRef.current?.contentWindow) {
           iframeRef.current.contentWindow.postMessage(JSON.stringify({ event: 'command', func: 'pauseVideo', args: '' }), '*');
         }
       }
     };
+    const handlePauseAll = () => {
+      setIsPlaying(false);
+      if (videoRef.current) {
+        try { videoRef.current.pause(); } catch(e) {}
+      }
+      if (iframeRef.current?.contentWindow) {
+        iframeRef.current.contentWindow.postMessage(JSON.stringify({ event: 'command', func: 'pauseVideo', args: '' }), '*');
+      }
+    };
+    const handleVisibility = () => {
+      if (document.hidden) {
+        setIsPlaying(false);
+        if (videoRef.current) {
+          try { videoRef.current.pause(); } catch(e) {}
+        }
+        if (iframeRef.current?.contentWindow) {
+          iframeRef.current.contentWindow.postMessage(JSON.stringify({ event: 'command', func: 'pauseVideo', args: '' }), '*');
+        }
+      }
+    };
+
     window.addEventListener('vyapar_global_mute_change', handleMuteChange);
     window.addEventListener('globalVideoPlay', handleGlobalPlay);
+    window.addEventListener('pause_all_feed_videos', handlePauseAll);
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('pagehide', handleVisibility);
+
     return () => {
       window.removeEventListener('vyapar_global_mute_change', handleMuteChange);
       window.removeEventListener('globalVideoPlay', handleGlobalPlay);
+      window.removeEventListener('pause_all_feed_videos', handlePauseAll);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('pagehide', handleVisibility);
     };
   }, [ad?.id, mediaSrc]);
 
@@ -675,7 +708,7 @@ export function AdMediaDisplay({ ad, className, onMediaEnded, autoPlay = false }
       (entries) => {
         entries.forEach((entry) => {
           const inView = entry.isIntersecting && entry.intersectionRatio >= 0.35;
-          setIsInView(prev => (prev === inView ? prev : inView));
+          setIsInView(inView);
           if (inView) {
             if (autoPlay || hasStartedPlaying) {
               window.dispatchEvent(new CustomEvent('globalVideoPlay', { detail: { id: ad?.id || mediaSrc } }));
@@ -690,8 +723,9 @@ export function AdMediaDisplay({ ad, className, onMediaEnded, autoPlay = false }
               }
             }
           } else {
+            setIsPlaying(false);
             if (videoRef.current) {
-              videoRef.current.pause();
+              try { videoRef.current.pause(); } catch(e) {}
             }
             if (iframeRef.current?.contentWindow) {
               iframeRef.current.contentWindow.postMessage(JSON.stringify({ event: 'command', func: 'pauseVideo', args: '' }), '*');
@@ -699,10 +733,13 @@ export function AdMediaDisplay({ ad, className, onMediaEnded, autoPlay = false }
           }
         });
       },
-      { threshold: 0.35 }
+      { threshold: [0.0, 0.2, 0.35, 0.6] }
     );
     observer.observe(el);
     return () => {
+      if (videoRef.current) {
+        try { videoRef.current.pause(); } catch(e) {}
+      }
       observer.disconnect();
     };
   }, [ad?.id, mediaSrc, autoPlay, hasStartedPlaying]);
@@ -2213,7 +2250,7 @@ export function VerifiedPaymentModal({ isOpen, onClose, user, onSuccess }: { isO
 
 export function validateMediaDuration(file: File): Promise<{ valid: boolean; duration: number; message?: string }> {
   return new Promise((resolve) => {
-    if (!file.type.startsWith('video') && !file.name.match(/\.(mp4|webm|mov|m4v)$/i)) {
+    if (!file.type.startsWith('video') && !file.name.match(/\.(mp4|webm|mov|m4v|mkv)$/i)) {
       resolve({ valid: true, duration: 0 });
       return;
     }
@@ -2227,7 +2264,7 @@ export function validateMediaDuration(file: File): Promise<{ valid: boolean; dur
         resolve({ 
           valid: false, 
           duration, 
-          message: `Reel duration (${Math.round(duration)}s) exceeds 60 seconds limit. Please select a video under 60 seconds.` 
+          message: `Story video ki maximum limit 60 seconds (1 minute) hai. Aapka video ${Math.round(duration)}s ka hai. Kripya 60 seconds se kam ka video chunein.` 
         });
       } else {
         resolve({ valid: true, duration });
@@ -3791,18 +3828,53 @@ function FullScreenFeedViewerModal({
     }
   };
 
-  // Media sources detection
-  const mediaSrc = currentPost?.mediaUrl || currentPost?.videoUrl || currentPost?.persistentMediaUrl || currentPost?.thumbnailUrl || '';
-  const posterSrc = currentPost?.thumbnailUrl || currentPost?.poster || '';
-  const isVideo = Boolean(currentPost?.type === 'video' || (mediaSrc && (
-    mediaSrc.startsWith('data:video') || 
-    mediaSrc.startsWith('blob:') || 
-    mediaSrc.startsWith('indexeddb:') || 
-    /\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(mediaSrc)
-  )));
-  const isExplicitPdf = Boolean(currentPost?.type === 'pdf' || (mediaSrc && (mediaSrc.endsWith('.pdf') || mediaSrc.includes('.pdf') || mediaSrc.includes('application/pdf'))));
-  const audioSrc = currentPost?.music?.audioUrl || currentPost?.musicUrl || currentPost?.audioUrl || currentPost?.audio || (currentPost?.musicTitle ? currentPost?.musicUrl : '') || '';
-  const musicInfo = currentPost?.music || (currentPost?.musicTitle ? { title: currentPost.musicTitle, artist: currentPost.musicArtist } : null);
+  // Media sources detection with resilient fallback chains
+  const isVideo = Boolean(
+    currentPost?.type === 'video' ||
+    currentPost?.type === 'reel' ||
+    currentPost?.isReel === true ||
+    Boolean(currentPost?.videoUrl) ||
+    Boolean(currentPost?.video) ||
+    Boolean(currentPost?.mediaUrl && (
+      currentPost.mediaUrl.startsWith('data:video') || 
+      currentPost.mediaUrl.startsWith('blob:') || 
+      currentPost.mediaUrl.startsWith('indexeddb:') || 
+      /\.(mp4|webm|mov|m4v|mkv|ogv|m3u8)(\?.*)?$/i.test(currentPost.mediaUrl) ||
+      currentPost.mediaUrl.includes('/video/') ||
+      currentPost.mediaUrl.includes('video/upload') ||
+      (currentPost.mediaUrl.includes('firebasestorage.googleapis.com') && currentPost.mediaUrl.includes('reel'))
+    ))
+  );
+
+  const primaryMediaSrc = isVideo
+    ? (currentPost?.videoUrl || currentPost?.video || currentPost?.mediaUrl || currentPost?.persistentMediaUrl || '')
+    : (currentPost?.mediaUrl || currentPost?.image || (Array.isArray(currentPost?.images) && currentPost.images[0]) || currentPost?.persistentMediaUrl || currentPost?.thumbnailUrl || currentPost?.poster || '');
+
+  const persistentFallbackSrc = currentPost?.persistentMediaUrl || currentPost?.thumbnailUrl || currentPost?.poster || (Array.isArray(currentPost?.images) && currentPost.images[0]) || '';
+  const [activeMediaSrc, setActiveMediaSrc] = useState<string>(primaryMediaSrc);
+  const mediaSrc = activeMediaSrc || primaryMediaSrc || persistentFallbackSrc || '';
+
+  useEffect(() => {
+    setActiveMediaSrc(primaryMediaSrc);
+  }, [primaryMediaSrc, currentIndex]);
+
+  const posterSrc = currentPost?.thumbnailUrl || currentPost?.poster || persistentFallbackSrc || '';
+  const isExplicitPdf = Boolean(currentPost?.type === 'pdf' || (activeMediaSrc && (activeMediaSrc.endsWith('.pdf') || activeMediaSrc.includes('.pdf') || activeMediaSrc.includes('application/pdf'))));
+  const audioSrc = currentPost?.music?.audioUrl 
+    || currentPost?.music?.musicUrl 
+    || currentPost?.music?.url 
+    || currentPost?.selectedMusic?.audioUrl 
+    || currentPost?.selectedMusic?.musicUrl 
+    || currentPost?.selectedMusic?.url 
+    || currentPost?.audioUrl 
+    || currentPost?.audio 
+    || currentPost?.musicUrl 
+    || currentPost?.soundUrl 
+    || (currentPost?.musicTitle && currentPost?.musicUrl ? currentPost.musicUrl : '') 
+    || '';
+  const musicInfo = currentPost?.music 
+    || currentPost?.selectedMusic 
+    || (currentPost?.musicTitle ? { title: currentPost.musicTitle, artist: currentPost.musicArtist } : null);
   const hasAudioTrack = Boolean(audioSrc);
 
   // Playback control on hold / pause
@@ -3821,24 +3893,25 @@ function FullScreenFeedViewerModal({
   }, [isHolding, isPaused]);
 
   // Static Image Timer (Only runs when there is NO audio track and NO video)
+  // Standard WhatsApp style: at least 10 seconds for pure image stories
   useEffect(() => {
     if (staticTimerRef.current) clearInterval(staticTimerRef.current);
     setProgressPercent(0);
 
     if (!currentPost) return;
 
-    // If story has sound (custom audio track or video), that media element controls progression!
+    // If story has sound (custom audio track or video), that media element controls progression and jump timing!
     if (hasAudioTrack || isVideo) {
       return;
     }
 
-    // Static image without sound: 5 seconds duration
-    const duration = 5000;
+    // Static image without sound: Exactly 10 seconds duration (WhatsApp status style)
+    const duration = 10000;
     staticStartTimeRef.current = Date.now();
 
     staticTimerRef.current = setInterval(() => {
       if (isHolding || isPaused) {
-        // Adjust start time while paused so elapsed does not jump
+        // Adjust start time while paused so elapsed time freezes and does not jump
         staticStartTimeRef.current += 30;
         return;
       }
@@ -4037,6 +4110,38 @@ function FullScreenFeedViewerModal({
         </button>
       </div>
 
+      {/* Outer desktop previous jump button */}
+      {currentIndex > 0 && (
+        <div className="hidden md:flex absolute left-6 lg:left-12 top-1/2 -translate-y-1/2 z-50 pointer-events-auto">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              goToPrev();
+            }}
+            className="w-12 h-12 bg-black/60 hover:bg-black/85 text-white/90 hover:text-white rounded-full flex items-center justify-center backdrop-blur-md border border-white/20 transition-all cursor-pointer hover:scale-110 active:scale-90 shadow-2xl"
+            title="Previous Story"
+          >
+            <ChevronLeft className="w-6 h-6" />
+          </button>
+        </div>
+      )}
+
+      {/* Outer desktop next jump button */}
+      {currentIndex < posts.length - 1 && (
+        <div className="hidden md:flex absolute right-6 lg:right-12 top-1/2 -translate-y-1/2 z-50 pointer-events-auto">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              goToNext();
+            }}
+            className="w-12 h-12 bg-black/60 hover:bg-black/85 text-white/90 hover:text-white rounded-full flex items-center justify-center backdrop-blur-md border border-white/20 transition-all cursor-pointer hover:scale-110 active:scale-90 shadow-2xl"
+            title="Next Story"
+          >
+            <ChevronRight className="w-6 h-6" />
+          </button>
+        </div>
+      )}
+
       {/* Main WhatsApp Status Frame (Edge-to-edge on mobile, sleek phone frame on desktop) */}
       <div 
         onClick={e => e.stopPropagation()} 
@@ -4154,8 +4259,8 @@ function FullScreenFeedViewerModal({
           </div>
         </div>
 
-        {/* Audio Track Engine for Custom Story Music (No loop; auto advances on ended) */}
-        {audioSrc && (
+        {/* Audio Track Engine for Custom Story Music (Plays full duration of attached sound, then auto advances) */}
+        {audioSrc && !isVideo && (
           <audio 
             key={`story_audio_${currentPost.id || currentIndex}_${audioSrc}`}
             ref={audioRef}
@@ -4163,6 +4268,7 @@ function FullScreenFeedViewerModal({
             autoPlay={!isPaused && !isHolding}
             muted={isMuted}
             playsInline
+            preload="auto"
             onTimeUpdate={(e) => {
               const a = e.currentTarget;
               if (a && a.duration && !isNaN(a.duration) && a.duration > 0) {
@@ -4171,13 +4277,14 @@ function FullScreenFeedViewerModal({
               }
             }}
             onEnded={() => {
+              setProgressPercent(100);
               goToNext();
             }}
             onError={() => {
-              // Fallback to normal 5s timer if audio file is unplayable
+              // Fallback to WhatsApp style 10s timer if audio file is unplayable
               setTimeout(() => {
                 if (currentIndex === posts.indexOf(currentPost)) goToNext();
-              }, 5000);
+              }, 10000);
             }}
             className="hidden"
           />
@@ -4240,11 +4347,11 @@ function FullScreenFeedViewerModal({
             >
               {isExplicitPdf ? (
                 <div className="w-full h-full flex items-center justify-center bg-slate-950 p-3 sm:p-4 overflow-y-auto pointer-events-auto">
-                  <PdfCardViewer post={{ ...currentPost, mediaUrl: mediaSrc || currentPost?.mediaUrl }} variant="feed" />
+                  <PdfCardViewer post={{ ...currentPost, mediaUrl: activeMediaSrc || currentPost?.mediaUrl }} variant="feed" />
                 </div>
-              ) : (isYouTubeUrl(mediaSrc) || isYouTubeUrl(currentPost?.externalLink)) ? (
+              ) : (isYouTubeUrl(activeMediaSrc) || isYouTubeUrl(currentPost?.externalLink)) ? (
                 <UniversalYouTubePlayer 
-                  url={mediaSrc || currentPost?.externalLink} 
+                  url={activeMediaSrc || currentPost?.externalLink} 
                   isReel={true} 
                   aspectRatio="9:16" 
                   className="relative z-10 w-full h-full object-contain pointer-events-auto" 
@@ -4253,16 +4360,27 @@ function FullScreenFeedViewerModal({
                   id={`story_${currentPost?.id || currentIndex}`}
                   onEnded={goToNext}
                 />
-              ) : isVideo && mediaSrc ? (
+              ) : isVideo && activeMediaSrc ? (
                 <video
                   ref={videoRef}
-                  key={`story_vid_${currentPost.id || currentIndex}_${mediaSrc}`}
-                  src={mediaSrc}
+                  key={`story_vid_${currentPost.id || currentIndex}_${activeMediaSrc}`}
+                  src={activeMediaSrc}
                   poster={posterSrc}
                   playsInline
                   autoPlay={!isPaused && !isHolding}
                   muted={isMuted}
+                  preload="auto"
                   className="w-full h-full object-contain bg-transparent relative z-10"
+                  onLoadedMetadata={(e) => {
+                    const v = e.currentTarget;
+                    if (v && !isPaused && !isHolding) {
+                      v.play().catch(() => {
+                        // Fallback play if browser requires muted initial gesture
+                        v.muted = true;
+                        v.play().catch(() => {});
+                      });
+                    }
+                  }}
                   onTimeUpdate={(e) => {
                     const v = e.currentTarget;
                     if (v && v.duration && !isNaN(v.duration) && v.duration > 0) {
@@ -4271,18 +4389,29 @@ function FullScreenFeedViewerModal({
                     }
                   }}
                   onEnded={() => {
+                    setProgressPercent(100);
                     goToNext();
                   }}
                   onError={() => {
-                    setTimeout(goToNext, 3500);
+                    if (activeMediaSrc !== persistentFallbackSrc && persistentFallbackSrc) {
+                      setActiveMediaSrc(persistentFallbackSrc);
+                    }
                   }}
                 />
               ) : (
                 <img 
-                  src={mediaSrc} 
+                  src={activeMediaSrc || persistentFallbackSrc || posterSrc} 
                   alt={currentPost.title || 'Story'}
                   className="relative z-10 w-full h-full object-contain transition-all duration-200 bg-transparent"
-                  onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                  onError={(e) => { 
+                    if (activeMediaSrc !== persistentFallbackSrc && persistentFallbackSrc) {
+                      setActiveMediaSrc(persistentFallbackSrc);
+                    } else if (activeMediaSrc !== posterSrc && posterSrc) {
+                      setActiveMediaSrc(posterSrc);
+                    } else {
+                      e.currentTarget.style.display = 'none'; 
+                    }
+                  }}
                 />
               )}
             </motion.div>
@@ -4789,14 +4918,53 @@ export function formatPostTimeAgo(createdAt: number | string | Date | undefined)
 
 function FeedImageWithAudio({
   src,
-  audioSrc
+  images,
+  audioSrc,
+  musicTitle,
+  musicArtist,
+  title,
+  onDoubleClick,
+  onTouchStart,
+  onTouchEnd
 }: {
-  src: string;
+  src?: string;
+  images?: string[];
   audioSrc: string;
+  musicTitle?: string;
+  musicArtist?: string;
+  title?: string;
+  onDoubleClick?: () => void;
+  onTouchStart?: () => void;
+  onTouchEnd?: () => void;
 }) {
   const audioRef = React.useRef<HTMLAudioElement>(null);
   const containerRef = React.useRef<HTMLDivElement>(null);
   const [isMuted, setIsMuted] = useState<boolean>(() => isGlobalVideoMuted());
+  const [isPlaying, setIsPlaying] = useState<boolean>(false);
+  const inViewRef = React.useRef<boolean>(false);
+
+  const displaySrc = (images && images.length > 0 ? images[0] : '') || src || '';
+
+  const pauseAudio = React.useCallback(() => {
+    if (audioRef.current && !audioRef.current.paused) {
+      try { audioRef.current.pause(); } catch(e) {}
+    }
+    setIsPlaying(false);
+  }, []);
+
+  const playAudio = React.useCallback(() => {
+    if (!inViewRef.current || isGlobalVideoMuted() || (typeof document !== 'undefined' && document.hidden)) {
+      pauseAudio();
+      return;
+    }
+    if (audioRef.current) {
+      audioRef.current.muted = false;
+      const p = audioRef.current.play();
+      if (p !== undefined) {
+        p.then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
+      }
+    }
+  }, [pauseAudio]);
 
   useEffect(() => {
     const handleMuteChange = (e: any) => {
@@ -4804,16 +4972,46 @@ function FeedImageWithAudio({
       setIsMuted(newMuted);
       if (audioRef.current) {
         audioRef.current.muted = newMuted;
-        if (!newMuted) {
-          audioRef.current.play().catch(() => {});
+        if (!newMuted && inViewRef.current && !document.hidden) {
+          playAudio();
         } else {
-          audioRef.current.pause();
+          pauseAudio();
         }
       }
     };
+
+    const handleGlobalPlay = (e: any) => {
+      if (e.detail?.id !== audioSrc) {
+        pauseAudio();
+      }
+    };
+
+    const handlePauseAll = () => {
+      pauseAudio();
+    };
+
+    const handleVisibility = () => {
+      if (document.hidden) {
+        pauseAudio();
+      } else if (inViewRef.current && !isGlobalVideoMuted()) {
+        playAudio();
+      }
+    };
+
     window.addEventListener('vyapar_global_mute_change', handleMuteChange);
-    return () => window.removeEventListener('vyapar_global_mute_change', handleMuteChange);
-  }, []);
+    window.addEventListener('globalVideoPlay', handleGlobalPlay);
+    window.addEventListener('pause_all_feed_videos', handlePauseAll);
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('pagehide', handleVisibility);
+
+    return () => {
+      window.removeEventListener('vyapar_global_mute_change', handleMuteChange);
+      window.removeEventListener('globalVideoPlay', handleGlobalPlay);
+      window.removeEventListener('pause_all_feed_videos', handlePauseAll);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('pagehide', handleVisibility);
+    };
+  }, [pauseAudio, playAudio, audioSrc]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -4822,46 +5020,128 @@ function FeedImageWithAudio({
     const observer = new IntersectionObserver((entries) => {
       entries.forEach(entry => {
         const inView = entry.isIntersecting && entry.intersectionRatio >= 0.35;
+        inViewRef.current = inView;
         if (!inView) {
-          if (audioRef.current && !audioRef.current.paused) {
-            audioRef.current.pause();
-          }
+          pauseAudio();
         } else {
-          if (audioRef.current && !isGlobalVideoMuted()) {
-            audioRef.current.muted = false;
-            audioRef.current.play().catch(() => {});
+          if (!isGlobalVideoMuted() && !document.hidden) {
+            playAudio();
           }
         }
       });
     }, { threshold: [0.0, 0.2, 0.35, 0.6, 0.8] });
     
     observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
+    return () => {
+      pauseAudio();
+      observer.disconnect();
+    };
+  }, [pauseAudio, playAudio]);
 
-  const toggleMute = (e: React.MouseEvent) => {
+  const togglePlayPause = (e: React.MouseEvent) => {
+    e.preventDefault();
     e.stopPropagation();
-    const newMuted = !isMuted;
-    setGlobalVideoMuted(newMuted);
+    if (!audioRef.current) return;
+
+    if (isPlaying && !audioRef.current.paused) {
+      pauseAudio();
+      setIsMuted(true);
+      setGlobalVideoMuted(true);
+    } else {
+      audioRef.current.muted = false;
+      setIsMuted(false);
+      setGlobalVideoMuted(false);
+      window.dispatchEvent(new CustomEvent('globalVideoPlay', { detail: { id: audioSrc } }));
+      const playPromise = audioRef.current.play();
+      if (playPromise !== undefined) {
+        playPromise
+          .then(() => setIsPlaying(true))
+          .catch(() => {
+            if (audioRef.current) {
+              audioRef.current.muted = false;
+              audioRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
+            }
+          });
+      }
+    }
   };
 
   return (
-    <div ref={containerRef} className="relative w-full h-full">
-      <img 
-        src={src} 
-        alt="Post media" 
-        className="w-full h-full max-h-[80vh] object-contain bg-black pointer-events-none" 
-        onError={(e) => {
-          e.currentTarget.style.display = 'none';
-        }}
+    <div ref={containerRef} className="relative w-full h-full select-none overflow-hidden rounded-xl">
+      {/* Media: Multi-image collage or Single Image */}
+      {images && images.length > 1 ? (
+        <MultiImageCollage
+          images={images}
+          title={title || musicTitle || "Post image"}
+          onDoubleClick={onDoubleClick}
+          onTouchStart={onTouchStart}
+          onTouchEnd={onTouchEnd}
+        />
+      ) : (
+        <div 
+          className="w-full bg-black min-h-[300px] max-h-[80vh] flex items-center justify-center overflow-hidden cursor-pointer"
+          onDoubleClick={onDoubleClick}
+          onTouchStart={onTouchStart}
+          onTouchEnd={onTouchEnd}
+        >
+          <img 
+            src={displaySrc} 
+            alt={title || "Post media"} 
+            className="w-full h-full max-h-[80vh] object-contain bg-zinc-950 transition-transform duration-300 pointer-events-none" 
+            onError={(e) => {
+              (e.currentTarget as HTMLImageElement).src = 'https://images.unsplash.com/photo-1560179707-f14e90ef3623?w=800&auto=format&fit=crop&q=80';
+            }}
+          />
+        </div>
+      )}
+
+      {/* Hidden Audio Element */}
+      <audio 
+        ref={audioRef} 
+        src={audioSrc} 
+        loop 
+        preload="metadata" 
+        muted={isMuted}
+        onPlay={() => setIsPlaying(true)}
+        onPause={() => setIsPlaying(false)}
+        onEnded={() => setIsPlaying(false)}
       />
-      <audio ref={audioRef} src={audioSrc} loop preload="metadata" muted={isMuted} />
+
+      {/* Top Floating Music Pill Badge */}
+      <div className="absolute top-3 left-3 z-30 flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/75 hover:bg-black/90 backdrop-blur-md border border-white/25 text-white shadow-xl pointer-events-none max-w-[75%] transition-all">
+        <Music className={`w-3.5 h-3.5 shrink-0 ${isPlaying ? 'text-amber-400 animate-spin' : 'text-zinc-400'}`} />
+        <span className="text-[11px] font-bold text-zinc-100 truncate">{musicTitle || 'Attached Sound'}</span>
+        {musicArtist && <span className="text-[10px] text-zinc-400 truncate">• {musicArtist}</span>}
+      </div>
+
+      {/* Primary Floating Speaker / Sound Control Button (Always Visible & Prominent) */}
       <button
-        onClick={toggleMute}
-        className="absolute bottom-3 right-3 z-20 p-2.5 rounded-full bg-black/65 hover:bg-black/85 text-white backdrop-blur-md border border-white/20 transition-transform active:scale-95 shadow-xl cursor-pointer"
-        title={isMuted ? "Unmute Music" : "Mute Music"}
+        type="button"
+        onClick={togglePlayPause}
+        className={`absolute bottom-3.5 right-3.5 z-30 flex items-center gap-2 px-3.5 py-2 rounded-full backdrop-blur-md shadow-2xl transition-all duration-200 transform hover:scale-105 active:scale-95 cursor-pointer border ${
+          isPlaying
+            ? 'bg-amber-600/90 hover:bg-amber-600 text-white border-amber-300 shadow-[0_4px_20px_rgba(245,158,11,0.5)]'
+            : 'bg-black/80 hover:bg-black/95 text-white border-white/35 hover:border-white/60 shadow-black/80'
+        }`}
+        title={isPlaying ? "Click to Pause Audio" : "Click to Play Audio"}
+        aria-label={isPlaying ? "Pause Sound" : "Play Sound"}
       >
-        {isMuted ? <VolumeX className="w-4 h-4 text-white" /> : <Volume2 className="w-4 h-4 text-white" />}
+        {isPlaying ? (
+          <>
+            <div className="flex items-center gap-0.5 h-3.5 py-0.5">
+              <span className="w-0.5 h-full bg-white rounded-full animate-[bounce_0.8s_infinite_100ms]" />
+              <span className="w-0.5 h-2.5 bg-white rounded-full animate-[bounce_0.8s_infinite_250ms]" />
+              <span className="w-0.5 h-3.5 bg-white rounded-full animate-[bounce_0.8s_infinite_400ms]" />
+            </div>
+            <Volume2 className="w-4 h-4 text-white shrink-0" />
+            <span className="text-[11px] font-black tracking-wider uppercase text-white">Pause</span>
+          </>
+        ) : (
+          <>
+            <VolumeX className="w-4 h-4 text-amber-400 shrink-0" />
+            <span className="text-[11px] font-black tracking-wider uppercase text-white">Play Sound</span>
+          </>
+        )}
       </button>
     </div>
   );
@@ -5671,7 +5951,23 @@ const PostItem = React.memo(function PostItem({
     ? (rawVideoUrl || '')
     : (post.mediaUrl || post.persistentMediaUrl || post.thumbnailUrl || (post.id ? localStorage.getItem('vyapar_video_' + post.id) : null) || '');
   const [imageLoadError, setImageLoadError] = useState(false);
-  const postMusic = post.music || (post.musicTitle ? { title: post.musicTitle, artist: post.musicArtist, audioUrl: post.musicUrl } : null);
+  const attachedAudioUrl = 
+    post?.music?.audioUrl || 
+    post?.music?.url || 
+    post?.music?.musicUrl || 
+    post?.musicUrl || 
+    post?.audioUrl || 
+    post?.audio || 
+    post?.soundUrl || 
+    post?.sound || 
+    (post?.musicTitle && post?.musicUrl ? post.musicUrl : '') || 
+    '';
+
+  const postMusic = post.music || (attachedAudioUrl ? { 
+    title: post.musicTitle || post.soundTitle || post.music?.title || 'Attached Sound', 
+    artist: post.musicArtist || post.music?.artist || post.user?.name || post.userName || '', 
+    audioUrl: attachedAudioUrl 
+  } : null);
   
   // Media Type Checks for B2B Marketplace (Image & PDF Catalog vs Video/Reel)
   
@@ -6768,8 +7064,18 @@ const PostItem = React.memo(function PostItem({
                <audio src={mediaSrc} controls className="w-full max-w-[300px]" />
                <p className="mt-4 text-xs font-bold text-indigo-200 text-center uppercase tracking-widest">{post.title || 'Audio Post'}</p>
             </div>
-          ) : postMusic?.audioUrl ? (
-            <FeedImageWithAudio src={mediaSrc} audioSrc={postMusic.audioUrl} />
+          ) : (postMusic?.audioUrl || attachedAudioUrl) ? (
+            <FeedImageWithAudio 
+              src={mediaSrc} 
+              images={postImages}
+              audioSrc={postMusic?.audioUrl || attachedAudioUrl} 
+              musicTitle={postMusic?.title || post.musicTitle || post.soundTitle || 'Attached Sound'}
+              musicArtist={postMusic?.artist || post.musicArtist || post.user?.name}
+              title={post.title || "Post"}
+              onDoubleClick={handleDoubleClickImage}
+              onTouchStart={handleTouchStartImage}
+              onTouchEnd={handleTouchEndImage}
+            />
           ) : postImages.length > 0 ? (
             <MultiImageCollage
               images={postImages}
@@ -7758,9 +8064,12 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
     
     const isStoryPost = (p: any) => {
       if (!p) return false;
-      if (p.type === 'video' || p.type === 'reel' || p.type === 'story' || p.type === 'image' || p.type === 'photo' || p.isReel || p.isStory) return true;
-      if (p.hashtags && (p.hashtags.includes('#reel') || p.hashtags.includes('#story') || p.hashtags.includes('#tiles'))) return true;
-      if (p.mediaUrl || p.videoUrl || p.video || (p.images && p.images.length > 0) || p.thumbnailUrl || p.externalLink) return true;
+      // Permanent standard posts created from CreatePost or general feed must NEVER appear in the Story circles
+      if (p.isPermanent === true || p.postedFrom === 'profile' || p.type === 'pdf') return false;
+      // Only explicit stories and reels appear in the top story tray
+      if (p.isStory === true || p.type === 'story') return true;
+      if (p.isReel === true || p.type === 'reel') return true;
+      if (p.postedFrom === 'story_tray' || p.postedFrom === 'navbar') return true;
       return false;
     };
 
@@ -8230,8 +8539,23 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
     const selectedFile = e.target.files?.[0];
     if (!selectedFile) return;
 
-    // Instant preview generation (0.001s zero delay)
     const isVideoFile = selectedFile.type.startsWith('video') || /\.(mp4|webm|mov|m4v|mkv)$/i.test(selectedFile.name);
+    
+    // Check 60-second limit for story videos
+    if (isVideoFile) {
+      try {
+        const validation = await validateMediaDuration(selectedFile);
+        if (!validation.valid) {
+          toast.error(validation.message || '⚠️ Story video limit maximum 60 seconds (1 minute) hai. Kripya 60s se chhota video upload karein!');
+          if (e.target) e.target.value = '';
+          return;
+        }
+      } catch (err) {
+        console.warn('Duration check note:', err);
+      }
+    }
+
+    // Instant preview generation (0.001s zero delay)
     setIsMediaReady(true); // For both images and videos, media controls are ready immediately!
     setReelAspectRatio('9/16');
     setPendingReelFile(selectedFile);
@@ -8239,13 +8563,6 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
     setReelPreviewUrl(objUrl);
     setIsPreviewModalOpen(true);
     if (e.target) e.target.value = '';
-
-    // Asynchronous background duration check without auto-dismissing
-    validateMediaDuration(selectedFile).then(validation => {
-      if (!validation.valid) {
-        toast.info('Note: Long videos (>60s) may process longer.', { id: 'reel_duration_note' });
-      }
-    }).catch(() => {});
   };
 
   const handleCustomAudioUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -8301,6 +8618,23 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
     }
 
     const isVideoFile = pendingReelFile.type.startsWith('video') || /\.(mp4|webm|mov|m4v|mkv)$/i.test(pendingReelFile.name);
+    
+    // Strict 60-second limit check before finalizing upload
+    if (isVideoFile) {
+      try {
+        const validation = await validateMediaDuration(pendingReelFile);
+        if (!validation.valid) {
+          toast.error(validation.message || '⚠️ Story video limit maximum 60 seconds (1 minute) hai. Kripya 60s se chhota video chunein!');
+          setIsPreviewModalOpen(false);
+          setPendingReelFile(null);
+          setReelPreviewUrl(null);
+          return;
+        }
+      } catch (err) {
+        console.warn('Duration check note:', err);
+      }
+    }
+
     const mediaType = isVideoFile ? 'video' : 'image';
     const reelId = `reel_${Date.now()}`;
 
@@ -8329,38 +8663,35 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
       setUploadProgress(currentPct);
     }, 150);
 
-    // 1. Direct Firebase Storage Upload for Permanent Vercel & Multi-device Playback
-    let firebaseStorageUrl = '';
+    // 1. Direct Cloudinary / Firebase Storage Upload for Permanent Multi-device & Vercel Playback
+    let cloudStorageUrl = '';
     try {
-      const sanitizedName = (pendingReelFile.name || 'video.mp4').replace(/[^a-zA-Z0-9.-]/g, '_');
+      const sanitizedName = (pendingReelFile.name || (isVideoFile ? 'video.mp4' : 'story.jpg')).replace(/[^a-zA-Z0-9.-]/g, '_');
       const storagePath = `reels/${reelId}_${sanitizedName}`;
-      uploadFileToFirebaseStorage(
+      cloudStorageUrl = await uploadFileToFirebaseStorage(
         pendingReelFile,
         storagePath,
         (pct) => {
           setUploadProgress(Math.max(currentPct, Math.round(pct)));
         }
-      ).then(url => {
-        if (url) firebaseStorageUrl = url;
-      }).catch(err => {
-        console.warn('Storage background upload note:', err);
-      });
+      );
     } catch (storageErr) {
-      console.warn('Direct Firebase Storage upload note:', storageErr);
+      console.warn('Direct Cloud upload note:', storageErr);
     }
 
     // Convert file to resilient persistent Data URL & Thumbnail (compressed to lightweight KB)
-    let persistentMediaUrl = firebaseStorageUrl || '';
+    let persistentMediaUrl = cloudStorageUrl || '';
     let videoThumbnailUrl = '';
-    let videoStreamUrl = firebaseStorageUrl || reelPreviewUrl || (pendingReelFile ? URL.createObjectURL(pendingReelFile) : '');
+    let videoStreamUrl = cloudStorageUrl || reelPreviewUrl || (pendingReelFile ? URL.createObjectURL(pendingReelFile) : '');
     try {
       if (!isVideoFile) {
         // High efficiency image compression (<85KB) so story saves to Firestore instantly and permanently
-        persistentMediaUrl = firebaseStorageUrl || (await optimizeImageForPersistence(pendingReelFile, 1080, 1920, 0.72));
-        videoThumbnailUrl = persistentMediaUrl;
+        const compressedBase64 = await optimizeImageForPersistence(pendingReelFile, 1080, 1920, 0.72);
+        persistentMediaUrl = cloudStorageUrl || compressedBase64;
+        videoThumbnailUrl = compressedBase64 || persistentMediaUrl;
       } else {
         videoThumbnailUrl = await generateVideoThumbnail(pendingReelFile);
-        if (!firebaseStorageUrl && pendingReelFile.size <= 0.5 * 1024 * 1024) {
+        if (!cloudStorageUrl && pendingReelFile.size <= 0.5 * 1024 * 1024) {
           try {
             const videoBase64 = await fileToDataURL(pendingReelFile);
             if (videoBase64 && videoBase64.startsWith('data:video')) {
@@ -8370,13 +8701,13 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
           } catch (e) {}
         }
         if (!persistentMediaUrl) {
-          persistentMediaUrl = firebaseStorageUrl || videoThumbnailUrl;
+          persistentMediaUrl = cloudStorageUrl || videoThumbnailUrl;
         }
 
         // Save local video cache
         try {
           await saveVideoBlob(reelId, pendingReelFile);
-          cacheVideoUrlInMemory(reelId, videoStreamUrl || localMediaUrl);
+          cacheVideoUrlInMemory(reelId, videoStreamUrl || cloudStorageUrl || videoThumbnailUrl);
         } catch (e) {
           console.warn('Failed to save reel video blob:', e);
         }
@@ -8385,7 +8716,7 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
       console.warn('Reel file conversion note:', e);
     }
 
-    const localMediaUrl = firebaseStorageUrl || (isVideoFile ? (videoStreamUrl || videoThumbnailUrl) : (persistentMediaUrl || videoThumbnailUrl));
+    const localMediaUrl = cloudStorageUrl || (isVideoFile ? (videoStreamUrl || videoThumbnailUrl) : (persistentMediaUrl || videoThumbnailUrl));
 
     const authorName = user?.name || localStorage.getItem('vyapar_user_name') || 'Vyapar Member';
     const authorAvatar = user?.avatarUrl || user?.avatar || localStorage.getItem('vyapar_user_avatar') || BRAND_LOGO_SRC;
@@ -8432,7 +8763,11 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
       ...(isVideoFile ? { videoUrl: videoStreamUrl, video: videoStreamUrl } : {}),
       thumbnailUrl: videoThumbnailUrl || localMediaUrl,
       persistentMediaUrl: persistentMediaUrl || videoThumbnailUrl || localMediaUrl,
-      category: 'Commercial Wholesale', postedFrom: 'navbar', isPermanent: false,
+      category: 'Commercial Wholesale',
+      postedFrom: 'story_tray',
+      isPermanent: false,
+      isStory: true,
+      isReel: isVideoFile,
       visibility: 'public',
       status: isPendingApproval ? 'pending' : 'approved',
       pending_admin_approval: isPendingApproval,
@@ -8464,81 +8799,16 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
     window.dispatchEvent(new CustomEvent('storyCreated', { detail: finalReelPost }));
 
     playBubblePopSound();
-    if (isPendingApproval) {
-      toast.info(moderation.userNotice || '⏳ Business Verification: Aapka post Admin Review me bhej diya gaya hai. Business network security ke liye moderation team verify karegi.');
-    } else {
-      toast.success('🎉 Reel & Story uploaded to your Profile Page and Story Feed!');
+    toast.success('🎉 Story & Reel upload started in background!');
+
+    // Start Instagram/Facebook style background upload to Cloudinary & Firestore
+    if (pendingReelFile) {
+      backgroundUploader.uploadStoryInBackground({
+        storyDraft: finalReelPost,
+        mediaFile: pendingReelFile,
+        previewUrl: reelPreviewUrl || finalReelPost.thumbnailUrl
+      });
     }
-
-    // Background server & Firestore sync without blocking UI
-    (async () => {
-      try {
-        let targetUrl = localMediaUrl;
-        let finalThumbnailUrl = videoThumbnailUrl || localMediaUrl;
-
-        const formData = new FormData();
-        formData.append("id", reelId);
-        formData.append("title", finalReelPost.title);
-        formData.append("content", finalReelPost.content);
-        formData.append("hashtags", finalReelPost.hashtags);
-        formData.append("userId", authorUser.id);
-        formData.append("userName", authorUser.name);
-        formData.append("userRole", authorUser.role);
-        formData.append("userAvatar", authorUser.avatarUrl);
-        formData.append("type", mediaType);
-        formData.append("thumbnailUrl", videoThumbnailUrl || localMediaUrl);
-        formData.append("persistentMediaUrl", persistentMediaUrl || videoThumbnailUrl || localMediaUrl);
-        formData.append("media", pendingReelFile);
-
-        const res = await fetch("/api/posts", { method: "POST", body: formData });
-        const data = await res.json();
-
-        if (data && data.success && data.post && data.post.mediaUrl) {
-          const serverMediaUrl = data.post.mediaUrl;
-          const isPersistent = (serverMediaUrl.startsWith("data:") || serverMediaUrl.startsWith("https://") || serverMediaUrl.startsWith("http://") || serverMediaUrl.startsWith("/uploads")) && !serverMediaUrl.includes("localhost");
-          if (isPersistent) {
-            targetUrl = serverMediaUrl;
-          }
-          if (data.post.thumbnailUrl) {
-            finalThumbnailUrl = data.post.thumbnailUrl;
-          }
-        }
-
-        const syncedPost = {
-          ...finalReelPost,
-          mediaUrl: targetUrl,
-          videoUrl: targetUrl,
-          video: targetUrl,
-          persistentMediaUrl: targetUrl,
-          thumbnailUrl: finalThumbnailUrl,
-          isStory: true,
-          isReel: isVideoFile
-        };
-
-        setPosts(prev => {
-          const updated = prev.map(p => String(p.id) === String(reelId) ? { ...p, ...syncedPost } : p);
-          try {
-            safeSetLocalStorage('VyaparBridge_cached_posts', updated.slice(0, 50));
-          } catch (e) {}
-          return updated;
-        });
-
-        try {
-          const existingStoryStr = localStorage.getItem('vyapar_my_stories');
-          const existingStories = existingStoryStr ? JSON.parse(existingStoryStr) : [];
-          const filteredStories = existingStories.filter((s: any) => String(s.id) !== String(reelId));
-          safeSetLocalStorage('vyapar_my_stories', [syncedPost, ...filteredStories].slice(0, 30));
-        } catch (e) {}
-
-        window.dispatchEvent(new CustomEvent('postUpdated', { detail: syncedPost }));
-        window.dispatchEvent(new CustomEvent('postCreated', { detail: syncedPost }));
-        window.dispatchEvent(new CustomEvent('storyCreated', { detail: syncedPost }));
-
-        await syncPostToFirestore(syncedPost);
-      } catch (e) {
-        console.warn("Background sync note:", e);
-      }
-    })();
 
     setTimeout(() => {
       setIsUploadingProgressVisible(false);
@@ -8547,7 +8817,7 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
       setReelPreviewUrl(null);
       setSelectedMusic(null);
       setReelCaption('');
-    }, 1500);
+    }, 400);
   };
 
   const filteredPosts = posts.filter(p => {
@@ -8868,7 +9138,7 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
               >
                 <AdMediaDisplay 
                   ad={activeAd} 
-                  autoPlay={true}
+                  autoPlay={false}
                   onMediaEnded={() => handleNextAd(combinedAdsList.length)}
                   className="w-full h-full max-h-full object-contain bg-black pointer-events-auto" 
                 />
@@ -9713,217 +9983,24 @@ function CreatePost({ user, onPostSuccess }: { user: any; onPostSuccess?: () => 
       }
     };
 
-    // 1. Instant sync to Firestore & Local Storage
-    syncPostToFirestore(instantPost).catch(e => console.warn('Firestore sync note:', e));
+    // 1. Start Facebook / Instagram style background upload with floating progress ring & direct Cloudinary CDN
+    backgroundUploader.uploadPostInBackground({
+      postDraft: instantPost,
+      imageFiles: imageFiles.length > 0 ? imageFiles : (file && !isVideo && !isPdf ? [file] : []),
+      videoFile: isVideo && file ? file : null,
+      pdfFile: isPdf && file ? file : null,
+      thumbnailFile: thumbnailFile,
+      audioFile: selectedMusic?.pendingFile,
+      previewUrl: finalPostThumb || (imagePreviews[0] || filePreview || '')
+    });
 
     // 2. Instant local display & UI update
     window.dispatchEvent(new CustomEvent('postCreated', { detail: instantPost }));
     playBubblePopSound();
-    if (isPendingApproval) {
-      toast.info(moderation?.userNotice || '⏳ Business Verification: Aapka post Admin Review ke liye hold kiya gaya hai.');
-    } else {
-      toast.success(`🎉 Post ${visibility === 'scheduled' ? 'scheduled' : 'published'} successfully!`);
-    }
+    toast.success(`🚀 Uploading your post in background! You can continue browsing.`);
     setIsSubmitting(false);
     if (onPostSuccess) onPostSuccess();
     navigate('/');
-
-    // 2. Non-blocking asynchronous background processing
-    (async () => {
-      try {
-        let bgMediaUrl = persistentMediaUrl;
-        let bgThumbUrl = persistentThumbnailUrl;
-        if (imageFiles.length > 0) {
-          bgMediaUrl = persistentImages[0] || '';
-          bgThumbUrl = bgMediaUrl;
-        } else if (file) {
-          try {
-            if (!isVideo && !isPdf) {
-              bgMediaUrl = await optimizeImageForPersistence(file);
-              bgThumbUrl = bgMediaUrl;
-            } else if (isVideo) {
-              bgThumbUrl = await generateVideoThumbnail(file);
-              bgMediaUrl = videoStreamUrl || filePreview;
-            } else {
-              bgMediaUrl = filePreview && !filePreview.startsWith('blob:') ? filePreview : '';
-            }
-          } catch (e) {
-            console.warn('Media persistence conversion note:', e);
-          }
-        }
-        if (thumbnailFile) {
-          try {
-            bgThumbUrl = await optimizeImageForPersistence(thumbnailFile);
-          } catch (e) {}
-        }
-
-        const formData = new FormData();
-        formData.append('id', generatedId);
-        formData.append('title', title);
-        formData.append('content', content);
-        formData.append('hashtags', hashtags);
-        formData.append('userId', String(user.id));
-        formData.append('userName', authorName);
-        formData.append('userRole', authorRole);
-        formData.append('userAvatar', authorAvatar);
-        formData.append('type', postMediaType);
-        formData.append('postedFrom', 'profile');
-        formData.append('isPermanent', 'true');
-        formData.append('visibility', visibility);
-        if (minPrice || maxPrice) {
-          formData.append('minRate', minPrice);
-          formData.append('maxRate', maxPrice);
-          formData.append('unit', priceUnit);
-        }
-        if (visibility === 'scheduled' && scheduledAt) {
-          formData.append('scheduledAt', String(new Date(scheduledAt).getTime()));
-        }
-        if (uploadedMediaImages.length > 0) {
-          formData.append('images', JSON.stringify(persistentImages));
-          formData.append('mediaUrls', JSON.stringify(persistentImages));
-        } else if (uploadedMediaVideoUrl) {
-          formData.append('mediaUrl', videoStreamUrl);
-          formData.append('persistentMediaUrl', videoStreamUrl);
-          formData.append('videoUrl', videoStreamUrl);
-        } else if (uploadedMediaPdfUrl) {
-          formData.append('mediaUrl', persistentMediaUrl);
-          formData.append('pdfUrl', persistentMediaUrl);
-        } else if (imageFiles.length > 0) {
-          imageFiles.forEach(img => formData.append('media', img));
-          formData.append('images', JSON.stringify(persistentImages));
-          formData.append('mediaUrls', JSON.stringify(persistentImages));
-        } else if (file) {
-          if (!videoStreamUrl?.includes('firebasestorage.googleapis.com')) {
-            formData.append('media', file);
-          } else {
-            formData.append('mediaUrl', videoStreamUrl);
-            formData.append('persistentMediaUrl', videoStreamUrl);
-          }
-        }
-        if (thumbnailFile) formData.append('thumbnail', thumbnailFile);
-
-        if (file) {
-          saveVideoBlob(generatedId, file).catch(() => {});
-          if (isVideo) {
-            cacheVideoUrlInMemory(generatedId, videoStreamUrl || filePreview || '');
-          }
-        }
-
-        let isPendingApproval = false;
-        let aiFlagReason: string | undefined = undefined;
-
-        let savedPost: any = null;
-
-        try {
-          const response = await fetch('/api/posts', {
-            method: 'POST',
-            body: formData,
-          });
-          const ct = response.headers.get('content-type');
-          if (response.ok && ct && ct.includes('application/json')) {
-            const data = await response.json();
-            
-            if (data.pendingApproval || data.post?.status === 'pending') {
-              isPendingApproval = true;
-              if (data.post?.aiFlagReason) aiFlagReason = data.post.aiFlagReason;
-            }
-
-            if (data.success && data.post) {
-              savedPost = data.post;
-              if (savedPost.id && file) {
-                saveVideoBlob(savedPost.id, file).catch(() => {});
-                if (isVideo) {
-                  cacheVideoUrlInMemory(savedPost.id, videoStreamUrl || filePreview || '');
-                }
-              }
-            }
-          }
-        } catch (networkErr) {
-          console.warn('Backend API note, using direct Firestore sync:', networkErr);
-        }
-
-        const isPersistentServerUrl = savedPost?.mediaUrl && (
-          savedPost.mediaUrl.startsWith('data:') || 
-          savedPost.mediaUrl.startsWith('https://') || 
-          savedPost.mediaUrl.startsWith('http://') || savedPost.mediaUrl.startsWith('/uploads')
-        ) && !savedPost.mediaUrl.includes('localhost');
-
-        const finalMedia = isLinkVideo
-          ? postExternalLink
-          : (isPersistentServerUrl 
-              ? savedPost.mediaUrl 
-              : (isVideo 
-                  ? (videoStreamUrl || filePreview || '') 
-                  : isPdf 
-                    ? (bgMediaUrl || filePreview || '')
-                    : (bgMediaUrl || filePreview || (persistentImages[0] || ''))));
-        const finalThumb = savedPost?.thumbnailUrl || bgThumbUrl || (isVideo ? bgThumbUrl : finalMedia);
-
-        const finalPostData = savedPost ? {
-          ...savedPost,
-          id: generatedId,
-          type: postMediaType,
-          userName: savedPost.userName || authorName,
-          userRole: savedPost.userRole || authorRole,
-          mediaUrl: finalMedia,
-          images: persistentImages.length > 0 ? persistentImages : (savedPost.images || [finalMedia]),
-          mediaUrls: persistentImages.length > 0 ? persistentImages : (savedPost.mediaUrls || [finalMedia]),
-          pdfUrl: isPdf ? (finalMedia || '') : undefined,
-          videoUrl: isVideo ? finalMedia : undefined,
-          video: isVideo ? finalMedia : undefined,
-          thumbnailUrl: finalThumb,
-          persistentMediaUrl: finalMedia,
-          status: isPendingApproval ? 'pending' : (savedPost.status || 'approved'),
-          postedFrom: 'profile',
-          isPermanent: true,
-          pending_admin_approval: isPendingApproval,
-          aiFlagReason: aiFlagReason || null,
-          music: selectedMusic ? {
-            id: selectedMusic.id,
-            title: selectedMusic.title || 'Attached Sound',
-            artist: selectedMusic.artist || authorName,
-            audioUrl: selectedMusic.audioUrl || selectedMusic.musicUrl || selectedMusic.url
-          } : (savedPost.music || undefined)
-        } : {
-          ...instantPost,
-          type: postMediaType,
-          mediaUrl: finalMedia || instantPost.mediaUrl,
-          images: persistentImages.length > 0 ? persistentImages : instantPost.images,
-          mediaUrls: persistentImages.length > 0 ? persistentImages : instantPost.mediaUrls,
-          pdfUrl: isPdf ? (finalMedia || instantPost.pdfUrl || '') : undefined,
-          videoUrl: isVideo ? (finalMedia || instantPost.mediaUrl) : undefined,
-          video: isVideo ? (finalMedia || instantPost.mediaUrl) : undefined,
-          thumbnailUrl: finalThumb || instantPost.thumbnailUrl,
-          persistentMediaUrl: finalMedia || instantPost.persistentMediaUrl,
-          status: isPendingApproval ? 'pending' : 'approved',
-          pending_admin_approval: isPendingApproval,
-          aiFlagReason: aiFlagReason || null,
-          postedFrom: 'profile',
-          isPermanent: true,
-          externalLink: postExternalLink || '',
-          music: selectedMusic ? {
-            id: selectedMusic.id,
-            title: selectedMusic.title || 'Attached Sound',
-            artist: selectedMusic.artist || authorName,
-            audioUrl: selectedMusic.audioUrl || selectedMusic.musicUrl || selectedMusic.url
-          } : (instantPost.music || undefined)
-        };
-
-        await syncPostToFirestore(finalPostData);
-        window.dispatchEvent(new CustomEvent('postCreated', { detail: finalPostData }));
-
-        // Track referral qualification: user has posted content
-        if (user?.id) {
-          recordUserFirstPost(user.id).catch(refErr => console.warn('Referral post track note:', refErr));
-        }
-
-        if (isPendingApproval) {
-          toast.info(moderation?.userNotice || '⏳ Business Verification: Aapka post Admin Review ke liye bhej diya gaya hai. Business network security ke liye moderation team link aur content verify karegi.');
-        }
-      } catch (bgErr) {
-        console.warn('Background post sync note:', bgErr);
-      }
-    })();
   };
 
   const hasMediaSelected = Boolean(
@@ -10971,7 +11048,9 @@ function ProfilePage({ user, onUpdateUser }: { user: any; onUpdateUser?: (u: any
   const [profileUser, setProfileUser] = useState<any>(null);
   const [profilePosts, setProfilePosts] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'posts' | 'catalog' | 'info' | 'reviews'>('posts');
+  const [activeTab, setActiveTab] = useState<'posts' | 'stories' | 'catalog' | 'info' | 'reviews'>('posts');
+  const [activeStoryIndex, setActiveStoryIndex] = useState<number | null>(null);
+  const [activeStoryPosts, setActiveStoryPosts] = useState<any[] | null>(null);
 
   // Engagement & Settings Modals
   const [isEngagementModalOpen, setIsEngagementModalOpen] = useState(false);
@@ -11036,27 +11115,37 @@ function ProfilePage({ user, onUpdateUser }: { user: any; onUpdateUser?: (u: any
     if (!id) return;
     setLoading(true);
     
-    safeFetch(`/api/users/${id}`)
-      .then(data => {
+    const loadProfileUser = async () => {
+      try {
+        const data = await safeFetch(`/api/users/${id}`);
         if (data && data.id) {
           populateUserData(data);
-        } else {
-          safeFetch('/api/users').then(users => {
-            const found = Array.isArray(users) ? users.find((u: any) => String(u.id) === String(id)) : null;
-            if (found) {
-              populateUserData(found);
-            } else if (user && String(user.id) === String(id)) {
-              populateUserData(user);
-            }
-          });
+          return;
         }
-      })
-      .catch(() => {
-        if (user && String(user.id) === String(id)) {
-          populateUserData(user);
+
+        const users = await safeFetch('/api/users');
+        const found = Array.isArray(users) ? users.find((u: any) => String(u.id) === String(id)) : null;
+        if (found) {
+          populateUserData(found);
+          return;
         }
-      })
-      .finally(() => setLoading(false));
+      } catch (e) {}
+
+      try {
+        const fbUsers = await fetchAllUsersFromFirestore();
+        const fbUser = fbUsers.find(u => String(u.id) === String(id));
+        if (fbUser) {
+          populateUserData(fbUser);
+          return;
+        }
+      } catch (e) {}
+
+      if (user && String(user.id) === String(id)) {
+        populateUserData(user);
+      }
+    };
+
+    loadProfileUser().finally(() => setLoading(false));
 
     const filterAndSetPosts = (allPosts: any[]) => {
       if (!Array.isArray(allPosts)) return;
@@ -11701,7 +11790,7 @@ function ProfilePage({ user, onUpdateUser }: { user: any; onUpdateUser?: (u: any
 
         {/* 7. Tabs Bar */}
         <div className="flex border-b border-amber-900/10 bg-white rounded-2xl shadow-xs overflow-hidden p-1 gap-1">
-          {(['posts', 'catalog', 'reviews', 'info'] as const).map((tab) => (
+          {(['posts', 'stories', 'catalog', 'reviews', 'info'] as const).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -11712,7 +11801,7 @@ function ProfilePage({ user, onUpdateUser }: { user: any; onUpdateUser?: (u: any
                   : "text-slate-500 hover:text-slate-800 hover:bg-amber-50/50"
               )}
             >
-              {tab === 'posts' ? 'Posts' : tab === 'catalog' ? 'Catalogue' : tab === 'reviews' ? 'Reviews' : 'Info'}
+              {tab === 'posts' ? 'Posts' : tab === 'stories' ? 'Stories' : tab === 'catalog' ? 'Catalogue' : tab === 'reviews' ? 'Reviews' : 'Info'}
             </button>
           ))}
         </div>
@@ -11721,22 +11810,83 @@ function ProfilePage({ user, onUpdateUser }: { user: any; onUpdateUser?: (u: any
         <div className="space-y-4">
           {activeTab === 'posts' && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {profilePosts.length === 0 ? (
+              {profilePosts.filter(p => !p.isStory && !p.isReel && p.type !== 'story' && p.type !== 'reel').length === 0 ? (
                 <div className="col-span-2 text-center py-16 bg-white rounded-2xl border border-slate-200 p-6">
                   <PlusSquare className="w-12 h-12 text-slate-300 mx-auto mb-3" />
                   <h3 className="text-base font-black text-slate-800 uppercase tracking-wider">No active trade posts</h3>
-                  <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">This merchant hasn't published any product listings yet.</p>
+                  <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">This merchant hasn't published any standard product listings yet.</p>
                 </div>
               ) : (
-                profilePosts.map(post => (
-                  <PostItem 
-                    key={post.id} 
-                    post={post} 
-                    currentUser={user} 
-                    onPostDeleted={(id) => setProfilePosts(prev => prev.filter(p => p.id !== id))}
-                    onPostUpdated={(updatedPost) => setProfilePosts(prev => prev.map(p => p.id === updatedPost.id ? updatedPost : p))}
-                  />
-                ))
+                profilePosts
+                  .filter(p => !p.isStory && !p.isReel && p.type !== 'story' && p.type !== 'reel')
+                  .map(post => (
+                    <PostItem 
+                      key={post.id} 
+                      post={post} 
+                      currentUser={user} 
+                      onPostDeleted={(id) => setProfilePosts(prev => prev.filter(p => p.id !== id))}
+                      onPostUpdated={(updatedPost) => setProfilePosts(prev => prev.map(p => p.id === updatedPost.id ? updatedPost : p))}
+                    />
+                  ))
+              )}
+            </div>
+          )}
+
+          {activeTab === 'stories' && (
+            <div className="space-y-4">
+              {profilePosts.filter(p => p.isStory || p.isReel || p.type === 'story' || p.type === 'reel' || (p.hashtags && (p.hashtags.includes('#story') || p.hashtags.includes('#reel')))).length === 0 ? (
+                <div className="text-center py-16 bg-white rounded-2xl border border-slate-200 p-6">
+                  <div className="w-14 h-14 rounded-full bg-gradient-to-tr from-amber-500 to-rose-500 p-0.5 mx-auto mb-3 flex items-center justify-center">
+                    <div className="w-full h-full bg-white dark:bg-zinc-900 rounded-full flex items-center justify-center">
+                      <Play className="w-6 h-6 text-amber-600 fill-amber-600 ml-0.5" />
+                    </div>
+                  </div>
+                  <h3 className="text-base font-black text-slate-800 uppercase tracking-wider">No active stories</h3>
+                  <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">Stories & status updates uploaded from the story tray appear here separately.</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3.5">
+                  {profilePosts
+                    .filter(p => p.isStory || p.isReel || p.type === 'story' || p.type === 'reel' || (p.hashtags && (p.hashtags.includes('#story') || p.hashtags.includes('#reel'))))
+                    .map((storyPost, idx, arr) => {
+                      const coverImg = storyPost.thumbnailUrl || storyPost.mediaUrl || (storyPost.images && storyPost.images[0]) || '';
+                      return (
+                        <div
+                          key={storyPost.id || idx}
+                          onClick={() => {
+                            setActiveStoryPosts(arr);
+                            setActiveStoryIndex(idx);
+                          }}
+                          className="relative aspect-[9/16] rounded-2xl overflow-hidden bg-black shadow-md hover:shadow-xl group cursor-pointer transition-all duration-300 border border-slate-200/80 dark:border-zinc-800"
+                        >
+                          {coverImg ? (
+                            <img 
+                              src={coverImg} 
+                              alt="Story Thumbnail" 
+                              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                              onError={(e) => {
+                                (e.currentTarget as HTMLImageElement).src = 'https://images.unsplash.com/photo-1560179707-f14e90ef3623?w=300&auto=format&fit=crop&q=60';
+                              }}
+                            />
+                          ) : (
+                            <div className="w-full h-full bg-gradient-to-br from-amber-600 to-rose-700 flex items-center justify-center p-3 text-center text-white text-xs font-bold">
+                              {storyPost.content || storyPost.title || 'Story Update'}
+                            </div>
+                          )}
+                          <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-black/30" />
+                          
+                          <div className="absolute top-2.5 right-2.5 p-1.5 rounded-full bg-black/50 backdrop-blur-md text-white">
+                            <Play className="w-3.5 h-3.5 fill-white" />
+                          </div>
+
+                          <div className="absolute bottom-2.5 left-2.5 right-2.5 text-white">
+                            <p className="text-xs font-black truncate drop-shadow-md">{storyPost.title || storyPost.content || 'Story'}</p>
+                            <p className="text-[10px] text-zinc-300 font-semibold mt-0.5">{new Date(storyPost.createdAt || Date.now()).toLocaleDateString()}</p>
+                          </div>
+                        </div>
+                      );
+                    })}
+                </div>
               )}
             </div>
           )}
@@ -12231,6 +12381,19 @@ function ProfilePage({ user, onUpdateUser }: { user: any; onUpdateUser?: (u: any
           }}
         />
       )}
+
+      {/* Fullscreen Story/Reel Viewer Modal for Profile */}
+      {activeStoryIndex !== null && (
+        <FullScreenFeedViewerModal
+          posts={activeStoryPosts || profilePosts}
+          initialIndex={activeStoryIndex}
+          currentUser={user}
+          onClose={() => {
+            setActiveStoryIndex(null);
+            setActiveStoryPosts(null);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -12362,6 +12525,12 @@ export default function App() {
       sessionStorage.clear();
       setIsSidebarOpen(false);
       toast.success('🎉 Logged out successfully from Vyapar Bridge.');
+      
+      // Immediately navigate user to Home Feed screen
+      if (window.location.pathname !== '/') {
+        window.history.pushState(null, '', '/');
+        window.dispatchEvent(new PopStateEvent('popstate'));
+      }
     } catch (e) {
       console.error('Logout error:', e);
       handleUpdateUser(null);
@@ -12390,6 +12559,9 @@ export default function App() {
             <nav className="hidden md:flex items-center gap-2">
               <Link to="/" className="px-4 py-2 text-xs font-black uppercase tracking-wider text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-lg transition-colors flex items-center gap-1.5">
                 <Home className="w-4 h-4" /> Home
+              </Link>
+              <Link to="/directory" className="px-4 py-2 text-xs font-black uppercase tracking-wider text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-lg transition-colors flex items-center gap-1.5" title="All-India Business Directory (सभी रजिस्टर्ड व्यापार)">
+                <Building2 className="w-4 h-4 text-amber-500" /> Businesses
               </Link>
               <Link to="/chat" className="px-4 py-2 text-xs font-black uppercase tracking-wider text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-lg transition-colors flex items-center gap-1.5">
                 <MessageSquare className="w-4 h-4" /> Chat
@@ -12448,6 +12620,8 @@ export default function App() {
         <main className="flex-1 w-full">
           <Routes>
             <Route path="/" element={<Feed user={user} onUpdateUser={handleUpdateUser} userLocation={userLocation} />} />
+            <Route path="/directory" element={<BusinessDirectoryPage user={user} userLocation={userLocation} onOpenAuth={(tab) => { setAuthModalTab(tab); setShowAuthModal(true); }} />} />
+            <Route path="/businesses" element={<BusinessDirectoryPage user={user} userLocation={userLocation} onOpenAuth={(tab) => { setAuthModalTab(tab); setShowAuthModal(true); }} />} />
             <Route path="/chat" element={<Chat user={user} userLocation={userLocation} />} />
             <Route path="/create-post" element={<div className="max-w-2xl mx-auto py-6 px-3 sm:px-4"><CreatePost user={user} onPostSuccess={() => {}} /></div>} />
             <Route path="/profile/:id" element={<ProfilePage user={user} onUpdateUser={handleUpdateUser} />} />
@@ -12524,14 +12698,14 @@ export default function App() {
         )}
 
         <footer className="md:hidden fixed bottom-0 inset-x-0 bg-white border-t border-slate-200/80 h-16 flex items-center justify-around z-40 shadow-xl px-2">
-          <Link to="/" className="flex flex-col items-center justify-center p-2 text-slate-500 hover:text-blue-600 transition-colors focus:outline-none shrink-0" title="Home">
+          <Link to="/" className="flex flex-col items-center justify-center p-2 text-slate-500 hover:text-blue-600 transition-colors focus:outline-none shrink-0" title="Home Feed">
             <Home className="w-5 h-5" />
             <span className="text-[10px] font-black uppercase tracking-wider mt-1">Home</span>
           </Link>
-          
-          <Link to="/chat" className="flex flex-col items-center justify-center p-2 text-slate-500 hover:text-blue-600 transition-colors focus:outline-none shrink-0" title="Chat">
-            <MessageSquare className="w-5 h-5" />
-            <span className="text-[10px] font-black uppercase tracking-wider mt-1">Chat</span>
+
+          <Link to="/directory" className="flex flex-col items-center justify-center p-2 text-slate-600 hover:text-amber-600 transition-colors focus:outline-none shrink-0" title="Business Directory (सभी बिजनेस)">
+            <Building2 className="w-5 h-5 text-amber-500" />
+            <span className="text-[10px] font-black uppercase tracking-wider mt-1">Directory</span>
           </Link>
 
           {/* Elevated Centered Plus (+) Upload Button */}
@@ -12555,19 +12729,12 @@ export default function App() {
             <span className="text-[10px] font-black text-blue-600 uppercase tracking-wider mt-0.5">Post</span>
           </button>
 
-          {user ? (
-            <Link to={`/profile/${user.id}`} className="flex flex-col items-center justify-center p-2 text-slate-500 hover:text-blue-600 transition-colors focus:outline-none shrink-0" title="Profile">
-              <User className="w-5 h-5" />
-              <span className="text-[10px] font-black uppercase tracking-wider mt-1">Profile</span>
-            </Link>
-          ) : (
-            <button onClick={() => { setAuthModalTab('login'); setShowAuthModal(true); }} className="flex flex-col items-center justify-center p-2 text-slate-500 hover:text-blue-600 transition-colors focus:outline-none shrink-0 cursor-pointer" title="Sign In">
-              <LogIn className="w-5 h-5" />
-              <span className="text-[10px] font-black uppercase tracking-wider mt-1">Sign In</span>
-            </button>
-          )}
+          <Link to="/chat" className="flex flex-col items-center justify-center p-2 text-slate-500 hover:text-blue-600 transition-colors focus:outline-none shrink-0" title="B2B Chat">
+            <MessageSquare className="w-5 h-5" />
+            <span className="text-[10px] font-black uppercase tracking-wider mt-1">Chat</span>
+          </Link>
 
-          {/* Mobile Sidebar Menu Drawer Toggle (Replaces Admin from footer) */}
+          {/* Mobile Sidebar Menu Drawer Toggle */}
           <button 
             id="footer-menu-btn"
             type="button"
