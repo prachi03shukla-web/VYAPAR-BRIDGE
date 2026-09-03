@@ -2196,24 +2196,30 @@ export function fileToBase64(file: File): Promise<string> {
   });
 }
 
-function ReelCard({ 
-  reel, 
-  currentUser, 
-  onClose,
-  userLocation
-}: { 
+interface ReelCardProps {
   reel: any; 
   currentUser: any; 
   onClose?: () => void;
   userLocation?: {lat: number, lng: number} | null;
-}) {
-  if (!reel) {
+}
+
+function ReelCard(props: ReelCardProps) {
+  if (!props.reel) {
     return (
       <div className="relative w-full max-w-[420px] h-[85vh] bg-zinc-950 rounded-2xl border border-zinc-800 flex flex-col items-center justify-center p-6 text-center">
         <p className="text-zinc-400 font-medium text-sm">Reel content unavailable</p>
       </div>
     );
   }
+  return <InternalReelCard {...props} />;
+}
+
+function InternalReelCard({ 
+  reel, 
+  currentUser, 
+  onClose,
+  userLocation
+}: ReelCardProps) {
 
   const navigate = useNavigate();
   const authorIdentifier = reel?.userId || reel?.user?.id || reel?.user?.name || reel?.name || '';
@@ -4384,21 +4390,7 @@ function FeedImageWithAudio({
   );
 }
 
-function FeedVideoPlayer({
-  src,
-  poster,
-  className,
-  audioSrc,
-  isReel = false,
-  aspectRatio,
-  autoPlay = false,
-  onDoubleTap,
-  defaultMuted,
-  id,
-  videoRefProp,
-  isMutedProp,
-  onMuteToggle
-}: {
+interface FeedVideoPlayerProps {
   src: string;
   poster?: string;
   className?: string;
@@ -4412,19 +4404,39 @@ function FeedVideoPlayer({
   videoRefProp?: React.RefObject<HTMLVideoElement>;
   isMutedProp?: boolean;
   onMuteToggle?: (muted: boolean) => void;
-}) {
-  if (isYouTubeUrl(src)) {
+}
+
+function FeedVideoPlayer(props: FeedVideoPlayerProps) {
+  if (isYouTubeUrl(props.src)) {
     return (
       <UniversalYouTubePlayer 
-        url={src} 
-        isReel={isReel} 
-        aspectRatio={aspectRatio || (isReel ? '9:16' : undefined)} 
-        className={className} 
-        autoPlay={autoPlay}
-        muted={isMuted}
+        url={props.src} 
+        isReel={props.isReel} 
+        aspectRatio={props.aspectRatio || (props.isReel ? '9:16' : undefined)} 
+        className={props.className} 
+        autoPlay={props.autoPlay}
+        muted={props.isMutedProp ?? isGlobalVideoMuted()}
       />
     );
   }
+  return <InternalFeedVideoPlayer {...props} />;
+}
+
+function InternalFeedVideoPlayer({
+  src,
+  poster,
+  className,
+  audioSrc,
+  isReel = false,
+  aspectRatio,
+  autoPlay = false,
+  onDoubleTap,
+  defaultMuted,
+  id,
+  videoRefProp,
+  isMutedProp,
+  onMuteToggle
+}: FeedVideoPlayerProps) {
   const localVideoRef = React.useRef<HTMLVideoElement>(null);
   const videoRef = videoRefProp || localVideoRef;
   const audioRef = React.useRef<HTMLAudioElement>(null);
@@ -5991,12 +6003,12 @@ const PostItem = React.memo(function PostItem({
   return (
     <div className={`smooth-feed-item bg-[#E6C76C] dark:bg-black border-b border-neutral-100 dark:border-neutral-900 md:border md:border-neutral-200 dark:md:border-neutral-800 md:rounded-xl pb-4 mb-5 w-full mx-auto shadow-sm ${isVerticalContent ? "md:max-w-[460px]" : ""}`}>
       {/* Post Header */}
-      <div className="flex items-center justify-between p-3 relative">
-        <div className="flex items-center gap-3">
+      <div className="flex items-center justify-between p-2.5 sm:p-3 relative gap-2 min-w-0">
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
            <div 
              onClick={() => navigate(`/profile/${authorInfo.id}`)}
              className={cn(
-             "w-10 h-10 rounded-full cursor-pointer shrink-0 transition-transform hover:scale-105 overflow-hidden flex items-center justify-center bg-slate-200 dark:bg-zinc-800",
+             "w-9 h-9 sm:w-10 sm:h-10 rounded-full cursor-pointer shrink-0 transition-transform hover:scale-105 overflow-hidden flex items-center justify-center bg-slate-200 dark:bg-zinc-800",
              (post.user?.isVerified || authorInfo.isVerified || (currentUser?.id === post.userId && currentUser?.isVerified))
                ? "tiranga-border-circle p-[2px]"
                : "neon-border-circle p-[2px]"
@@ -6010,24 +6022,26 @@ const PostItem = React.memo(function PostItem({
                }}
              />
            </div>
-           <div className="flex flex-col">
-              <div className="flex items-center gap-1">
-                <span 
-                  onClick={() => navigate(`/profile/${authorInfo.id}`)}
-                  className={cn(
-                    "font-black italic tracking-wider text-sm text-black dark:text-zinc-50 leading-none cursor-pointer hover:text-blue-600 dark:hover:text-blue-400 hover:underline",
-                    (post.user?.isVerified || authorInfo.isVerified || (currentUser?.id === post.userId && currentUser?.isVerified)) && "text-blue-600 dark:text-blue-400 font-bold"
+           <div className="flex flex-col min-w-0 flex-1">
+              <div className="flex items-center gap-1.5 flex-wrap min-w-0">
+                <div className="flex items-center gap-1 min-w-0 max-w-[130px] xs:max-w-[160px] sm:max-w-[220px]">
+                  <span 
+                    onClick={() => navigate(`/profile/${authorInfo.id}`)}
+                    className={cn(
+                      "font-black italic tracking-wider text-xs sm:text-sm text-black dark:text-zinc-50 leading-none cursor-pointer hover:text-blue-600 dark:hover:text-blue-400 hover:underline truncate",
+                      (post.user?.isVerified || authorInfo.isVerified || (currentUser?.id === post.userId && currentUser?.isVerified)) && "text-blue-600 dark:text-blue-400 font-bold"
+                    )}
+                    style={{ fontFamily: "'Playfair Display', 'Dancing Script', serif", fontWeight: 900 }}
+                  >
+                    {authorName}
+                  </span>
+                  {(shouldShowVerifiedBadge(post.user || authorInfo) || (currentUser?.id === post.userId && shouldShowVerifiedBadge(currentUser))) && (
+                    <VerifiedBadge user={post.user || authorInfo} size="sm" />
                   )}
-                  style={{ fontFamily: "'Playfair Display', 'Dancing Script', serif", fontWeight: 900 }}
-                >
-                  {authorName}
-                </span>
-                {(shouldShowVerifiedBadge(post.user || authorInfo) || (currentUser?.id === post.userId && shouldShowVerifiedBadge(currentUser))) && (
-                  <VerifiedBadge user={post.user || authorInfo} size="sm" />
-                )}
+                </div>
 
                 {/* Interactive Star Post Rating Badge (Individual Post Rating) */}
-                <div className="rainbow-star-badge flex items-center gap-1 ml-2 px-2 py-0.5 rounded-xl select-none shrink-0 backdrop-blur-md transition-all duration-300 transform hover:scale-105">
+                <div className="rainbow-star-badge flex items-center gap-0.5 px-1.5 py-0.5 rounded-xl select-none shrink-0 backdrop-blur-md transition-all duration-300 transform hover:scale-105">
                   <div className="flex items-center" onMouseLeave={() => setHoverRating(null)}>
                     {[1, 2, 3, 4, 5].map((star) => {
                       const isFilled = hoverRating !== null ? star <= hoverRating : star <= Math.round(postRatingAverage);
@@ -6047,7 +6061,7 @@ const PostItem = React.memo(function PostItem({
                       );
                     })}
                   </div>
-                  <span className="text-[10px] font-black text-amber-600 dark:text-amber-400">
+                  <span className="text-[9px] font-black text-amber-600 dark:text-amber-400 whitespace-nowrap">
                     {postRatingAverage.toFixed(1)}
                     <span className="text-zinc-400 dark:text-zinc-500 font-normal ml-0.5">({postRatingCount})</span>
                   </span>
@@ -6060,7 +6074,7 @@ const PostItem = React.memo(function PostItem({
                 
                 if (isAdm) {
                   return (
-                    <span className="text-[10px] font-bold text-purple-600 dark:text-purple-400 flex items-center gap-1 truncate max-w-[280px]">
+                    <span className="text-[10px] font-bold text-purple-600 dark:text-purple-400 flex items-center gap-1 truncate max-w-[160px] xs:max-w-[200px] sm:max-w-[280px]">
                       <ShieldCheck className="w-2.5 h-2.5 shrink-0" />
                       <span className="truncate">[👑 ADMIN • {userCat || 'Founder & Platform Logic'}]</span>
                     </span>
@@ -6069,7 +6083,7 @@ const PostItem = React.memo(function PostItem({
                 
                 if (pUser.role === 'customer') {
                   return (
-                    <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1 truncate max-w-[280px]">
+                    <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1 truncate max-w-[160px] xs:max-w-[200px] sm:max-w-[280px]">
                       <ShoppingCart className="w-2.5 h-2.5 shrink-0" />
                       <span className="truncate">[🛒 BUYER{userCat ? ` • ${userCat}` : ''}]</span>
                     </span>
@@ -6077,7 +6091,7 @@ const PostItem = React.memo(function PostItem({
                 }
                 
                 return (
-                  <span className="text-[10px] font-bold text-blue-600 dark:text-blue-400 flex items-center gap-1 truncate max-w-[280px]">
+                  <span className="text-[10px] font-bold text-blue-600 dark:text-blue-400 flex items-center gap-1 truncate max-w-[160px] xs:max-w-[200px] sm:max-w-[280px]">
                     <Building2 className="w-2.5 h-2.5 shrink-0" />
                     <span className="truncate">[🏢 {userCat || (pUser.role === 'dealer' ? 'Dealer & Retailer' : 'Merchant & Business')}]</span>
                   </span>
@@ -6105,14 +6119,14 @@ const PostItem = React.memo(function PostItem({
               </div>
            </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1 shrink-0 ml-1">
           <div className="relative">
             <button 
               onClick={(e) => {
                 e.stopPropagation();
                 setShowOptions(!showOptions);
               }} 
-              className="text-black dark:text-zinc-100 hover:text-black/70 dark:hover:text-zinc-300 p-1.5 rounded-full hover:bg-black/5 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
+              className="text-black dark:text-zinc-100 hover:text-black/70 dark:hover:text-zinc-300 p-1.5 rounded-full hover:bg-black/5 dark:hover:bg-zinc-800 transition-colors cursor-pointer shrink-0"
               title="More options"
             >
               <MoreHorizontal className="w-5 h-5" />
@@ -6131,7 +6145,7 @@ const PostItem = React.memo(function PostItem({
 
                 <div 
                   onClick={(e) => e.stopPropagation()} 
-                  className="absolute right-0 mt-2 w-56 bg-white dark:bg-zinc-900 rounded-2xl shadow-2xl z-50 border border-slate-200 dark:border-zinc-800 overflow-hidden text-sm animate-in fade-in zoom-in-95 duration-150 divide-y divide-slate-100 dark:divide-zinc-800/60"
+                  className="absolute right-0 mt-2 w-56 max-w-[calc(100vw-24px)] bg-white dark:bg-zinc-900 rounded-2xl shadow-2xl z-50 border border-slate-200 dark:border-zinc-800 overflow-hidden text-sm animate-in fade-in zoom-in-95 duration-150 divide-y divide-slate-100 dark:divide-zinc-800/60"
                 >
                   {/* Notifications Option */}
                   <button 
@@ -10481,6 +10495,7 @@ function ProfilePage({ user, onUpdateUser }: { user: any; onUpdateUser?: (u: any
   const [website, setWebsite] = useState('');
   const [description, setDescription] = useState('');
   const [catalogUrl, setCatalogUrl] = useState('');
+  const [catalogThumbnailUrl, setCatalogThumbnailUrl] = useState('');
   const [category, setCategory] = useState('');
   const [locality, setLocality] = useState('');
   const [city, setCity] = useState('');
@@ -10514,6 +10529,7 @@ function ProfilePage({ user, onUpdateUser }: { user: any; onUpdateUser?: (u: any
     setWebsite(data.website || '');
     setDescription(data.description || 'Builders & Civil Contractors, Residential Apartments, Plotting & Commercial Projects.');
     setCatalogUrl(data.catalogueUrl || data.catalogUrl || '');
+    setCatalogThumbnailUrl(data.catalogueThumbnailUrl || data.catalogThumbnailUrl || '');
     setCategory(data.category || 'Builders & Civil Contractors (बिल्डर, ठेकेदार व कंस्ट्रक्शन), Residential Apartment');
     setLocality(data.locality || data.city || 'Ramadevi');
     setCity(data.city || 'Kanpur');
@@ -10551,13 +10567,115 @@ function ProfilePage({ user, onUpdateUser }: { user: any; onUpdateUser?: (u: any
       })
       .finally(() => setLoading(false));
 
-    safeFetch(`/api/posts?userId=${id}`)
-      .then(posts => {
-        if (Array.isArray(posts)) {
-          setProfilePosts(posts);
+    const filterAndSetPosts = (allPosts: any[]) => {
+      if (!Array.isArray(allPosts)) return;
+      const targetIdStr = String(id).trim().toLowerCase();
+      const currentLoggedInId = user?.id ? String(user.id).trim().toLowerCase() : null;
+      const currentUsername = user?.username ? String(user.username).trim().toLowerCase() : null;
+      const currentName = user?.name ? String(user.name).trim().toLowerCase() : null;
+      const currentCompName = user?.companyName ? String(user.companyName).trim().toLowerCase() : null;
+
+      const pUserId = profileUser?.id ? String(profileUser.id).trim().toLowerCase() : null;
+      const pUsername = profileUser?.username ? String(profileUser.username).trim().toLowerCase() : null;
+      const pName = profileUser?.name ? String(profileUser.name).trim().toLowerCase() : null;
+      const pComp = profileUser?.companyName ? String(profileUser.companyName).trim().toLowerCase() : null;
+
+      const filtered = allPosts.filter(p => {
+        if (!p) return false;
+        const postOwnerId = String(p.userId || p.user?.id || '').trim().toLowerCase();
+        if (postOwnerId === targetIdStr) return true;
+
+        if (pUserId && postOwnerId === pUserId) return true;
+
+        const postAuthorName = String(p.userName || p.user?.name || '').trim().toLowerCase();
+        const postAuthorUser = String(p.user?.username || '').trim().toLowerCase();
+        const postCompName = String(p.user?.companyName || '').trim().toLowerCase();
+
+        // Check against target profile user
+        if (pUsername && (postAuthorUser === pUsername || postAuthorName === pUsername)) return true;
+        if (pName && postAuthorName === pName) return true;
+        if (pComp && postCompName === pComp) return true;
+
+        // Check if viewing own profile
+        if (currentLoggedInId && targetIdStr === currentLoggedInId) {
+          if (postOwnerId === currentLoggedInId) return true;
+          if (currentUsername && (postAuthorUser === currentUsername || postAuthorName === currentUsername)) return true;
+          if (currentName && postAuthorName === currentName) return true;
+          if (currentCompName && postCompName === currentCompName) return true;
         }
-      })
-      .catch(() => {});
+
+        return false;
+      });
+
+      // Deduplicate by ID
+      const postMap = new Map<string, any>();
+      filtered.forEach(p => {
+        if (p && p.id) {
+          const existing = postMap.get(String(p.id)) || {};
+          postMap.set(String(p.id), { ...existing, ...p });
+        }
+      });
+
+      const sorted = Array.from(postMap.values()).sort((a, b) => {
+        const timeA = typeof a.createdAt === 'number' ? a.createdAt : new Date(a.createdAt || 0).getTime();
+        const timeB = typeof b.createdAt === 'number' ? b.createdAt : new Date(b.createdAt || 0).getTime();
+        return timeB - timeA;
+      });
+
+      setProfilePosts(sorted);
+    };
+
+    const loadProfilePosts = async () => {
+      const allPool: any[] = [];
+      
+      // Local cached pool
+      try {
+        const cached = localStorage.getItem('VyaparBridge_cached_posts');
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (Array.isArray(parsed)) allPool.push(...parsed);
+        }
+      } catch {}
+
+      // Fetch from both API and Firestore in parallel
+      const [backendResult, firestoreResult] = await Promise.allSettled([
+        safeFetch(`/api/posts?userId=${id}`),
+        fetchPostsFromFirestore()
+      ]);
+
+      if (backendResult.status === 'fulfilled' && Array.isArray(backendResult.value)) {
+        allPool.push(...backendResult.value);
+      }
+      if (firestoreResult.status === 'fulfilled' && Array.isArray(firestoreResult.value)) {
+        allPool.push(...firestoreResult.value);
+      }
+
+      filterAndSetPosts(allPool);
+    };
+
+    loadProfilePosts();
+
+    // Subscribe to real-time Firestore updates
+    const unsubscribePosts = subscribeToPostsFromFirestore((realtimePosts) => {
+      if (Array.isArray(realtimePosts)) {
+        filterAndSetPosts(realtimePosts);
+      }
+    });
+
+    // Listen to local postCreated events
+    const handleNewPost = (e: any) => {
+      const newPost = e?.detail;
+      if (newPost) {
+        setProfilePosts(prev => {
+          const exists = prev.some(p => String(p.id) === String(newPost.id));
+          if (!exists) {
+            return [newPost, ...prev];
+          }
+          return prev;
+        });
+      }
+    };
+    window.addEventListener('postCreated', handleNewPost);
 
     const cachedReviews = localStorage.getItem(`vyapar_reviews_${id}`);
     if (cachedReviews) {
@@ -10568,7 +10686,25 @@ function ProfilePage({ user, onUpdateUser }: { user: any; onUpdateUser?: (u: any
         { id: '2', name: 'Kanpur Buildcon', rating: 5, comment: 'Very reliable commercial property & trusted trade partner in Ramadevi, Kanpur.', createdAt: Date.now() - 3600000 * 24 * 7 }
       ]);
     }
-  }, [id, user]);
+
+    return () => {
+      unsubscribePosts();
+      window.removeEventListener('postCreated', handleNewPost);
+    };
+  }, [id, user, profileUser?.id]);
+
+  // Generate first-page thumbnail if catalogUrl exists but thumbnail is missing
+  useEffect(() => {
+    if (catalogUrl && !catalogThumbnailUrl) {
+      extractPdfFirstPageThumbnail(catalogUrl)
+        .then((res) => {
+          if (res && res.thumbnailUrl) {
+            setCatalogThumbnailUrl(res.thumbnailUrl);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [catalogUrl, catalogThumbnailUrl]);
 
   // Cover photo change handler
   const handleCoverPhotoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -10656,10 +10792,26 @@ function ProfilePage({ user, onUpdateUser }: { user: any; onUpdateUser?: (u: any
       setIsUploadingCatalog(true);
       toast.loading('📁 Uploading PDF Catalogue from gallery...', { id: 'catalog-upload' });
 
+      // Immediate extraction of front page thumbnail from local File
+      let extractedThumbnail = '';
+      try {
+        const thumbResult = await extractPdfFirstPageThumbnail(file);
+        if (thumbResult && thumbResult.thumbnailUrl) {
+          extractedThumbnail = thumbResult.thumbnailUrl;
+          setCatalogThumbnailUrl(extractedThumbnail);
+        }
+      } catch (thumbErr) {
+        console.warn('PDF front page extraction note:', thumbErr);
+      }
+
       let newCatalogUrl = '';
       try {
         const uploadResult = await createPdfCatalogUrl(file, profileUser.id || 'user');
         newCatalogUrl = uploadResult.mediaUrl;
+        if (!extractedThumbnail && uploadResult.thumbnailUrl) {
+          extractedThumbnail = uploadResult.thumbnailUrl;
+          setCatalogThumbnailUrl(extractedThumbnail);
+        }
       } catch (uploadErr) {
         console.warn('Direct cloud upload notice, converting file for instant local persistence:', uploadErr);
         const reader = new FileReader();
@@ -10670,12 +10822,20 @@ function ProfilePage({ user, onUpdateUser }: { user: any; onUpdateUser?: (u: any
       }
 
       if (newCatalogUrl) {
+        if (!extractedThumbnail) {
+          extractedThumbnail = generateFallbackPdfCover(file.name.replace(/\.pdf$/i, ''), displayCompanyName);
+          setCatalogThumbnailUrl(extractedThumbnail);
+        }
+
         const updated = {
           ...profileUser,
           catalogueUrl: newCatalogUrl,
-          catalogUrl: newCatalogUrl
+          catalogUrl: newCatalogUrl,
+          catalogueThumbnailUrl: extractedThumbnail,
+          catalogThumbnailUrl: extractedThumbnail
         };
         setCatalogUrl(newCatalogUrl);
+        setCatalogThumbnailUrl(extractedThumbnail);
         setProfileUser(updated);
         await syncUserToFirestore(updated);
         if (isOwnProfile && onUpdateUser) {
@@ -11192,6 +11352,7 @@ function ProfilePage({ user, onUpdateUser }: { user: any; onUpdateUser?: (u: any
                       post={{ 
                         mediaUrl: catalogUrl, 
                         pdfUrl: catalogUrl,
+                        thumbnailUrl: catalogThumbnailUrl || profileUser?.catalogueThumbnailUrl || profileUser?.catalogThumbnailUrl || '',
                         title: `${displayCompanyName} Trade Catalogue`, 
                         companyName: displayCompanyName, 
                         user: profileUser 
@@ -11724,16 +11885,6 @@ export default function App() {
         <header className="sticky top-0 z-40 bg-white border-b border-slate-200/80 shrink-0 shadow-xs">
           <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between gap-4">
             <div className="flex items-center gap-2">
-              <button
-                id="header-sidebar-toggle-btn"
-                type="button"
-                onClick={() => setIsSidebarOpen(true)}
-                className="p-2 -ml-1 rounded-xl hover:bg-slate-100 text-slate-700 hover:text-slate-900 transition-colors focus:outline-none cursor-pointer flex items-center justify-center shrink-0"
-                title="Open Navigation Menu (मेन्यू खोलें)"
-              >
-                <Menu className="w-5 h-5 stroke-[2.5]" />
-              </button>
-
               <Link to="/" className="flex items-center gap-2 focus:outline-none select-none">
                 <div className="w-9 h-9 rounded-xl overflow-hidden p-1 bg-gradient-to-tr from-blue-600 to-indigo-600 shadow-md flex items-center justify-center">
                   <img src={BRAND_LOGO_SRC} alt="Vyapar Bridge" className="w-full h-full object-contain" />
@@ -11781,15 +11932,19 @@ export default function App() {
 
             <div className="flex items-center gap-3">
               {user ? (
-                <div className="flex items-center gap-2">
-                  <Link to={`/profile/${user.id}`} className="hidden sm:flex flex-col text-right">
+                <Link to={`/profile/${user.id}`} className="flex items-center gap-2 p-1 rounded-xl hover:bg-slate-50 transition-colors">
+                  <div className="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center overflow-hidden border border-slate-300 shrink-0">
+                    {user.avatarUrl ? (
+                      <img src={user.avatarUrl} alt={user.name} className="w-full h-full object-cover" />
+                    ) : (
+                      <span className="text-xs font-bold text-slate-700 uppercase">{(user.name || 'U').charAt(0)}</span>
+                    )}
+                  </div>
+                  <div className="hidden sm:flex flex-col text-left">
                     <span className="font-extrabold text-xs text-slate-900 uppercase max-w-[120px] truncate">{user.name || user.companyName}</span>
-                    <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest leading-none mt-0.5">{user.role || 'Member'}</span>
-                  </Link>
-                  <button onClick={handleLogOut} className="p-2 text-slate-500 hover:text-red-500 hover:bg-slate-50 rounded-full transition-colors cursor-pointer" title="Log Out">
-                    <LogOut className="w-5 h-5" />
-                  </button>
-                </div>
+                    <span className="text-[9px] font-bold text-blue-600 uppercase tracking-widest leading-none mt-0.5">{user.role || 'Member'}</span>
+                  </div>
+                </Link>
               ) : (
                 <button onClick={() => { setAuthModalTab('login'); setShowAuthModal(true); }} className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-black rounded-full transition-colors flex items-center gap-1.5 uppercase shadow-md cursor-pointer">
                   <LogIn className="w-4 h-4" /> Sign In

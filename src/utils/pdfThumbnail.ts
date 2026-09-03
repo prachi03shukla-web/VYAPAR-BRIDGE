@@ -2,14 +2,14 @@ import * as pdfjsLib from 'pdfjs-dist';
 import { getVideoBlobUrl } from './videoStorage';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
-// Configure worker URL robustly using local bundle URL or fast CDN fallback
+// Configure worker URL robustly using local same-origin public file, bundle URL or fast CDN fallback
 export function ensurePdfWorkerConfigured() {
   try {
-    if (pdfWorker) {
+    if (typeof window !== 'undefined') {
+      // Prioritize local same-origin static file to prevent cross-origin and iframe restrictions
+      pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
+    } else if (pdfWorker) {
       pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
-    } else {
-      const version = pdfjsLib.version || '6.2.108';
-      pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${version}/build/pdf.worker.min.mjs`;
     }
   } catch (e) {
     console.warn('PDF Worker setup note:', e);

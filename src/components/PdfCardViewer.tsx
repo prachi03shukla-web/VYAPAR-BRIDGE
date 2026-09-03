@@ -195,6 +195,14 @@ export const PdfCardViewer: React.FC<PdfCardViewerProps> = ({ post, variant = 'f
 
             if (!isCancelled) {
               setHasCanvasRendered(true);
+              try {
+                const dataUrl = canvas.toDataURL('image/jpeg', 0.90);
+                if (dataUrl && dataUrl.length > 50) {
+                  setCoverThumbUrl(dataUrl);
+                }
+              } catch {
+                // Ignore canvas security errors on cross-origin taint
+              }
             }
           }
         }
@@ -204,10 +212,6 @@ export const PdfCardViewer: React.FC<PdfCardViewerProps> = ({ post, variant = 'f
           console.warn('PDF First Page Canvas Render Note:', err);
           setRenderError(true);
           setIsRendering(false);
-          // Set attractive fallback cover if completely failed
-          if (!coverThumbUrl) {
-            setCoverThumbUrl(generateFallbackPdfCover(docTitle, companyName));
-          }
         }
       }
     };
@@ -365,21 +369,32 @@ export const PdfCardViewer: React.FC<PdfCardViewerProps> = ({ post, variant = 'f
               />
 
               {!hasCanvasRendered && !isRendering && (
-                <div className="w-full min-h-[320px] bg-gradient-to-br from-slate-950 via-slate-900 to-emerald-950 p-8 rounded-xl text-center flex flex-col items-center justify-center my-auto border border-emerald-500/20">
-                  <div className="w-16 h-16 rounded-2xl bg-emerald-500/15 border border-emerald-400/40 flex items-center justify-center text-emerald-400 mb-3 shadow-lg group-hover:scale-105 transition-transform">
-                    <FileText className="w-8 h-8 text-emerald-400" />
+                effectivePdfUrl ? (
+                  <div className="w-full h-[460px] sm:h-[560px] relative rounded-xl overflow-hidden bg-white">
+                    <iframe 
+                      src={effectivePdfUrl.startsWith('data:') ? effectivePdfUrl : `${effectivePdfUrl}#page=1&view=FitH&toolbar=0&navpanes=0&scrollbar=0`}
+                      className="w-full h-full border-0 pointer-events-none"
+                      title={docTitle}
+                    />
+                    <div className="absolute inset-0 z-10 bg-transparent cursor-pointer" />
                   </div>
-                  <h4 className="text-sm font-black text-white uppercase tracking-wider mb-1 line-clamp-2 max-w-sm">
-                    {companyName}
-                  </h4>
-                  <p className="text-xs text-emerald-300/90 font-semibold mb-4 max-w-sm line-clamp-2">
-                    {docTitle}
-                  </p>
-                  <div className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black shadow-lg">
-                    <BookOpen className="w-4 h-4" />
-                    <span>Tap to Open Full Catalogue</span>
+                ) : (
+                  <div className="w-full min-h-[320px] bg-gradient-to-br from-slate-950 via-slate-900 to-emerald-950 p-8 rounded-xl text-center flex flex-col items-center justify-center my-auto border border-emerald-500/20">
+                    <div className="w-16 h-16 rounded-2xl bg-emerald-500/15 border border-emerald-400/40 flex items-center justify-center text-emerald-400 mb-3 shadow-lg group-hover:scale-105 transition-transform">
+                      <FileText className="w-8 h-8 text-emerald-400" />
+                    </div>
+                    <h4 className="text-sm font-black text-white uppercase tracking-wider mb-1 line-clamp-2 max-w-sm">
+                      {companyName}
+                    </h4>
+                    <p className="text-xs text-emerald-300/90 font-semibold mb-4 max-w-sm line-clamp-2">
+                      {docTitle}
+                    </p>
+                    <div className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black shadow-lg">
+                      <BookOpen className="w-4 h-4" />
+                      <span>Tap to Open Full Catalogue</span>
+                    </div>
                   </div>
-                </div>
+                )
               )}
             </div>
           )}
