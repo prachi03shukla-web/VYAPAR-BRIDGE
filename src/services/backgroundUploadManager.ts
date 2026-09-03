@@ -227,17 +227,17 @@ class BackgroundUploadService {
         createdAt: postDraft.createdAt || Date.now()
       };
 
-      // Direct Firestore Persistence
-      await syncPostToFirestore(finalPost);
-
       // Node Backend Persistence
       try {
-        fetch('/api/posts', {
+        await fetch('/api/posts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(finalPost)
-        }).catch(() => {});
+        });
       } catch (e) {}
+
+      // Direct Firestore Persistence (Do not await to prevent hanging on quota exceed)
+      syncPostToFirestore(finalPost).catch(() => {});
 
       // Dispatch local event for instant UI inclusion across views
       window.dispatchEvent(new CustomEvent('postCreated', { detail: finalPost }));
@@ -318,16 +318,17 @@ class BackgroundUploadService {
         createdAt: Date.now()
       };
 
-      // Sync to Firestore & Server
-      await syncPostToFirestore(finalStory);
-      
+      // Sync to Server (Reliable Fallback)
       try {
-        fetch('/api/posts', {
+        await fetch('/api/posts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(finalStory)
-        }).catch(() => {});
+        });
       } catch (e) {}
+
+      // Sync to Firestore (Fire and forget, do not block)
+      syncPostToFirestore(finalStory).catch(() => {});
 
       window.dispatchEvent(new CustomEvent('postCreated', { detail: finalStory }));
       
