@@ -415,6 +415,60 @@ export const setGlobalVideoMuted = (muted: boolean) => {
   window.dispatchEvent(new CustomEvent('vyapar_global_mute_change', { detail: { muted } }));
 };
 
+/**
+ * Universal media lifecycle stopper:
+ * Immediately stops all HTML5 videos, audios, and YouTube/Vimeo iframes,
+ * and clears mobile MediaSession to eliminate background audio & notification bar lock screen playback.
+ */
+export const stopAndPauseAllPlatformMedia = (reason = 'system_action') => {
+  try {
+    // 1. Pause all HTML5 <video> elements
+    document.querySelectorAll('video').forEach((vid: HTMLVideoElement) => {
+      try {
+        if (!vid.paused) vid.pause();
+      } catch (e) {}
+    });
+
+    // 2. Pause all HTML5 <audio> elements
+    document.querySelectorAll('audio').forEach((aud: HTMLAudioElement) => {
+      try {
+        if (!aud.paused) aud.pause();
+      } catch (e) {}
+    });
+
+    // 3. Command all YouTube and third-party IFrames to pauseVideo & mute
+    document.querySelectorAll('iframe').forEach((iframe: HTMLIFrameElement) => {
+      try {
+        if (iframe.contentWindow) {
+          iframe.contentWindow.postMessage(
+            JSON.stringify({ event: 'command', func: 'pauseVideo', args: [] }),
+            '*'
+          );
+          iframe.contentWindow.postMessage(
+            JSON.stringify({ method: 'pause' }),
+            '*'
+          );
+        }
+      } catch (e) {}
+    });
+
+    // 4. Wipe browser MediaSession so Android/iOS notification bar does not keep audio active
+    if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
+      try {
+        navigator.mediaSession.playbackState = 'none';
+        if (navigator.mediaSession.metadata) {
+          navigator.mediaSession.metadata = null;
+        }
+      } catch (e) {}
+    }
+
+    // 5. Broadcast to all listening player components
+    window.dispatchEvent(new CustomEvent('pause_all_feed_videos', { detail: { reason } }));
+  } catch (err) {
+    // Graceful fallback
+  }
+};
+
 
 export function FacebookSdkLoader({ url, containerRef }: { url: string; containerRef: any }) {
   useEffect(() => {
@@ -2383,13 +2437,34 @@ function InternalReelCard({
     window.dispatchEvent(new CustomEvent('vyapar_reel_viewing_active', { detail: { active: true } }));
     window.dispatchEvent(new CustomEvent('pause_all_feed_videos'));
 
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        setIsPlaying(false);
+        if (videoRef.current) try { videoRef.current.pause(); } catch (e) {}
+        if (audioRef.current) try { audioRef.current.pause(); } catch (e) {}
+        if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
+          navigator.mediaSession.playbackState = 'none';
+          if (navigator.mediaSession.metadata) navigator.mediaSession.metadata = null;
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pagehide', handleVisibilityChange);
+
     return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pagehide', handleVisibilityChange);
       // Reel closed / exited: pause media and allow feed video to resume
       if (videoRef.current) {
         try { videoRef.current.pause(); } catch (e) {}
       }
       if (audioRef.current) {
         try { audioRef.current.pause(); } catch (e) {}
+      }
+      if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
+        navigator.mediaSession.playbackState = 'none';
+        if (navigator.mediaSession.metadata) navigator.mediaSession.metadata = null;
       }
       window.dispatchEvent(new CustomEvent('vyapar_reel_viewing_active', { detail: { active: false } }));
     };
@@ -3636,16 +3711,69 @@ function FullScreenFeedViewerModal({
 }) {
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
   const [direction, setDirection] = useState<number>(0);
-  const isWheeling = React.useRef(false);
   const [progressPercent, setProgressPercent] = useState(0);
+  const [isMuted, setIsMuted] = useState(() => isGlobalVideoMuted());
+  const [isPaused, setIsPaused] = useState(false);
+  const [isHolding, setIsHolding] = useState(false);
+  const [showHeart, setShowHeart] = useState(false);
+  const [likesCount, setLikesCount] = useState(0);
+  const [isLiked, setIsLiked] = useState(false);
+
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const pointerStartRef = useRef<{ time: number; x: number; y: number } | null>(null);
+  const holdTimeoutRef = useRef<any>(null);
+  const staticTimerRef = useRef<any>(null);
+  const staticStartTimeRef = useRef<number>(0);
+  const isWheeling = useRef(false);
 
   useEffect(() => {
     window.dispatchEvent(new CustomEvent('vyapar_reel_viewing_active', { detail: { active: true } }));
     window.dispatchEvent(new CustomEvent('pause_all_feed_videos'));
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        setIsPaused(true);
+        if (audioRef.current) try { audioRef.current.pause(); } catch (e) {}
+        if (videoRef.current) try { videoRef.current.pause(); } catch (e) {}
+        if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
+          navigator.mediaSession.playbackState = 'none';
+          if (navigator.mediaSession.metadata) navigator.mediaSession.metadata = null;
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pagehide', handleVisibilityChange);
+
     return () => {
       window.dispatchEvent(new CustomEvent('vyapar_reel_viewing_active', { detail: { active: false } }));
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pagehide', handleVisibilityChange);
+      if (holdTimeoutRef.current) clearTimeout(holdTimeoutRef.current);
+      if (staticTimerRef.current) clearInterval(staticTimerRef.current);
+      if (audioRef.current) {
+        try { audioRef.current.pause(); audioRef.current.src = ''; } catch(e){}
+      }
+      if (videoRef.current) {
+        try { videoRef.current.pause(); videoRef.current.src = ''; } catch(e){}
+      }
+      if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
+        navigator.mediaSession.playbackState = 'none';
+        if (navigator.mediaSession.metadata) navigator.mediaSession.metadata = null;
+      }
     };
   }, []);
+
+  const currentPost = posts && posts.length > 0 ? posts[currentIndex] : null;
+
+  // Sync likes state
+  useEffect(() => {
+    if (currentPost) {
+      setIsLiked(Boolean(currentPost.isLiked || isPostLikedByUser(currentPost.id, currentUser?.id)));
+      setLikesCount(typeof currentPost.likesCount === 'number' ? currentPost.likesCount : 0);
+    }
+  }, [currentIndex, currentPost?.id, currentUser?.id]);
 
   const goToNext = () => {
     if (currentIndex < posts.length - 1) {
@@ -3663,74 +3791,77 @@ function FullScreenFeedViewerModal({
     }
   };
 
-  // Automated Stories Progression Timer
+  // Media sources detection
+  const mediaSrc = currentPost?.mediaUrl || currentPost?.videoUrl || currentPost?.persistentMediaUrl || currentPost?.thumbnailUrl || '';
+  const posterSrc = currentPost?.thumbnailUrl || currentPost?.poster || '';
+  const isVideo = Boolean(currentPost?.type === 'video' || (mediaSrc && (
+    mediaSrc.startsWith('data:video') || 
+    mediaSrc.startsWith('blob:') || 
+    mediaSrc.startsWith('indexeddb:') || 
+    /\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(mediaSrc)
+  )));
+  const isExplicitPdf = Boolean(currentPost?.type === 'pdf' || (mediaSrc && (mediaSrc.endsWith('.pdf') || mediaSrc.includes('.pdf') || mediaSrc.includes('application/pdf'))));
+  const audioSrc = currentPost?.music?.audioUrl || currentPost?.musicUrl || currentPost?.audioUrl || currentPost?.audio || (currentPost?.musicTitle ? currentPost?.musicUrl : '') || '';
+  const musicInfo = currentPost?.music || (currentPost?.musicTitle ? { title: currentPost.musicTitle, artist: currentPost.musicArtist } : null);
+  const hasAudioTrack = Boolean(audioSrc);
+
+  // Playback control on hold / pause
   useEffect(() => {
-    setProgressPercent(0);
-    const postItem = posts[currentIndex];
-    if (!postItem) return;
-
-    const isVideo = postItem.type === 'video' || (postItem.mediaUrl && (postItem.mediaUrl.includes('indexeddb:') || postItem.mediaUrl.includes('youtube.com') || postItem.mediaUrl.includes('youtu.be') || /\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(postItem.mediaUrl)));
-
-    let timer: any;
-    let videoEl: HTMLVideoElement | null = null;
-    let onEnded: (() => void) | null = null;
-    let onTimeUpdate: (() => void) | null = null;
-
-    if (isVideo) {
-      let attempts = 0;
-      const locateVideo = () => {
-        videoEl = document.querySelector('video');
-        if (videoEl) {
-          videoEl.loop = false; // Disable video looping for automated transition
-          
-          onEnded = () => {
-            goToNext();
-          };
-          onTimeUpdate = () => {
-            if (videoEl && videoEl.duration) {
-              const pct = (videoEl.currentTime / videoEl.duration) * 100;
-              setProgressPercent(pct);
-            }
-          };
-
-          videoEl.addEventListener('ended', onEnded);
-          videoEl.addEventListener('timeupdate', onTimeUpdate);
-        } else if (attempts < 15) {
-          attempts++;
-          timer = setTimeout(locateVideo, 150);
-        }
-      };
-      locateVideo();
+    if (isHolding || isPaused) {
+      if (audioRef.current && !audioRef.current.paused) audioRef.current.pause();
+      if (videoRef.current && !videoRef.current.paused) videoRef.current.pause();
     } else {
-      const duration = 5000; // 5 seconds for static media
-      const startTime = Date.now();
-      timer = setInterval(() => {
-        const elapsed = Date.now() - startTime;
-        const pct = Math.min((elapsed / duration) * 100, 100);
-        setProgressPercent(pct);
-        if (elapsed >= duration) {
-          clearInterval(timer);
-          goToNext();
-        }
-      }, 30);
+      if (audioRef.current && audioRef.current.paused) {
+        audioRef.current.play().catch(() => {});
+      }
+      if (videoRef.current && videoRef.current.paused) {
+        videoRef.current.play().catch(() => {});
+      }
+    }
+  }, [isHolding, isPaused]);
+
+  // Static Image Timer (Only runs when there is NO audio track and NO video)
+  useEffect(() => {
+    if (staticTimerRef.current) clearInterval(staticTimerRef.current);
+    setProgressPercent(0);
+
+    if (!currentPost) return;
+
+    // If story has sound (custom audio track or video), that media element controls progression!
+    if (hasAudioTrack || isVideo) {
+      return;
     }
 
-    return () => {
-      if (timer) clearInterval(timer);
-      if (timer) clearTimeout(timer);
-      if (videoEl) {
-        if (onEnded) videoEl.removeEventListener('ended', onEnded);
-        if (onTimeUpdate) videoEl.removeEventListener('timeupdate', onTimeUpdate);
+    // Static image without sound: 5 seconds duration
+    const duration = 5000;
+    staticStartTimeRef.current = Date.now();
+
+    staticTimerRef.current = setInterval(() => {
+      if (isHolding || isPaused) {
+        // Adjust start time while paused so elapsed does not jump
+        staticStartTimeRef.current += 30;
+        return;
       }
+      const elapsed = Date.now() - staticStartTimeRef.current;
+      const pct = Math.min((elapsed / duration) * 100, 100);
+      setProgressPercent(pct);
+      if (elapsed >= duration) {
+        clearInterval(staticTimerRef.current);
+        goToNext();
+      }
+    }, 30);
+
+    return () => {
+      if (staticTimerRef.current) clearInterval(staticTimerRef.current);
     };
-  }, [currentIndex]);
+  }, [currentIndex, hasAudioTrack, isVideo]);
 
   // Keyboard Navigation
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === 'j' || e.key === 'J' || e.key === 'PageDown') {
+      if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') {
         goToNext();
-      } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp' || e.key === 'k' || e.key === 'K' || e.key === 'PageUp') {
+      } else if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
         goToPrev();
       } else if (e.key === 'Escape') {
         onClose();
@@ -3740,32 +3871,154 @@ function FullScreenFeedViewerModal({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [currentIndex, posts.length]);
 
-  // Smooth mouse wheel trackpad navigation
+  // Smooth mouse wheel navigation
   const handleWheel = (e: React.WheelEvent) => {
     if (isWheeling.current || posts.length <= 1) return;
-    if (Math.abs(e.deltaY) > 25) {
+    if (Math.abs(e.deltaY) > 30) {
       isWheeling.current = true;
-      if (e.deltaY > 0) {
-        goToNext();
-      } else {
-        goToPrev();
-      }
-      setTimeout(() => {
-        isWheeling.current = false;
-      }, 400);
+      if (e.deltaY > 0) goToNext();
+      else goToPrev();
+      setTimeout(() => { isWheeling.current = false; }, 350);
     }
   };
 
-  if (!posts || posts.length === 0 || currentIndex < 0 || currentIndex >= posts.length) {
+  const toggleMute = (e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    const next = !isMuted;
+    setIsMuted(next);
+    setGlobalVideoMuted(next);
+    if (audioRef.current) audioRef.current.muted = next;
+    if (videoRef.current) videoRef.current.muted = next;
+  };
+
+  const handleLike = async (e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (!isLiked) playLikeSound();
+    if (!currentUser?.id) {
+      toast.error('🔐 Please login to like stories!');
+      window.dispatchEvent(new CustomEvent('openAuthModal'));
+      return;
+    }
+    const wasLiked = isLiked;
+    const nextState = !wasLiked;
+    const nextCount = wasLiked ? Math.max(0, likesCount - 1) : likesCount + 1;
+    setIsLiked(nextState);
+    setLikesCount(nextCount);
+    if (nextState) {
+      toast.success('Liked story!');
+      incrementUserEngagement('likes');
+    }
+    if (currentPost) {
+      currentPost.isLiked = nextState;
+      currentPost.likesCount = nextCount;
+      likePostInFirestore(currentPost.id, currentUser.id, wasLiked, currentPost).catch(() => {});
+    }
+  };
+
+  const handleShare = async (e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    playShareSound();
+    const title = currentPost?.title || 'VyaparBridge Story';
+    const text = currentPost?.content || 'Check out this story on VyaparBridge';
+    const url = window.location.href;
+    if (navigator.share) {
+      try {
+        await navigator.share({ title, text, url });
+        if (currentPost?.id) recordShareInFirestore(currentPost.id, currentUser?.id || 'anonymous').catch(() => {});
+      } catch (err) {}
+    } else {
+      navigator.clipboard.writeText(url);
+      toast.success('📋 Story link copied!');
+    }
+  };
+
+  const handleDoubleTap = () => {
+    if (!isLiked) handleLike();
+    setShowHeart(true);
+    setTimeout(() => setShowHeart(false), 850);
+  };
+
+  // WhatsApp-style Pointer Handling (Tap vs Hold)
+  const handlePointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    pointerStartRef.current = { time: Date.now(), x, y };
+
+    if (holdTimeoutRef.current) clearTimeout(holdTimeoutRef.current);
+    holdTimeoutRef.current = setTimeout(() => {
+      setIsHolding(true);
+    }, 180);
+  };
+
+  const handlePointerUp = (e: React.PointerEvent) => {
+    if (holdTimeoutRef.current) {
+      clearTimeout(holdTimeoutRef.current);
+      holdTimeoutRef.current = null;
+    }
+
+    if (isHolding) {
+      setIsHolding(false);
+      pointerStartRef.current = null;
+      return;
+    }
+
+    if (!pointerStartRef.current) return;
+    const elapsed = Date.now() - pointerStartRef.current.time;
+    const startX = pointerStartRef.current.x;
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const currentX = e.clientX - rect.left;
+    const deltaX = Math.abs(currentX - startX);
+    pointerStartRef.current = null;
+
+    // Fast responsive tap (< 250ms and small displacement)
+    if (elapsed < 250 && deltaX < 30) {
+      const width = rect.width;
+      if (startX < width * 0.32) {
+        goToPrev();
+      } else {
+        goToNext();
+      }
+    }
+  };
+
+  const handlePointerCancel = () => {
+    if (holdTimeoutRef.current) clearTimeout(holdTimeoutRef.current);
+    setIsHolding(false);
+    pointerStartRef.current = null;
+  };
+
+  if (!posts || posts.length === 0 || currentIndex < 0 || currentIndex >= posts.length || !currentPost) {
     return null;
   }
 
-  const currentPost = posts[currentIndex];
-  if (!currentPost) return null;
+  const authorName = currentPost?.user?.name || currentPost?.user?.companyName || currentPost?.userName || currentPost?.name || 'Vyapar Seller';
+  const authorAvatar = resolveUserAvatar(currentPost?.user || currentPost, authorName);
+  const isVerified = Boolean(currentPost?.user?.isVerified || currentPost?.isVerified);
+  const authorPhone = currentPost?.user?.phone || currentPost?.user?.whatsapp || currentPost?.phone || currentPost?.whatsapp || '';
+
+  const formatStoryTime = (createdAt: any) => {
+    if (!createdAt) return 'Just now';
+    let ms = 0;
+    if (typeof createdAt === 'number') ms = createdAt;
+    else if (createdAt?.seconds) ms = createdAt.seconds * 1000;
+    else if (typeof createdAt === 'string') ms = new Date(createdAt).getTime();
+    if (!ms || isNaN(ms)) return 'Just now';
+    const diffSec = Math.floor((Date.now() - ms) / 1000);
+    if (diffSec < 60) return 'Just now';
+    const diffMin = Math.floor(diffSec / 60);
+    if (diffMin < 60) return `${diffMin}m ago`;
+    const diffHours = Math.floor(diffMin / 60);
+    if (diffHours < 24) return `${diffHours}h ago`;
+    return `${Math.floor(diffHours / 24)}d ago`;
+  };
+
+  const cleanPhone = authorPhone ? String(authorPhone).replace(/\D/g, '') : '';
 
   return (
     <div 
-      className="fixed inset-0 z-[200] bg-black/95 flex items-center justify-center backdrop-blur-xl overflow-hidden select-none"
+      className="fixed inset-0 z-[200] bg-black/95 sm:bg-black/90 flex items-center justify-center backdrop-blur-xl overflow-hidden select-none"
       onWheel={handleWheel}
       onClick={(e) => {
         if (e.target === e.currentTarget) {
@@ -3773,123 +4026,347 @@ function FullScreenFeedViewerModal({
         }
       }}
     >
-      {/* Top Header Overlay - Clean Close Button Only */}
-      <div className="absolute top-3 right-3 sm:top-4 sm:right-6 z-50 pointer-events-auto">
+      {/* Outer desktop close button */}
+      <div className="hidden sm:block absolute top-4 right-6 z-50 pointer-events-auto">
         <button 
-          onClick={(e) => { e.stopPropagation(); onClose(); }}
-          className="w-10 h-10 sm:w-11 sm:h-11 bg-black/60 hover:bg-black/80 rounded-full text-white flex items-center justify-center backdrop-blur-md border border-white/25 transition-all cursor-pointer hover:scale-110 active:scale-95 shadow-2xl"
-          title="Close Full Screen"
+          onClick={onClose}
+          className="w-10 h-10 bg-black/60 hover:bg-black/80 rounded-full text-white flex items-center justify-center backdrop-blur-md border border-white/20 transition-all cursor-pointer hover:scale-110 active:scale-95 shadow-2xl"
+          title="Close Story (Esc)"
         >
-          <X className="w-5 h-5 sm:w-6 sm:h-6" />
+          <X className="w-5 h-5" />
         </button>
       </div>
 
-      {/* Center Reel/Post Display with YouTube Shorts / Instagram Smooth Swipe Physics */}
-      <div onClick={e => e.stopPropagation()} className="relative z-10 w-full sm:max-w-[420px] h-full sm:h-[calc(100dvh-32px)] sm:max-h-[850px] aspect-auto sm:aspect-[9/16] flex items-center justify-center overflow-hidden sm:rounded-2xl border-0 sm:border border-zinc-800 shadow-2xl my-auto bg-black">
-        
-        {/* PROGRESS BARS (WhatsApp/Instagram style segmented bars) */}
-        <div className="absolute top-3 left-3 right-3 sm:left-4 sm:right-4 z-40 flex items-center gap-1">
-          {posts.map((postItem, idx) => {
-            let widthPct = 0;
-            if (idx < currentIndex) widthPct = 100;
-            else if (idx === currentIndex) widthPct = progressPercent;
-            
-            return (
+      {/* Main WhatsApp Status Frame (Edge-to-edge on mobile, sleek phone frame on desktop) */}
+      <div 
+        onClick={e => e.stopPropagation()} 
+        className="relative z-10 w-full sm:max-w-[420px] h-full sm:h-[calc(100dvh-28px)] sm:max-h-[850px] flex flex-col items-center justify-center overflow-hidden sm:rounded-2xl border-0 sm:border border-zinc-800 shadow-2xl bg-black"
+      >
+        {/* TOP HUD: Segmented Progress Bars & WhatsApp Header (Smoothly hidden when holding screen) */}
+        <div className={cn(
+          "absolute top-0 inset-x-0 z-40 pt-2.5 sm:pt-3 pb-6 px-3 sm:px-4 bg-gradient-to-b from-black/80 via-black/40 to-transparent transition-opacity duration-200 pointer-events-auto",
+          isHolding ? "opacity-0 pointer-events-none" : "opacity-100"
+        )}>
+          {/* WhatsApp Segmented Progress Bar */}
+          <div className="flex items-center gap-1 sm:gap-1.5 w-full mb-2.5">
+            {posts.map((p, idx) => {
+              let widthPct = 0;
+              if (idx < currentIndex) widthPct = 100;
+              else if (idx === currentIndex) widthPct = progressPercent;
+
+              return (
+                <button
+                  key={p.id || idx}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setCurrentIndex(idx);
+                  }}
+                  className="flex-1 h-3 -my-1 py-1 cursor-pointer outline-none group"
+                  title={`Go to story ${idx + 1}`}
+                >
+                  <div className="h-[2.5px] rounded-full bg-white/30 overflow-hidden backdrop-blur-xs">
+                    <div 
+                      className="h-full bg-white rounded-full transition-all duration-75"
+                      style={{ width: `${widthPct}%` }}
+                    />
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* WhatsApp Status Author & Controls Row */}
+          <div className="flex items-center justify-between gap-2">
+            {/* Left: Back Arrow, Avatar, Name, Time, Music */}
+            <div className="flex items-center gap-2 min-w-0">
+              <button 
+                onClick={onClose} 
+                className="w-8 h-8 rounded-full flex items-center justify-center text-white/90 hover:text-white hover:bg-white/15 transition-transform active:scale-90 cursor-pointer shrink-0"
+                title="Back"
+              >
+                <ArrowLeft className="w-5 h-5" />
+              </button>
+
+              <div className="relative shrink-0">
+                <img 
+                  src={authorAvatar} 
+                  alt={authorName}
+                  className="w-9 h-9 rounded-full object-cover border border-white/60 shadow-sm"
+                  onError={(e) => {
+                    e.currentTarget.src = getInitialsAvatar(authorName);
+                  }}
+                />
+              </div>
+
+              <div className="flex flex-col min-w-0">
+                <div className="flex items-center gap-1 leading-tight">
+                  <span className="font-bold text-white text-xs sm:text-sm truncate max-w-[130px] sm:max-w-[160px] drop-shadow-sm">
+                    {authorName}
+                  </span>
+                  {isVerified && (
+                    <BadgeCheck className="w-3.5 h-3.5 text-blue-400 fill-blue-400 shrink-0" />
+                  )}
+                </div>
+                <div className="flex items-center gap-2 text-[11px] text-white/75 font-medium leading-tight">
+                  <span>{formatStoryTime(currentPost.createdAt)}</span>
+                  {musicInfo && (
+                    <div className="flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-black/40 backdrop-blur-md border border-white/20 text-[10px] text-amber-300 font-semibold max-w-[120px] truncate">
+                      <Music className="w-2.5 h-2.5 shrink-0 animate-pulse" />
+                      <span className="truncate">{musicInfo.title}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Right: Mute, Pause/Play, Close */}
+            <div className="flex items-center gap-1.5 shrink-0">
+              {/* Mute / Unmute Button */}
               <button
-                key={postItem.id || idx}
+                onClick={toggleMute}
+                className="w-8 h-8 rounded-full bg-black/40 hover:bg-black/60 backdrop-blur-md border border-white/20 text-white flex items-center justify-center transition-all cursor-pointer active:scale-90"
+                title={isMuted ? "Unmute Story" : "Mute Story"}
+              >
+                {isMuted ? <VolumeX className="w-4 h-4 text-red-400" /> : <Volume2 className="w-4 h-4 text-emerald-400" />}
+              </button>
+
+              {/* Pause / Resume Button */}
+              <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  setCurrentIndex(idx);
+                  setIsPaused(prev => !prev);
                 }}
-                className="flex-1 h-1.5 -my-2 py-2 cursor-pointer outline-none group"
-                title={`Go to story ${idx + 1}`}
+                className="w-8 h-8 rounded-full bg-black/40 hover:bg-black/60 backdrop-blur-md border border-white/20 text-white flex items-center justify-center transition-all cursor-pointer active:scale-90"
+                title={isPaused ? "Play Story" : "Pause Story"}
               >
-                <div className="h-1 rounded-full bg-white/20 overflow-hidden backdrop-blur-xs">
-                  <div 
-                    className="h-full bg-white rounded-full transition-all duration-75"
-                    style={{ width: `${widthPct}%` }}
-                  />
-                </div>
+                {isPaused ? <Play className="w-4 h-4 fill-white" /> : <Pause className="w-4 h-4 fill-white" />}
               </button>
-            );
-          })}
+
+              {/* Close Button (Mobile & Desktop) */}
+              <button
+                onClick={onClose}
+                className="w-8 h-8 rounded-full bg-black/40 hover:bg-black/60 backdrop-blur-md border border-white/20 text-white flex items-center justify-center transition-all cursor-pointer active:scale-90"
+                title="Close"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
         </div>
 
-        {/* TAP TARGETS (Left 25% for Back, Right 75% for Forward) */}
-        <div className="absolute inset-x-0 top-10 bottom-16 z-30 flex">
-          <div 
-            onClick={(e) => {
-              e.stopPropagation();
-              goToPrev();
+        {/* Audio Track Engine for Custom Story Music (No loop; auto advances on ended) */}
+        {audioSrc && (
+          <audio 
+            key={`story_audio_${currentPost.id || currentIndex}_${audioSrc}`}
+            ref={audioRef}
+            src={audioSrc}
+            autoPlay={!isPaused && !isHolding}
+            muted={isMuted}
+            playsInline
+            onTimeUpdate={(e) => {
+              const a = e.currentTarget;
+              if (a && a.duration && !isNaN(a.duration) && a.duration > 0) {
+                const pct = (a.currentTime / a.duration) * 100;
+                setProgressPercent(pct);
+              }
             }}
-            className="w-1/4 h-full cursor-pointer pointer-events-auto"
-            title="Previous Story"
-          />
-          <div 
-            onClick={(e) => {
-              e.stopPropagation();
+            onEnded={() => {
               goToNext();
             }}
-            className="w-3/4 h-full cursor-pointer pointer-events-auto"
-            title="Next Story"
+            onError={() => {
+              // Fallback to normal 5s timer if audio file is unplayable
+              setTimeout(() => {
+                if (currentIndex === posts.indexOf(currentPost)) goToNext();
+              }, 5000);
+            }}
+            className="hidden"
           />
+        )}
+
+        {/* Fullscreen Media Stage with Stable Horizontal Transitions (NO SHAKING, NO ROTATEX, NO VERTICAL SPRING) */}
+        <div className="relative w-full h-full flex items-center justify-center overflow-hidden bg-black select-none">
+          {/* Ambient blurred backdrop for letterboxing elegance */}
+          {mediaSrc && (
+            <div className="absolute inset-0 w-full h-full overflow-hidden opacity-45 blur-3xl scale-110 pointer-events-none z-0">
+              <img 
+                src={posterSrc || mediaSrc} 
+                alt="" 
+                className="w-full h-full object-cover select-none"
+                referrerPolicy="no-referrer"
+                onError={(e) => { e.currentTarget.style.display = 'none'; }}
+              />
+            </div>
+          )}
+
+          {/* Double Tap Heart Pop */}
+          <AnimatePresence>
+            {showHeart && (
+              <div className="absolute inset-0 z-50 flex items-center justify-center pointer-events-none">
+                <motion.div
+                  initial={{ scale: 0, opacity: 0 }}
+                  animate={{ scale: [0, 1.3, 1], opacity: [0, 1, 1, 0] }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.8, times: [0, 0.4, 0.8, 1] }}
+                  className="text-red-500 drop-shadow-[0_0_20px_rgba(239,68,68,0.9)]"
+                >
+                  <Heart className="w-28 h-28 fill-red-500 text-red-500" />
+                </motion.div>
+              </div>
+            )}
+          </AnimatePresence>
+
+          {/* Interactive Tap & Hold Layer (WhatsApp status touch mechanics) */}
+          <div
+            className="absolute inset-0 z-30 cursor-pointer select-none touch-none"
+            onPointerDown={handlePointerDown}
+            onPointerUp={handlePointerUp}
+            onPointerCancel={handlePointerCancel}
+            onPointerLeave={handlePointerCancel}
+            onDoubleClick={(e) => {
+              e.stopPropagation();
+              handleDoubleTap();
+            }}
+          />
+
+          {/* Foreground Media with smooth WhatsApp horizontal animation */}
+          <AnimatePresence mode="popLayout" initial={false}>
+            <motion.div
+              key={currentPost.id || currentIndex}
+              initial={{ opacity: 0, x: direction > 0 ? 35 : direction < 0 ? -35 : 0 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: direction > 0 ? -35 : 35 }}
+              transition={{ duration: 0.18, ease: 'easeOut' }}
+              className="relative z-10 w-full h-full flex items-center justify-center overflow-hidden pointer-events-none select-none"
+            >
+              {isExplicitPdf ? (
+                <div className="w-full h-full flex items-center justify-center bg-slate-950 p-3 sm:p-4 overflow-y-auto pointer-events-auto">
+                  <PdfCardViewer post={{ ...currentPost, mediaUrl: mediaSrc || currentPost?.mediaUrl }} variant="feed" />
+                </div>
+              ) : (isYouTubeUrl(mediaSrc) || isYouTubeUrl(currentPost?.externalLink)) ? (
+                <UniversalYouTubePlayer 
+                  url={mediaSrc || currentPost?.externalLink} 
+                  isReel={true} 
+                  aspectRatio="9:16" 
+                  className="relative z-10 w-full h-full object-contain pointer-events-auto" 
+                  autoPlay={!isPaused && !isHolding}
+                  muted={isMuted}
+                  id={`story_${currentPost?.id || currentIndex}`}
+                  onEnded={goToNext}
+                />
+              ) : isVideo && mediaSrc ? (
+                <video
+                  ref={videoRef}
+                  key={`story_vid_${currentPost.id || currentIndex}_${mediaSrc}`}
+                  src={mediaSrc}
+                  poster={posterSrc}
+                  playsInline
+                  autoPlay={!isPaused && !isHolding}
+                  muted={isMuted}
+                  className="w-full h-full object-contain bg-transparent relative z-10"
+                  onTimeUpdate={(e) => {
+                    const v = e.currentTarget;
+                    if (v && v.duration && !isNaN(v.duration) && v.duration > 0) {
+                      const pct = (v.currentTime / v.duration) * 100;
+                      setProgressPercent(pct);
+                    }
+                  }}
+                  onEnded={() => {
+                    goToNext();
+                  }}
+                  onError={() => {
+                    setTimeout(goToNext, 3500);
+                  }}
+                />
+              ) : (
+                <img 
+                  src={mediaSrc} 
+                  alt={currentPost.title || 'Story'}
+                  className="relative z-10 w-full h-full object-contain transition-all duration-200 bg-transparent"
+                  onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                />
+              )}
+            </motion.div>
+          </AnimatePresence>
         </div>
 
-        <AnimatePresence mode="popLayout" custom={direction}>
-          <motion.div
-            key={currentPost?.id || currentIndex}
-            custom={direction}
-            drag="y"
-            dragConstraints={{ top: 0, bottom: 0 }}
-            dragElastic={0.25}
-            onDragEnd={(_e, info) => {
-              const offset = info.offset.y;
-              const velocity = info.velocity.y;
-              if (offset < -120 || velocity < -500) {
-                goToNext();
-              } else if (offset > 120 || velocity > 500) {
-                goToPrev();
-              }
-            }}
-            initial={(dir: number) => ({
-              y: dir > 0 ? '100%' : dir < 0 ? '-100%' : 0,
-              scale: 0.88,
-              rotateX: dir > 0 ? 12 : dir < 0 ? -12 : 0,
-              opacity: 0.8
-            })}
-            animate={{
-              y: 0,
-              scale: 1,
-              rotateX: 0,
-              opacity: 1,
-              transition: {
-                y: { type: 'spring', stiffness: 380, damping: 30 },
-                scale: { duration: 0.22, ease: 'easeOut' },
-                rotateX: { duration: 0.22, ease: 'easeOut' },
-                opacity: { duration: 0.18 }
-              }
-            }}
-            exit={(dir: number) => ({
-              y: dir > 0 ? '-100%' : '100%',
-              scale: 0.88,
-              rotateX: dir > 0 ? -12 : 12,
-              opacity: 0.8,
-              transition: {
-                y: { type: 'spring', stiffness: 380, damping: 30 },
-                scale: { duration: 0.22 },
-                opacity: { duration: 0.18 }
-              }
-            })}
-            className="w-full h-full flex items-center justify-center relative overflow-hidden touch-pan-y"
-          >
-            <ReelCard 
-              reel={currentPost} 
-              currentUser={currentUser} 
-              onClose={onClose} 
-              userLocation={userLocation}
-            />
-          </motion.div>
-        </AnimatePresence>
+        {/* BOTTOM HUD: WhatsApp Caption & Reply Bar (Smoothly hidden when holding screen) */}
+        <div className={cn(
+          "absolute bottom-0 inset-x-0 z-40 pb-4 pt-8 px-3 sm:px-4 bg-gradient-to-t from-black/90 via-black/50 to-transparent flex flex-col items-center gap-2.5 transition-opacity duration-200 pointer-events-auto",
+          isHolding ? "opacity-0 pointer-events-none" : "opacity-100"
+        )}>
+          {/* Status Caption / Price Pill */}
+          {(currentPost.title || currentPost.content || currentPost.minRate || currentPost.maxRate) && (
+            <div className="bg-black/60 backdrop-blur-md px-4 py-2 rounded-2xl max-w-[92%] mx-auto text-white text-center shadow-xl border border-white/10">
+              {currentPost.title && (
+                <p className="font-bold text-xs sm:text-sm text-white line-clamp-1 drop-shadow-sm">
+                  {currentPost.title}
+                </p>
+              )}
+              {currentPost.content && (
+                <p className="text-[11px] sm:text-xs text-white/90 line-clamp-2 mt-0.5">
+                  {currentPost.content}
+                </p>
+              )}
+              {(currentPost.minRate || currentPost.maxRate) && (
+                <div className="mt-1">
+                  <span className="inline-flex items-center px-2.5 py-0.5 bg-emerald-500/30 border border-emerald-400/40 text-emerald-300 font-bold text-[11px] rounded-full shadow-xs">
+                    ₹{currentPost.minRate || 0} - ₹{currentPost.maxRate || 0} {currentPost.unit ? `/ ${currentPost.unit}` : ''}
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* WhatsApp Action Buttons Row */}
+          <div className="flex items-center justify-between w-full max-w-[92%] gap-2 pt-0.5">
+            {/* Reply on WhatsApp Button */}
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                if (cleanPhone) {
+                  const text = encodeURIComponent(`Hi ${authorName}, I saw your status story "${currentPost.title || 'Product'}" on VyaparBridge!`);
+                  window.open(`https://wa.me/91${cleanPhone}?text=${text}`, '_blank');
+                } else {
+                  playEnquirySound();
+                  if (currentPost.id) {
+                    recordEnquiryInFirestore(currentPost.id, currentUser?.id || 'anonymous', currentUser?.name || 'User').catch(()=>{});
+                  }
+                  onClose();
+                  window.location.href = '/chat';
+                }
+              }}
+              className="flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-full bg-[#25D366] hover:bg-[#1EBE5D] text-white font-bold text-xs sm:text-sm shadow-xl transition-transform active:scale-95 cursor-pointer"
+              title="Reply via WhatsApp"
+            >
+              <MessageSquare className="w-4 h-4 fill-white" />
+              <span className="truncate">Reply on WhatsApp</span>
+            </button>
+
+            {/* Like Heart Button */}
+            <button
+              onClick={handleLike}
+              className={cn(
+                "flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-full backdrop-blur-md transition-all active:scale-90 border cursor-pointer shrink-0",
+                isLiked 
+                  ? "bg-red-500/30 text-red-400 border-red-500/50" 
+                  : "bg-black/50 text-white border-white/20 hover:bg-black/70"
+              )}
+              title="Like Story"
+            >
+              <Heart className={cn("w-4 h-4 transition-transform", isLiked ? "fill-red-500 text-red-500 scale-110" : "")} />
+              <span className="text-xs font-bold">{likesCount}</span>
+            </button>
+
+            {/* Share Button */}
+            <button
+              onClick={handleShare}
+              className="w-10 h-10 rounded-full bg-black/50 hover:bg-black/70 backdrop-blur-md text-white border border-white/20 flex items-center justify-center transition-all active:scale-90 cursor-pointer shrink-0"
+              title="Share Story"
+            >
+              <Share2 className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -4663,12 +5140,26 @@ function InternalFeedVideoPlayer({
       attemptPause();
     };
 
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        attemptPause();
+        if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
+          navigator.mediaSession.playbackState = 'none';
+          if (navigator.mediaSession.metadata) navigator.mediaSession.metadata = null;
+        }
+      }
+    };
+
     window.addEventListener('vyapar_reel_viewing_active', handleReelEvent);
     window.addEventListener('pause_all_feed_videos', handlePauseAll);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pagehide', handleVisibilityChange);
 
     return () => {
       window.removeEventListener('vyapar_reel_viewing_active', handleReelEvent);
       window.removeEventListener('pause_all_feed_videos', handlePauseAll);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pagehide', handleVisibilityChange);
     };
   }, [isReel, attemptPlay, attemptPause, autoPlay, hasStartedPlaying]);
 
