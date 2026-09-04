@@ -230,6 +230,10 @@ export function filterOutHiddenContent(items: any[], userId?: string | number) {
     if (!item) return false;
     const itemId = String(item.id || '');
     const itemUserId = String(item.userId || item.user?.id || item.actorId || '');
+    if (itemId && ['post_default_1', 'post_default_2'].includes(itemId)) return false;
+    if (itemUserId && ['sys_user_1', 'sys_user_2', 'sys_user_3'].includes(itemUserId)) return false;
+    const authorName = String(item.userName || item.user?.name || '').toLowerCase();
+    if (authorName.includes('morbi ceramic') || authorName.includes('global sanitaryware')) return false;
     if (item.status === 'rejected') return false;
     if (itemId && deletedPostsSet.has(itemId)) return false;
     if (itemId && notInterestedSet.has(itemId)) return false;
@@ -8003,6 +8007,10 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
         if (Array.isArray(parsed)) {
           parsed.forEach((p: any) => {
             if (p && p.id) {
+              const uid = String(p.userId || p.user?.id || '');
+              const uname = String(p.userName || p.user?.name || '').toLowerCase();
+              if (['sys_user_1', 'sys_user_2', 'sys_user_3'].includes(uid)) return;
+              if (uname.includes('morbi ceramic') || uname.includes('global sanitaryware')) return;
               const existing = postMap.get(String(p.id)) || {};
               postMap.set(String(p.id), mergePostSafely(existing, p));
             }
@@ -8289,11 +8297,12 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
         return timeB - timeA;
       });
 
+      const cleanList = filterOutHiddenContent(allCombined, user?.id);
       try {
-        safeSetLocalStorage('VyaparBridge_cached_posts', allCombined.slice(0, 50));
+        safeSetLocalStorage('VyaparBridge_cached_posts', cleanList.slice(0, 50));
       } catch(e) {}
 
-      return filterOutHiddenContent(allCombined, user?.id);
+      return cleanList;
     });
     setLoading(false);
   };
@@ -8382,11 +8391,12 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
              const existing = map.get(String(p.id)) || {};
              map.set(String(p.id), mergePostSafely(existing, p));
           });
-          return Array.from(map.values()).sort((a, b) => {
+          const all = Array.from(map.values()).sort((a, b) => {
             const timeA = typeof a.createdAt === 'number' ? a.createdAt : new Date(a.createdAt || 0).getTime();
             const timeB = typeof b.createdAt === 'number' ? b.createdAt : new Date(b.createdAt || 0).getTime();
             return timeB - timeA;
           });
+          return filterOutHiddenContent(all, user?.id);
         });
         setLoading(false);
       }
@@ -12627,8 +12637,40 @@ export default function App() {
   const [showTermsModal, setShowTermsModal] = useState(false);
 
   useEffect(() => {
-    // Proactively clean bloated caches on boot
+    // Proactively clean bloated caches on boot & remove dummy profiles
     cleanupStorageQuota();
+    try {
+      const uCache = localStorage.getItem('VyaparBridge_cached_users');
+      if (uCache) {
+        const parsed = JSON.parse(uCache);
+        if (Array.isArray(parsed)) {
+          const cleaned = parsed.filter((u: any) => {
+            const uid = String(u.id || '');
+            const uname = String(u.name || '').toLowerCase();
+            const uuser = String(u.username || '').toLowerCase();
+            if (['sys_user_1', 'sys_user_2', 'sys_user_3'].includes(uid)) return false;
+            if (uname.includes('morbi ceramic') || uname.includes('global sanitaryware')) return false;
+            if (uuser.includes('morbi_ceramic') || uuser.includes('global_sanitary')) return false;
+            return true;
+          });
+          localStorage.setItem('VyaparBridge_cached_users', JSON.stringify(cleaned));
+        }
+      }
+      const pCache = localStorage.getItem('VyaparBridge_cached_posts') || localStorage.getItem('vyapar_posts_cache_v2');
+      if (pCache) {
+        const parsed = JSON.parse(pCache);
+        if (Array.isArray(parsed)) {
+          const cleaned = parsed.filter((p: any) => {
+            const uid = String(p.userId || p.user?.id || '');
+            const uname = String(p.userName || p.user?.name || '').toLowerCase();
+            if (['sys_user_1', 'sys_user_2', 'sys_user_3'].includes(uid)) return false;
+            if (uname.includes('morbi ceramic') || uname.includes('global sanitaryware')) return false;
+            return true;
+          });
+          localStorage.setItem('VyaparBridge_cached_posts', JSON.stringify(cleaned));
+        }
+      }
+    } catch(e) {}
   }, []);
 
   useEffect(() => {

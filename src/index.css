@@ -2,9 +2,11 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* High-Performance 60 FPS Mobile & Desktop Rendering Optimizations */
 html {
   scroll-behavior: smooth;
   -webkit-text-size-adjust: 100%;
+  touch-action: manipulation;
 }
 
 html, body {
@@ -14,6 +16,39 @@ html, body {
   background-color: #FAFAFA;
   color: #18181b;
   -webkit-overflow-scrolling: touch;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overscroll-behavior-y: contain;
+}
+
+/* GPU Accelerated smooth layers without layer explosion */
+.smooth-feed-item,
+.smooth-scroll-item,
+.feed-card-item,
+.reel-video-container {
+  transform: translate3d(0, 0, 0);
+  -webkit-transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  perspective: 1000px;
+}
+
+div[class*="overflow-y-auto"], 
+div[class*="overflow-x-auto"],
+div[class*="scroll"] {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+img, video {
+  content-visibility: auto;
+  image-rendering: -webkit-optimize-contrast;
+}
+
+/* Virtualized performance boost for cards out of viewport */
+article, .business-card, .post-container {
+  content-visibility: auto;
+  contain-intrinsic-size: 1px 480px;
 }
 
 body {

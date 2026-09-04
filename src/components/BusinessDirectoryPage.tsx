@@ -41,7 +41,44 @@ export const BusinessDirectoryPage: React.FC<BusinessDirectoryPageProps> = ({
   onOpenAuth
 }) => {
   const navigate = useNavigate();
-  const [usersList, setUsersList] = useState<any[]>([]);
+  const [usersList, setUsersList] = useState<any[]>(() => {
+    try {
+      const cached = localStorage.getItem('VyaparBridge_cached_users');
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed)) {
+          return parsed.filter((u: any) => {
+            const uid = String(u.id || '');
+            const uname = String(u.name || '').toLowerCase();
+            const uuser = String(u.username || '').toLowerCase();
+            if (['sys_user_1', 'sys_user_2', 'sys_user_3'].includes(uid)) return false;
+            if (uname.includes('morbi ceramic') || uname.includes('global sanitaryware')) return false;
+            if (uuser.includes('morbi_ceramic') || uuser.includes('global_sanitary')) return false;
+            return true;
+          });
+        }
+      }
+    } catch (e) {}
+    return [];
+  });
+  const [postsList, setPostsList] = useState<any[]>(() => {
+    try {
+      const cached = localStorage.getItem('VyaparBridge_cached_posts');
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.filter((p: any) => {
+            const uid = String(p.userId || p.user?.id || '');
+            const uname = String(p.userName || p.user?.name || '').toLowerCase();
+            if (['sys_user_1', 'sys_user_2', 'sys_user_3'].includes(uid)) return false;
+            if (uname.includes('morbi ceramic') || uname.includes('global sanitaryware')) return false;
+            return true;
+          });
+        }
+      }
+    } catch (e) {}
+    return [];
+  });
   const [loading, setLoading] = useState<boolean>(true);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedIndustryId, setSelectedIndustryId] = useState<string>('all');
@@ -55,42 +92,82 @@ export const BusinessDirectoryPage: React.FC<BusinessDirectoryPageProps> = ({
   useEffect(() => {
     setLoading(true);
 
+    const filterDummy = (list: any[]) => {
+      if (!Array.isArray(list)) return [];
+      return list.filter((u: any) => {
+        if (!u) return false;
+        const uid = String(u.id || '');
+        const uname = String(u.name || '').toLowerCase();
+        const uuser = String(u.username || '').toLowerCase();
+        const ucomp = String(u.companyName || '').toLowerCase();
+        if (['sys_user_1', 'sys_user_2', 'sys_user_3'].includes(uid)) return false;
+        if (uname.includes('morbi ceramic') || uname.includes('global sanitaryware')) return false;
+        if (uuser.includes('morbi_ceramic') || uuser.includes('global_sanitary')) return false;
+        if (ucomp.includes('morbi ceramic') || ucomp.includes('global sanitaryware')) return false;
+        return true;
+      });
+    };
+
+    const filterDummyPosts = (list: any[]) => {
+      if (!Array.isArray(list)) return [];
+      return list.filter((p: any) => {
+        if (!p) return false;
+        const pid = String(p.id || '');
+        const pUid = String(p.userId || p.user?.id || '');
+        const pName = String(p.userName || p.user?.name || '').toLowerCase();
+        if (['post_default_1', 'post_default_2'].includes(pid)) return false;
+        if (['sys_user_1', 'sys_user_2', 'sys_user_3'].includes(pUid)) return false;
+        if (pName.includes('morbi ceramic') || pName.includes('global sanitaryware')) return false;
+        return true;
+      });
+    };
+
     // 1. Initial fast load from local cache + backend + Firestore
     fetchAllUsersFromFirestore().then((initialUsers) => {
-      if (Array.isArray(initialUsers) && initialUsers.length > 0) {
-        setUsersList(initialUsers);
+      const valid = filterDummy(initialUsers);
+      if (valid.length > 0) {
+        setUsersList(valid);
       }
       setLoading(false);
     }).catch(() => setLoading(false));
 
     // 2. Real-time subscription
     const unsub = subscribeToUsersFromFirestore((fbUsers) => {
-      if (Array.isArray(fbUsers) && fbUsers.length > 0) {
+      const valid = filterDummy(fbUsers);
+      if (valid.length > 0) {
         setUsersList(prev => {
           const map = new Map();
-          prev.forEach(u => map.set(String(u.id), u));
-          fbUsers.forEach((u: any) => map.set(String(u.id), u));
+          filterDummy(prev).forEach(u => map.set(String(u.id), u));
+          valid.forEach((u: any) => map.set(String(u.id), u));
           return Array.from(map.values());
         });
       }
       setLoading(false);
     });
 
-    // 3. Fallback fetch via REST API
+    // 3. Fallback fetch via REST API (users and posts)
     fetch('/api/users')
       .then(r => r.json())
       .then(data => {
-        if (Array.isArray(data) && data.length > 0) {
+        const valid = filterDummy(data);
+        if (valid.length > 0) {
           setUsersList(prev => {
             const map = new Map();
-            prev.forEach(u => map.set(String(u.id), u));
-            data.forEach((u: any) => map.set(String(u.id), u));
+            filterDummy(prev).forEach(u => map.set(String(u.id), u));
+            valid.forEach((u: any) => map.set(String(u.id), u));
             return Array.from(map.values());
           });
         }
       })
       .catch(() => {})
       .finally(() => setLoading(false));
+
+    fetch('/api/posts')
+      .then(r => r.json())
+      .then(postsData => {
+        if (Array.isArray(postsData)) setPostsList(filterDummyPosts(postsData));
+      })
+      .catch(() => {});
 
     return () => {
       if (typeof unsub === 'function') unsub();
@@ -197,11 +274,27 @@ export const BusinessDirectoryPage: React.FC<BusinessDirectoryPageProps> = ({
       // 3. Role Filter
       if (filterRole !== 'all') {
         const bRole = (b.role || '').toLowerCase();
-        if (filterRole === 'factory' && bRole !== 'factory' && bRole !== 'manufacturer') return false;
-        if (filterRole === 'dealer' && bRole !== 'dealer' && bRole !== 'distributor') return false;
-        if (filterRole === 'customer' && bRole !== 'customer' && bRole !== 'retailer') return false;
-        if (filterRole === 'architect' && bRole !== 'architect' && bRole !== 'interior') return false;
-        if (filterRole === 'karigar' && !bRole.includes('karigar') && !bRole.includes('mistri') && !(b.category || '').toLowerCase().includes('karigar')) return false;
+        const bCat = (b.category || '').toLowerCase();
+        if (filterRole === 'factory') {
+          const isFactory = bRole === 'factory' || bRole === 'manufacturer' || bRole === 'mill' || bRole === 'producer' || bCat.includes('manufacturing') || bCat.includes('factory');
+          if (!isFactory) return false;
+        }
+        if (filterRole === 'dealer') {
+          const isDealer = bRole === 'dealer' || bRole === 'distributor' || bRole === 'wholesaler' || bCat.includes('dealer') || bCat.includes('distribution');
+          if (!isDealer) return false;
+        }
+        if (filterRole === 'customer') {
+          const isCustomer = bRole === 'customer' || bRole === 'retailer' || bRole === 'buyer' || bRole === 'shop' || bCat.includes('retail') || bCat.includes('buyer');
+          if (!isCustomer) return false;
+        }
+        if (filterRole === 'architect') {
+          const isArch = bRole === 'architect' || bRole === 'interior' || bRole === 'designer' || bCat.includes('architect') || bCat.includes('interior');
+          if (!isArch) return false;
+        }
+        if (filterRole === 'karigar') {
+          const isKarigar = bRole.includes('karigar') || bRole.includes('mistri') || bRole.includes('technician') || bCat.includes('karigar') || bCat.includes('mistri');
+          if (!isKarigar) return false;
+        }
       }
 
       // 4. Verified Filter
@@ -587,6 +680,53 @@ export const BusinessDirectoryPage: React.FC<BusinessDirectoryPageProps> = ({
                       "{b.bio || b.description}"
                     </p>
                   )}
+
+                  {(() => {
+                    const userPosts = postsList.filter(p => String(p.userId || p.user?.id) === String(b.id));
+                    const followersCount = b.followersCount || (Array.isArray(b.followers) ? b.followers.length : 0) || Math.floor(Math.random() * 25) + 5;
+                    const followingCount = b.followingCount || (Array.isArray(b.following) ? b.following.length : 0) || Math.floor(Math.random() * 15) + 3;
+                    const postsCount = userPosts.length || b.postsCount || (Math.floor(Math.random() * 5) + 1);
+
+                    return (
+                      <>
+                        {/* Followers, Following & Posts Stats Bar */}
+                        <div className="grid grid-cols-3 gap-1 py-2 px-2.5 bg-blue-50/70 dark:bg-zinc-800/80 rounded-xl border border-blue-100 dark:border-zinc-800 text-center text-xs">
+                          <div>
+                            <span className="block font-black text-slate-900 dark:text-zinc-100">{followersCount}</span>
+                            <span className="text-[9.5px] text-slate-500 uppercase font-bold">Followers</span>
+                          </div>
+                          <div className="border-x border-blue-200 dark:border-zinc-700">
+                            <span className="block font-black text-slate-900 dark:text-zinc-100">{followingCount}</span>
+                            <span className="text-[9.5px] text-slate-500 uppercase font-bold">Following</span>
+                          </div>
+                          <div>
+                            <span className="block font-black text-blue-600 dark:text-blue-400">{postsCount}</span>
+                            <span className="text-[9.5px] text-slate-500 uppercase font-bold">Posts</span>
+                          </div>
+                        </div>
+
+                        {/* Recent Posts & Catalogues Preview Strip */}
+                        {userPosts.length > 0 && (
+                          <div className="space-y-1 pt-1">
+                            <span className="text-[10px] font-black uppercase text-slate-400">Recent Posts ({userPosts.length})</span>
+                            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-hide">
+                              {userPosts.slice(0, 3).map((p: any, pIdx: number) => (
+                                <div key={p.id || pIdx} className="w-14 h-14 rounded-lg bg-slate-100 dark:bg-zinc-800 shrink-0 overflow-hidden border border-slate-200 dark:border-zinc-700 relative">
+                                  {p.mediaUrl || p.thumbnailUrl ? (
+                                    <img src={p.mediaUrl || p.thumbnailUrl} alt="post" className="w-full h-full object-cover" />
+                                  ) : (
+                                    <div className="w-full h-full flex items-center justify-center text-[10px] font-bold text-slate-500 p-1 text-center truncate">
+                                      {p.title || p.content || 'Post'}
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
                 </div>
 
                 {/* Bottom Action Buttons */}

@@ -98,6 +98,10 @@ export function generateInstagramFeed(
       }
     }
     if (p.description === 'My tree' || p.title === 'Tree' || postId === 'post_admin_1787027595927' || postId === 'post_admin_1787027350660') return false;
+    if (['post_default_1', 'post_default_2'].includes(postId)) return false;
+    if (['sys_user_1', 'sys_user_2', 'sys_user_3'].includes(postUserId)) return false;
+    const authorName = String(p.userName || p.user?.name || '').toLowerCase();
+    if (authorName.includes('morbi ceramic') || authorName.includes('global sanitaryware')) return false;
 
     // Filter out blocked users
     if (blockedUserIds.includes(postUserId)) return false;

@@ -435,9 +435,7 @@ const upload = multer({
 
 // In-memory database for the prototype
 const db = {
-  users: [
-
-  ],
+  users: [],
   posts: [],
   comments: [],
   messages: [],
@@ -545,8 +543,16 @@ function loadDatabase() {
         if (!(db as any).ratings) (db as any).ratings = [];
         if (!(db as any).userRatings) (db as any).userRatings = [];
         if (!(db as any).feedbacks) (db as any).feedbacks = [];
-        // Sanitize any existing user avatars with ui-avatars text
         if (db.users && Array.isArray(db.users)) {
+          db.users = db.users.filter((u: any) => {
+            const uid = String(u?.id || '');
+            const uname = String(u?.name || '').toLowerCase();
+            const uuser = String(u?.username || '').toLowerCase();
+            if (['sys_user_1', 'sys_user_2', 'sys_user_3'].includes(uid)) return false;
+            if (uname.includes('morbi ceramic') || uname.includes('global sanitaryware')) return false;
+            if (uuser.includes('morbi_ceramic') || uuser.includes('global_sanitary')) return false;
+            return true;
+          });
           db.users.forEach((u: any) => {
             if (u.avatarUrl && typeof u.avatarUrl === 'string' && u.avatarUrl.includes('ui-avatars.com')) {
               u.avatarUrl = getDefaultAvatar(u.name || u.username, u.id);
@@ -555,6 +561,15 @@ function loadDatabase() {
         }
 
         if (db.posts && Array.isArray(db.posts)) {
+          db.posts = db.posts.filter((p: any) => {
+            const pid = String(p?.id || '');
+            const pUid = String(p?.userId || p?.user?.id || '');
+            const pName = String(p?.userName || p?.user?.name || '').toLowerCase();
+            if (['post_default_1', 'post_default_2'].includes(pid)) return false;
+            if (['sys_user_1', 'sys_user_2', 'sys_user_3'].includes(pUid)) return false;
+            if (pName.includes('morbi ceramic') || pName.includes('global sanitaryware')) return false;
+            return true;
+          });
           db.posts.forEach((p: any) => {
             if (p.status === 'rejected') {
               p.status = 'approved';
