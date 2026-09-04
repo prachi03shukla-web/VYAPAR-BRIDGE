@@ -144,9 +144,9 @@ export function AdminPanel({ user, onUpdateUser }: AdminPanelProps) {
     // Load from Firestore
     getAdminSettingsFromFirestore().then((settings) => {
       if (settings) {
-        if (settings.upiId) setAdminUpiId(settings.upiId);
-        if (settings.accountName) setAdminAccountName(settings.accountName);
-        if (settings.barcodeImageUrl) setAdminBarcodeUrl(settings.barcodeImageUrl);
+        if (settings.upiId) setAdminUpiId(settings.upiId || '');
+        if (settings.accountName) setAdminAccountName(settings.accountName || '');
+        if (settings.barcodeImageUrl) setAdminBarcodeUrl(settings.barcodeImageUrl || '');
       }
     }).catch(() => {});
 
@@ -398,13 +398,13 @@ export function AdminPanel({ user, onUpdateUser }: AdminPanelProps) {
   // Edit Brand Banner
   const handleEditAd = (ad: BrandAdItem) => {
     setEditingAdId(ad.id);
-    setBrandCompanyName(ad.companyName);
-    setBrandTitle(ad.title);
-    setBrandDescription(ad.description);
-    setBrandMediaUrl(ad.mediaUrl);
-    setBrandMediaType(ad.type);
-    setBrandLinkUrl(ad.linkUrl);
-    setBrandIsActive(ad.isActive);
+    setBrandCompanyName(ad.companyName || '');
+    setBrandTitle(ad.title || '');
+    setBrandDescription(ad.description || '');
+    setBrandMediaUrl(ad.mediaUrl || '');
+    setBrandMediaType(ad.type || 'image');
+    setBrandLinkUrl(ad.linkUrl || '');
+    setBrandIsActive(ad.isActive ?? true);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -566,7 +566,7 @@ export function AdminPanel({ user, onUpdateUser }: AdminPanelProps) {
               <input
                 type="text"
                 placeholder="Username (e.g. manit) ya 9889104477"
-                value={authAdminId}
+                value={authAdminId || ''}
                 onChange={(e) => { setAuthAdminId(e.target.value); setLoginError(''); }}
                 className="w-full bg-slate-50 dark:bg-zinc-800/80 border border-slate-200 dark:border-zinc-700 rounded-xl px-4 py-3 text-sm text-black dark:text-white placeholder:text-slate-400 outline-none focus:border-amber-500 transition-colors"
                 required
@@ -580,7 +580,7 @@ export function AdminPanel({ user, onUpdateUser }: AdminPanelProps) {
               <input
                 type="password"
                 placeholder="Master PIN (5503)"
-                value={authAdminPassword}
+                value={authAdminPassword || ''}
                 onChange={(e) => { setAuthAdminPassword(e.target.value); setLoginError(''); }}
                 className="w-full bg-slate-50 dark:bg-zinc-800/80 border border-slate-200 dark:border-zinc-700 rounded-xl px-4 py-3 text-sm text-black dark:text-white placeholder:text-slate-400 outline-none focus:border-amber-500 transition-colors"
                 required
@@ -779,7 +779,7 @@ export function AdminPanel({ user, onUpdateUser }: AdminPanelProps) {
                 <input
                   type="text"
                   placeholder="e.g. Kalyan Jewellers & Sons / Tiles Hub"
-                  value={brandCompanyName}
+                  value={brandCompanyName || ''}
                   onChange={(e) => setBrandCompanyName(e.target.value)}
                   className="w-full bg-slate-50 dark:bg-zinc-800/80 border border-slate-200 dark:border-zinc-700 rounded-xl px-3.5 py-2.5 text-xs text-black dark:text-white outline-none focus:border-amber-500"
                   required
@@ -794,7 +794,7 @@ export function AdminPanel({ user, onUpdateUser }: AdminPanelProps) {
                 <input
                   type="text"
                   placeholder="e.g. Direct Factory Wholesale 50% Off"
-                  value={brandTitle}
+                  value={brandTitle || ''}
                   onChange={(e) => setBrandTitle(e.target.value)}
                   className="w-full bg-slate-50 dark:bg-zinc-800/80 border border-slate-200 dark:border-zinc-700 rounded-xl px-3.5 py-2.5 text-xs text-black dark:text-white outline-none focus:border-amber-500"
                 />
@@ -808,7 +808,7 @@ export function AdminPanel({ user, onUpdateUser }: AdminPanelProps) {
                 <input
                   type="text"
                   placeholder="e.g. 9889104477 ya https://wa.me/919889104477"
-                  value={brandLinkUrl}
+                  value={brandLinkUrl || ''}
                   onChange={(e) => setBrandLinkUrl(e.target.value)}
                   className="w-full bg-slate-50 dark:bg-zinc-800/80 border border-slate-200 dark:border-zinc-700 rounded-xl px-3.5 py-2.5 text-xs text-black dark:text-white outline-none focus:border-amber-500"
                 />
@@ -858,7 +858,7 @@ export function AdminPanel({ user, onUpdateUser }: AdminPanelProps) {
               <textarea
                 rows={2}
                 placeholder="e.g. Special wholesale supply across Uttar Pradesh and Pan-India. Call or WhatsApp directly to book your bulk order."
-                value={brandDescription}
+                value={brandDescription || ''}
                 onChange={(e) => setBrandDescription(e.target.value)}
                 className="w-full bg-slate-50 dark:bg-zinc-800/80 border border-slate-200 dark:border-zinc-700 rounded-xl px-3.5 py-2 text-xs text-black dark:text-white outline-none focus:border-amber-500 resize-none"
               />
@@ -921,7 +921,7 @@ export function AdminPanel({ user, onUpdateUser }: AdminPanelProps) {
                   <input
                     type="url"
                     placeholder="https://example.com/banner.mp4 ya image link ya YouTube link"
-                    value={brandMediaUrl}
+                    value={brandMediaUrl || ''}
                     onChange={(e) => {
                       setBrandMediaUrl(e.target.value);
                       if (isYouTubeUrl(e.target.value) || e.target.value.includes('.mp4')) {
@@ -1106,7 +1106,7 @@ export function AdminPanel({ user, onUpdateUser }: AdminPanelProps) {
                   <input
                     type="text"
                     placeholder="e.g. ashish660@ibl ya yourname@upi"
-                    value={adminUpiId}
+                    value={adminUpiId || ''}
                     onChange={(e) => setAdminUpiId(e.target.value)}
                     className="w-full bg-slate-50 dark:bg-zinc-800/80 border border-slate-200 dark:border-zinc-700 rounded-xl px-3.5 py-2.5 text-xs font-mono font-bold text-black dark:text-white outline-none focus:border-emerald-500"
                   />
@@ -1120,7 +1120,7 @@ export function AdminPanel({ user, onUpdateUser }: AdminPanelProps) {
                   <input
                     type="text"
                     placeholder="e.g. Ashish Kumar Verma / Vyapar Bridge"
-                    value={adminAccountName}
+                    value={adminAccountName || ''}
                     onChange={(e) => setAdminAccountName(e.target.value)}
                     className="w-full bg-slate-50 dark:bg-zinc-800/80 border border-slate-200 dark:border-zinc-700 rounded-xl px-3.5 py-2.5 text-xs text-black dark:text-white outline-none focus:border-emerald-500"
                   />
@@ -1159,7 +1159,7 @@ export function AdminPanel({ user, onUpdateUser }: AdminPanelProps) {
                   <input
                     type="url"
                     placeholder="Or paste QR Image direct URL"
-                    value={adminBarcodeUrl}
+                    value={adminBarcodeUrl || ''}
                     onChange={(e) => setAdminBarcodeUrl(e.target.value)}
                     className="w-full bg-slate-50 dark:bg-zinc-800/80 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-2 text-xs text-black dark:text-white outline-none focus:border-emerald-500"
                   />

@@ -7,6 +7,7 @@
 import { uploadToCloudinary } from './cloudinaryService';
 import { syncPostToFirestore } from './firebaseDataSync';
 import { playBubblePopSound } from '../utils/audioEffects';
+import { getCloudinaryVideoMiddleThumbnail, generateVideoThumbnail } from '../utils/imageOptimizer';
 
 export interface UploadTask {
   id: string;
@@ -309,9 +310,23 @@ class BackgroundUploadService {
 
       this.updateTask(taskId, { progress: 92, status: 'syncing' });
 
+      // Generate middle thumbnail for video stories so the story card shows the video's center frame
+      let videoMiddleThumb = storyDraft.thumbnailUrl || '';
+      if (storyDraft.type === 'video' || mediaFile.type?.includes('video')) {
+        if (cdnMediaUrl.includes('cloudinary.com')) {
+          videoMiddleThumb = getCloudinaryVideoMiddleThumbnail(cdnMediaUrl);
+        } else if (!videoMiddleThumb) {
+          try {
+            videoMiddleThumb = await generateVideoThumbnail(mediaFile);
+          } catch (e) {}
+        }
+      }
+
       const finalStory = {
         ...storyDraft,
         mediaUrl: cdnMediaUrl,
+        thumbnailUrl: videoMiddleThumb || storyDraft.thumbnailUrl || '',
+        videoThumbnailUrl: videoMiddleThumb || undefined,
         videoUrl: storyDraft.type === 'video' ? cdnMediaUrl : undefined,
         persistentMediaUrl: cdnMediaUrl,
         status: 'approved',

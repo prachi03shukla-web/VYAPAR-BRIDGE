@@ -222,10 +222,85 @@ export function fileToDataURL(file: File | Blob): Promise<string> {
   });
 }
 
+export function getCloudinaryVideoMiddleThumbnail(videoUrl: string): string {
+  if (!videoUrl || typeof videoUrl !== 'string') return '';
+  if (!videoUrl.includes('cloudinary.com') || !videoUrl.includes('/video/upload/')) return '';
+  
+  // Replace the video extension with .jpg
+  let jpgUrl = videoUrl.replace(/\.(mp4|mov|webm|mkv|avi|m4v)(\?.*)?$/i, '.jpg$2');
+  if (!jpgUrl.includes('.jpg') && !jpgUrl.includes('.jpeg')) {
+    jpgUrl = jpgUrl.split('?')[0] + '.jpg';
+  }
+  
+  // If so_50p is already present, return
+  if (jpgUrl.includes('so_50p')) return jpgUrl;
+  
+  // Inject transformation right after /video/upload/
+  // so_50p = Start offset 50% (Exact video center thumbnail)
+  return jpgUrl.replace('/video/upload/', '/video/upload/so_50p,w_500,c_fill,q_auto/');
+}
+
+export function isVideoMediaUrl(url: string): boolean {
+  if (!url || typeof url !== 'string') return false;
+  if (url.startsWith('data:video/')) return true;
+  if (/\.(mp4|mov|webm|mkv|avi|m4v)(\?.*)?$/i.test(url)) return true;
+  if (url.includes('cloudinary.com') && url.includes('/video/')) return true;
+  if (isYouTubeUrl(url)) return true;
+  return false;
+}
+
+/**
+ * Resolves the best cover image URL for a story or reel post.
+ * If the story is a video, guarantees returning the thumbnail from the middle of the video.
+ */
+export function getStoryCoverThumbnail(post: any): string {
+  if (!post) return '';
+
+  const candidateVideoUrl = post.mediaUrl || post.videoUrl || post.video || post.persistentMediaUrl || post.thumbnailUrl || '';
+  const isVideo = post.type === 'video' || post.isReel === true || isVideoMediaUrl(candidateVideoUrl);
+
+  // 1. If post has a valid image thumbnail that is NOT a video URL itself
+  if (post.thumbnailUrl && !isVideoMediaUrl(post.thumbnailUrl)) {
+    return post.thumbnailUrl;
+  }
+  if (post.videoThumbnailUrl && !isVideoMediaUrl(post.videoThumbnailUrl)) {
+    return post.videoThumbnailUrl;
+  }
+
+  // 2. If candidate video is on Cloudinary, transform directly to the 50% middle thumbnail
+  if (candidateVideoUrl && candidateVideoUrl.includes('cloudinary.com') && candidateVideoUrl.includes('/video/upload/')) {
+    const cloudThumb = getCloudinaryVideoMiddleThumbnail(candidateVideoUrl);
+    if (cloudThumb) return cloudThumb;
+  }
+
+  // 3. If YouTube URL
+  if (candidateVideoUrl && isYouTubeUrl(candidateVideoUrl)) {
+    return getYouTubeThumbnail(candidateVideoUrl);
+  }
+
+  // 4. If not a video, return the media URL directly
+  if (!isVideo && candidateVideoUrl && !isVideoMediaUrl(candidateVideoUrl)) {
+    return candidateVideoUrl;
+  }
+
+  return '';
+}
+
 export async function generateVideoThumbnail(
   fileOrUrl: File | Blob | string,
-  seekToSeconds = 0.5
+  seekToSeconds?: number
 ): Promise<string> {
+  // If it's a Cloudinary video URL, return the instant middle frame CDN URL
+  if (typeof fileOrUrl === 'string') {
+    if (fileOrUrl.includes('cloudinary.com') && fileOrUrl.includes('/video/upload/')) {
+      const cdnThumb = getCloudinaryVideoMiddleThumbnail(fileOrUrl);
+      if (cdnThumb) return cdnThumb;
+    }
+    if (isYouTubeUrl(fileOrUrl)) {
+      return getYouTubeThumbnail(fileOrUrl);
+    }
+  }
+
   return new Promise((resolve) => {
     let createdUrl: string | null = null;
     let resolved = false;
@@ -243,7 +318,7 @@ export async function generateVideoThumbnail(
       const video = document.createElement('video');
       video.muted = true;
       video.playsInline = true;
-      video.preload = 'auto';
+      video.preload = 'metadata';
 
       let src = '';
       if (typeof fileOrUrl === 'string') {
@@ -277,37 +352,42 @@ export async function generateVideoThumbnail(
         cleanupAndResolve('');
       };
 
-      video.onloadeddata = () => {
+      let seekTriggered = false;
+      const doSeekToMiddle = () => {
+        if (seekTriggered) return;
+        seekTriggered = true;
         try {
           const duration = video.duration;
-          const targetTime = (duration && isFinite(duration) && duration > 0.5)
-            ? duration / 2
-            : seekToSeconds;
+          // Video ke theek beech ka thumbnail (exact middle of video: duration / 2)
+          let targetTime = (typeof seekToSeconds === 'number' && seekToSeconds > 0) ? seekToSeconds : 0.5;
+          if (duration && isFinite(duration) && duration > 0.5) {
+            targetTime = duration / 2;
+          }
           video.currentTime = targetTime;
         } catch (e) {
           captureFrame();
         }
       };
 
-      video.onseeked = () => {
-        captureFrame();
+      video.onloadedmetadata = () => {
+        doSeekToMiddle();
       };
 
-      video.oncanplay = () => {
-        if (!resolved) {
-          try {
-            if (video.videoWidth > 0) {
-              captureFrame();
-            }
-          } catch (e) {}
-        }
+      video.onloadeddata = () => {
+        doSeekToMiddle();
+      };
+
+      video.onseeked = () => {
+        requestAnimationFrame(() => {
+          captureFrame();
+        });
       };
 
       video.onerror = () => {
         cleanupAndResolve('');
       };
 
-      // Fallback timer in case seeked never fires
+      // Fallback timer if metadata or seeked takes longer than 3.5 seconds
       setTimeout(() => {
         if (!resolved) {
           if (video.videoWidth > 0) {
@@ -316,7 +396,7 @@ export async function generateVideoThumbnail(
             cleanupAndResolve('');
           }
         }
-      }, 2500);
+      }, 3500);
 
       video.load();
     } catch (e) {

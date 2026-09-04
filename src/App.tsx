@@ -36,7 +36,7 @@ import { DEFAULT_B2B_POSTS } from './data/defaultPosts';
 import { fetchPostsFromFirestore, syncPostToFirestore, subscribeToPostsFromFirestore, subscribeToUsersFromFirestore, subscribeToPaymentsFromFirestore, submitPaymentUTRToFirestore, getAdminSettingsFromFirestore, saveAdminSettingsToFirestore, subscribeToAdminSettingsFromFirestore, saveBrandAdsToFirestore, subscribeToBrandAdsFromFirestore, likePostInFirestore, savePostInFirestore, recordEnquiryInFirestore, addCommentToFirestore, fetchCommentsFromFirestore, subscribeToCommentsFromFirestore, deleteCommentFromFirestore, uploadFileToFirebaseStorage, followUserInFirestore, recordViewInFirestore, recordShareInFirestore, authenticateUserInFirestore, adminResetUserPassword, userChangeOwnPassword, blockUserInFirestore, markPostNotInterestedInFirestore, getUsersBlockedAndNotInterestedFromFirestore, clearDefaultDataFromFirestore, deleteUserFromFirestore, deletePostFromFirestore, syncUserToFirestore, fetchAllUsersFromFirestore, sanitizeForFirestore, updateUserVerificationInFirestore, subscribeToPlatformStatsFromFirestore, startPresenceHeartbeat, updateUserPresence, isUserActiveOnline, getUserLastActiveFormatted } from './services/firebaseDataSync';
 import { ConnectUserModal } from './components/ConnectUserModal';
 import { suggestHashtagsWithAI } from './services/aiService';
-import { optimizeImageForPersistence, fileToDataURL, generateVideoThumbnail, uploadAudioToServer, getYouTubeThumbnail, isYouTubeUrl } from './utils/imageOptimizer';
+import { optimizeImageForPersistence, fileToDataURL, generateVideoThumbnail, uploadAudioToServer, getYouTubeThumbnail, isYouTubeUrl, getCloudinaryVideoMiddleThumbnail, isVideoMediaUrl, getStoryCoverThumbnail } from './utils/imageOptimizer';
 import { saveVideoBlob, getVideoBlobUrl, cacheVideoUrlInMemory, getCachedVideoUrlInMemory } from './utils/videoStorage';
 import { decodeUpiIdFromImageFile, extractUpiIdFromPayload } from './utils/qrUpiDecoder';
 import { playBubblePopSound, playLikeSound, playSaveSound, playShareSound, playEnquirySound, playMessageSound, getSoundSettingsSync, updateSoundSettings } from './utils/audioEffects';
@@ -8192,6 +8192,40 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
   const [isUploadingProgressVisible, setIsUploadingProgressVisible] = useState<boolean>(false);
   const [uploadingMediaThumbnail, setUploadingMediaThumbnail] = useState<string | null>(null);
   const [reelCaption, setReelCaption] = useState<string>('');
+  const [videoMiddleThumbnails, setVideoMiddleThumbnails] = useState<Record<string, string>>({});
+
+  // Dynamic extraction of video middle thumbnail (video ke theek beech ka thumbnail) for story cards
+  useEffect(() => {
+    const allReelPosts = [
+      ...currentUserReels,
+      ...otherUserReelGroups.flatMap(g => g.posts || [])
+    ];
+    allReelPosts.forEach(p => {
+      if (!p || !p.id) return;
+      const candidateVideoUrl = p.mediaUrl || p.videoUrl || p.video || p.persistentMediaUrl || '';
+      const isVideo = p.type === 'video' || p.isReel === true || isVideoMediaUrl(candidateVideoUrl);
+      if (!isVideo) return;
+
+      // Skip if already in local cache
+      if (videoMiddleThumbnails[p.id]) return;
+
+      // 1. Try static resolution (e.g. Cloudinary so_50p middle frame or YouTube)
+      const preThumb = getStoryCoverThumbnail(p);
+      if (preThumb && !isVideoMediaUrl(preThumb)) {
+        setVideoMiddleThumbnails(prev => prev[p.id] ? prev : { ...prev, [p.id]: preThumb });
+        return;
+      }
+
+      // 2. Dynamic client-side extraction of the middle frame via canvas
+      if (candidateVideoUrl) {
+        generateVideoThumbnail(candidateVideoUrl).then(thumb => {
+          if (thumb) {
+            setVideoMiddleThumbnails(prev => ({ ...prev, [p.id]: thumb }));
+          }
+        }).catch(() => {});
+      }
+    });
+  }, [currentUserReels, otherUserReelGroups]);
 
   const fetchPosts = async () => {
     if (user?.id) {
@@ -8766,7 +8800,8 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
       type: mediaType,
       mediaUrl: localMediaUrl,
       ...(isVideoFile ? { videoUrl: videoStreamUrl, video: videoStreamUrl } : {}),
-      thumbnailUrl: videoThumbnailUrl || localMediaUrl,
+      thumbnailUrl: videoThumbnailUrl || (isVideoFile ? '' : localMediaUrl),
+      videoThumbnailUrl: videoThumbnailUrl || undefined,
       persistentMediaUrl: persistentMediaUrl || videoThumbnailUrl || localMediaUrl,
       category: 'Commercial Wholesale',
       postedFrom: 'story_tray',
@@ -8798,6 +8833,10 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
     // Complete progress and render immediately to Home Feed, Story, and Profile Page
     clearInterval(progressTimer);
     setUploadProgress(100);
+
+    if (videoThumbnailUrl) {
+      setVideoMiddleThumbnails(prev => ({ ...prev, [reelId]: videoThumbnailUrl }));
+    }
 
     setPosts(prev => [finalReelPost, ...prev]);
     window.dispatchEvent(new CustomEvent('postCreated', { detail: finalReelPost }));
@@ -8901,57 +8940,79 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
         </div>
 
         {/* Your Story (If you have one) */}
-        {currentUserReels.length > 0 && (
-          <div 
-            onClick={() => {
-              setActiveStoryPosts(currentUserReels);
-              setActiveStoryIndex(0);
-            }}
-            className="w-[110px] sm:w-[130px] h-[170px] sm:h-[200px] rounded-2xl overflow-hidden bg-black shadow-sm hover:shadow-md transition-all duration-200 cursor-pointer shrink-0 relative group select-none"
-          >
-            {/* Story cover background image/thumbnail */}
-            <div className="absolute inset-0">
-              <img 
-                src={currentUserReels[0].thumbnailUrl || currentUserReels[0].mediaUrl} 
-                alt="Your story cover" 
-                className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
-                onError={(e) => {
-                  (e.currentTarget as HTMLImageElement).src = 'https://images.unsplash.com/photo-1560179707-f14e90ef3623?w=300&auto=format&fit=crop&q=60';
-                }}
-              />
-              {/* Soft dark overlay for text contrast */}
-              <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-black/40" />
-            </div>
+        {currentUserReels.length > 0 && (() => {
+          const myFirstReel = currentUserReels[0];
+          const resolvedMyCover = (myFirstReel?.id ? videoMiddleThumbnails[myFirstReel.id] : '') || 
+            getStoryCoverThumbnail(myFirstReel) || 
+            (!isVideoMediaUrl(myFirstReel?.thumbnailUrl || '') ? myFirstReel?.thumbnailUrl : '') || 
+            (!isVideoMediaUrl(myFirstReel?.mediaUrl || '') ? myFirstReel?.mediaUrl : '') || 
+            'https://images.unsplash.com/photo-1560179707-f14e90ef3623?w=300&auto=format&fit=crop&q=60';
 
-            {/* Profile Avatar inside the card (top-left) */}
-            <div className="absolute top-2.5 left-2.5 z-10">
-              <div className={`p-[1.5px] rounded-full ${user?.goldenBadge ? 'story-golden-gradient' : 'story-rainbow-gradient'}`}>
-                <div className="p-[1px] bg-white dark:bg-zinc-950 rounded-full">
-                  <img 
-                    src={user?.avatarUrl || user?.avatar || getInitialsAvatar(user?.name || 'You')} 
-                    alt="Your Avatar" 
-                    className="w-7 h-7 rounded-full object-cover border border-slate-100 dark:border-zinc-800"
-                    onError={(e) => {
-                      (e.currentTarget as HTMLImageElement).src = getInitialsAvatar(user?.name || 'You');
-                    }}
-                  />
+          return (
+            <div 
+              onClick={() => {
+                setActiveStoryPosts(currentUserReels);
+                setActiveStoryIndex(0);
+              }}
+              className="w-[110px] sm:w-[130px] h-[170px] sm:h-[200px] rounded-2xl overflow-hidden bg-black shadow-sm hover:shadow-md transition-all duration-200 cursor-pointer shrink-0 relative group select-none"
+            >
+              {/* Story cover background image/thumbnail */}
+              <div className="absolute inset-0">
+                <img 
+                  src={resolvedMyCover} 
+                  alt="Your story cover" 
+                  className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                  onError={(e) => {
+                    const target = e.currentTarget as HTMLImageElement;
+                    const cand = myFirstReel?.mediaUrl || myFirstReel?.videoUrl || myFirstReel?.video || '';
+                    if (cand && cand.includes('cloudinary.com')) {
+                      const ct = getCloudinaryVideoMiddleThumbnail(cand);
+                      if (ct && target.src !== ct) {
+                        target.src = ct;
+                        return;
+                      }
+                    }
+                    target.src = 'https://images.unsplash.com/photo-1560179707-f14e90ef3623?w=300&auto=format&fit=crop&q=60';
+                  }}
+                />
+                {/* Soft dark overlay for text contrast */}
+                <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-black/40" />
+              </div>
+
+              {/* Profile Avatar inside the card (top-left) */}
+              <div className="absolute top-2.5 left-2.5 z-10">
+                <div className={`p-[1.5px] rounded-full ${user?.goldenBadge ? 'story-golden-gradient' : 'story-rainbow-gradient'}`}>
+                  <div className="p-[1px] bg-white dark:bg-zinc-950 rounded-full">
+                    <img 
+                      src={user?.avatarUrl || user?.avatar || getInitialsAvatar(user?.name || 'You')} 
+                      alt="Your Avatar" 
+                      className="w-7 h-7 rounded-full object-cover border border-slate-100 dark:border-zinc-800"
+                      onError={(e) => {
+                        (e.currentTarget as HTMLImageElement).src = getInitialsAvatar(user?.name || 'You');
+                      }}
+                    />
+                  </div>
                 </div>
               </div>
-            </div>
 
-            {/* User Name at bottom */}
-            <div className="absolute bottom-2.5 left-2.5 right-2.5 z-10">
-              <p className="text-[10px] sm:text-[11px] font-bold text-white truncate drop-shadow">Your Story</p>
+              {/* User Name at bottom */}
+              <div className="absolute bottom-2.5 left-2.5 right-2.5 z-10">
+                <p className="text-[10px] sm:text-[11px] font-bold text-white truncate drop-shadow">Your Story</p>
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* Other Users' Reel/Story Cards */}
         {otherUserReelGroups.map((group) => {
           const authorAvatar = group.userAvatar || getInitialsAvatar(group.userName);
           const isGolden = Boolean(group.isGolden);
           const firstPost = group.posts[0] || {};
-          const coverUrl = firstPost.thumbnailUrl || firstPost.mediaUrl || 'https://images.unsplash.com/photo-1560179707-f14e90ef3623?w=300&auto=format&fit=crop&q=60';
+          const coverUrl = (firstPost.id ? videoMiddleThumbnails[firstPost.id] : '') || 
+            getStoryCoverThumbnail(firstPost) || 
+            (!isVideoMediaUrl(firstPost.thumbnailUrl || '') ? firstPost.thumbnailUrl : '') || 
+            (!isVideoMediaUrl(firstPost.mediaUrl || '') ? firstPost.mediaUrl : '') || 
+            'https://images.unsplash.com/photo-1560179707-f14e90ef3623?w=300&auto=format&fit=crop&q=60';
 
           return (
             <div 
@@ -8969,7 +9030,16 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
                   alt={group.userName} 
                   className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
                   onError={(e) => {
-                    (e.currentTarget as HTMLImageElement).src = 'https://images.unsplash.com/photo-1560179707-f14e90ef3623?w=300&auto=format&fit=crop&q=60';
+                    const target = e.currentTarget as HTMLImageElement;
+                    const cand = firstPost?.mediaUrl || firstPost?.videoUrl || firstPost?.video || '';
+                    if (cand && cand.includes('cloudinary.com')) {
+                      const ct = getCloudinaryVideoMiddleThumbnail(cand);
+                      if (ct && target.src !== ct) {
+                        target.src = ct;
+                        return;
+                      }
+                    }
+                    target.src = 'https://images.unsplash.com/photo-1560179707-f14e90ef3623?w=300&auto=format&fit=crop&q=60';
                   }}
                 />
                 {/* Soft dark overlay for text contrast */}
@@ -11899,7 +11969,11 @@ function ProfilePage({ user, onUpdateUser }: { user: any; onUpdateUser?: (u: any
                   {profilePosts
                     .filter(p => p.isStory || p.isReel || p.type === 'story' || p.type === 'reel' || (p.hashtags && (p.hashtags.includes('#story') || p.hashtags.includes('#reel'))))
                     .map((storyPost, idx, arr) => {
-                      const coverImg = storyPost.thumbnailUrl || storyPost.mediaUrl || (storyPost.images && storyPost.images[0]) || '';
+                      const coverImg = (storyPost.id ? videoMiddleThumbnails[storyPost.id] : '') || 
+                        getStoryCoverThumbnail(storyPost) || 
+                        (!isVideoMediaUrl(storyPost.thumbnailUrl || '') ? storyPost.thumbnailUrl : '') || 
+                        (!isVideoMediaUrl(storyPost.mediaUrl || '') ? storyPost.mediaUrl : '') || 
+                        (storyPost.images && storyPost.images[0]) || '';
                       return (
                         <div
                           key={storyPost.id || idx}
@@ -11915,7 +11989,16 @@ function ProfilePage({ user, onUpdateUser }: { user: any; onUpdateUser?: (u: any
                               alt="Story Thumbnail" 
                               className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                               onError={(e) => {
-                                (e.currentTarget as HTMLImageElement).src = 'https://images.unsplash.com/photo-1560179707-f14e90ef3623?w=300&auto=format&fit=crop&q=60';
+                                const target = e.currentTarget as HTMLImageElement;
+                                const cand = storyPost.mediaUrl || storyPost.videoUrl || storyPost.video || '';
+                                if (cand && cand.includes('cloudinary.com')) {
+                                  const ct = getCloudinaryVideoMiddleThumbnail(cand);
+                                  if (ct && target.src !== ct) {
+                                    target.src = ct;
+                                    return;
+                                  }
+                                }
+                                target.src = 'https://images.unsplash.com/photo-1560179707-f14e90ef3623?w=300&auto=format&fit=crop&q=60';
                               }}
                             />
                           ) : (
