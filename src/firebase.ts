@@ -1,10 +1,17 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
+import { 
+  getAuth, 
+  initializeAuth, 
+  browserLocalPersistence, 
+  browserSessionPersistence, 
+  inMemoryPersistence 
+} from 'firebase/auth';
 import { 
   getFirestore, 
   initializeFirestore, 
   persistentLocalCache, 
-  persistentMultipleTabManager 
+  persistentMultipleTabManager,
+  memoryLocalCache
 } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 
@@ -22,23 +29,55 @@ const firebaseConfig = {
 };
 
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
-export const auth = getAuth(app);
+
+// Initialize Auth with resilient browserLocalPersistence (localStorage)
+// This avoids IndexedDB tab-locking and prevents 'Database is closing/hidden' errors when tabs or iframes lose focus
+let authInstance: any;
+try {
+  authInstance = initializeAuth(app, {
+    persistence: [browserLocalPersistence, browserSessionPersistence, inMemoryPersistence]
+  });
+} catch (authErr) {
+  try {
+    authInstance = getAuth(app);
+  } catch (e) {
+    authInstance = null;
+  }
+}
+
+export const auth = authInstance;
 export const storage = getStorage(app);
 
-// Force connection to exact database ID with persistent local cache
-let firestoreDb;
+// Force connection to exact database ID with persistent local cache and global network resiliency
+const targetDbId = firebaseConfig.firestoreDatabaseId || '(default)';
+
+let firestoreDb: any;
 try {
   firestoreDb = initializeFirestore(app, {
+    experimentalAutoDetectLongPolling: true,
+    useFetchStreams: false,
     localCache: persistentLocalCache({
       tabManager: persistentMultipleTabManager()
     })
-  }, firebaseConfig.firestoreDatabaseId);
-} catch (e) {
-  firestoreDb = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+  }, targetDbId);
+} catch (e1) {
+  try {
+    firestoreDb = initializeFirestore(app, {
+      experimentalAutoDetectLongPolling: true,
+      useFetchStreams: false,
+      localCache: memoryLocalCache()
+    }, targetDbId);
+  } catch (e2) {
+    try {
+      firestoreDb = getFirestore(app, targetDbId);
+    } catch (e3) {
+      firestoreDb = getFirestore(app);
+    }
+  }
 }
 
 export const db = firestoreDb;
 
-console.log("✅ Firebase & Firestore initialized with multi-tab offline persistence.");
+console.log("✅ Firebase & Firestore connected globally with multi-tab offline persistence and auto-detect long-polling.");
 
 

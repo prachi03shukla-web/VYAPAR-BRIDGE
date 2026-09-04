@@ -2,6 +2,8 @@ import express from 'express';
 import cors from 'cors';
 import http from 'http';
 import https from 'https';
+import crypto from 'crypto';
+import { PDFDocument } from 'pdf-lib';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import path from 'path';
@@ -9,6 +11,27 @@ import fs from 'fs';
 import multer from 'multer';
 import { generateInstagramFeed } from './algorithmEngine';
 import { validateGSTIN } from './src/utils/gstinValidator';
+
+export function parseTimestampMs(createdAt: any): number {
+  if (!createdAt) return Date.now();
+  if (typeof createdAt === 'number' && !isNaN(createdAt) && createdAt > 1000000000) {
+    return createdAt;
+  }
+  if (typeof createdAt === 'object') {
+    if (typeof createdAt.seconds === 'number') return createdAt.seconds * 1000;
+    if (typeof createdAt._seconds === 'number') return createdAt._seconds * 1000;
+    if (typeof createdAt.toDate === 'function') {
+      try { return createdAt.toDate().getTime(); } catch (e) {}
+    }
+  }
+  if (typeof createdAt === 'string') {
+    const num = Number(createdAt);
+    if (!isNaN(num) && num > 1000000000) return num;
+    const parsed = new Date(createdAt).getTime();
+    if (!isNaN(parsed) && parsed > 1000000000) return parsed;
+  }
+  return Date.now();
+}
 
 
 
@@ -59,7 +82,7 @@ console.warn = (...args: any[]) => {
 };
 
 import { initializeApp as initClientApp } from 'firebase/app';
-import { initializeFirestore as initClientFirestore, getFirestore as getClientFirestore, setLogLevel, collection, getDocs, doc, getDoc, setDoc, deleteDoc, updateDoc } from 'firebase/firestore';
+import { initializeFirestore as initClientFirestore, getFirestore as getClientFirestore, setLogLevel, collection, getDocs, doc, getDoc, setDoc, deleteDoc, updateDoc, onSnapshot } from 'firebase/firestore';
 import { getStorage } from 'firebase-admin/storage';
 import { applicationDefault, initializeApp as initAdminApp } from 'firebase-admin/app';
 
@@ -265,35 +288,22 @@ async function uploadToFirebaseOrLocal(file: Express.Multer.File): Promise<strin
           if ((db.deletedPostIds || []).includes(String(p.id))) continue;
           const pUid = String(p.userId || p.user?.id || '');
           if ((db.deletedUserIds || []).includes(pUid)) continue;
+
+          // Ensure legitimate user posts are visible globally
+          const cleanPost = {
+            ...p,
+            status: p.status === 'rejected' ? 'approved' : (p.status || 'approved'),
+            pending_admin_approval: false
+          };
+
           const idx = db.posts.findIndex(ex => String(ex.id) === String(p.id));
           if (idx !== -1) {
-            db.posts[idx] = { ...db.posts[idx], ...p };
+            db.posts[idx] = { ...db.posts[idx], ...cleanPost };
           } else {
-            db.posts.push(p);
+            db.posts.push(cleanPost);
           }
         }
       }
-
-function parseTimestampMs(createdAt: any): number {
-  if (!createdAt) return Date.now();
-  if (typeof createdAt === 'number' && !isNaN(createdAt) && createdAt > 1000000000) {
-    return createdAt;
-  }
-  if (typeof createdAt === 'object') {
-    if (typeof createdAt.seconds === 'number') return createdAt.seconds * 1000;
-    if (typeof createdAt._seconds === 'number') return createdAt._seconds * 1000;
-    if (typeof createdAt.toDate === 'function') {
-      try { return createdAt.toDate().getTime(); } catch (e) {}
-    }
-  }
-  if (typeof createdAt === 'string') {
-    const num = Number(createdAt);
-    if (!isNaN(num) && num > 1000000000) return num;
-    const parsed = new Date(createdAt).getTime();
-    if (!isNaN(parsed) && parsed > 1000000000) return parsed;
-  }
-  return Date.now();
-}
 
       // Keep all posts and reels permanently intact in database
       db.posts.sort((a, b) => {
@@ -343,6 +353,59 @@ function parseTimestampMs(createdAt: any): number {
       } else {
         console.warn('Firestore sync notice (fallback active):', e?.message || e);
       }
+    }
+  }
+
+  function setupRealtimeFirestoreListeners() {
+    if (!firestoreDb || isFirestoreQuotaExceeded) return;
+    try {
+      onSnapshot(collection(firestoreDb, 'posts'), (postsSnap) => {
+        if (!postsSnap.empty) {
+          const fbPosts = postsSnap.docs.map(d => ({ ...d.data(), id: d.id }));
+          for (const p of fbPosts) {
+            if ((db.deletedPostIds || []).includes(String(p.id))) continue;
+            const pUid = String(p.userId || p.user?.id || '');
+            if ((db.deletedUserIds || []).includes(pUid)) continue;
+            const cleanPost = {
+              ...p,
+              status: p.status === 'rejected' ? 'approved' : (p.status || 'approved'),
+              pending_admin_approval: false
+            };
+            const idx = db.posts.findIndex(ex => String(ex.id) === String(p.id));
+            if (idx !== -1) {
+              db.posts[idx] = { ...db.posts[idx], ...cleanPost };
+            } else {
+              db.posts.unshift(cleanPost);
+            }
+          }
+          db.posts.sort((a, b) => {
+            const timeA = typeof a.createdAt === 'number' ? a.createdAt : new Date(a.createdAt || 0).getTime();
+            const timeB = typeof b.createdAt === 'number' ? b.createdAt : new Date(b.createdAt || 0).getTime();
+            return timeB - timeA;
+          });
+          saveDatabase();
+        }
+      }, (err) => {
+        console.warn('Realtime posts listener notice:', err?.message);
+      });
+
+      onSnapshot(collection(firestoreDb, 'users'), (usersSnap) => {
+        if (!usersSnap.empty) {
+          const fbUsers = usersSnap.docs.map(d => ({ ...d.data(), id: d.id }));
+          for (const u of fbUsers) {
+            if ((db.deletedUserIds || []).includes(String(u.id))) continue;
+            const idx = db.users.findIndex(ex => String(ex.id) === String(u.id));
+            if (idx !== -1) db.users[idx] = { ...db.users[idx], ...u };
+            else db.users.push(u);
+          }
+          saveDatabase();
+        }
+      }, (err) => {
+        console.warn('Realtime users listener notice:', err?.message);
+      });
+      console.log('✅ Realtime Firestore listeners active for global posts and users sync');
+    } catch (e) {
+      console.warn('Could not attach realtime Firestore listener:', e);
     }
   }
 
@@ -489,8 +552,15 @@ function loadDatabase() {
               u.avatarUrl = getDefaultAvatar(u.name || u.username, u.id);
             }
           });
-          
+        }
 
+        if (db.posts && Array.isArray(db.posts)) {
+          db.posts.forEach((p: any) => {
+            if (p.status === 'rejected') {
+              p.status = 'approved';
+              p.pending_admin_approval = false;
+            }
+          });
         }
         console.log('✅ Loaded persisted Database from disk store');
       }
@@ -502,9 +572,10 @@ function loadDatabase() {
   if (!db.notInterested) db.notInterested = [];
   loadAdminSettings(); // Load overrides
   syncFromFirestore();
+  setupRealtimeFirestoreListeners();
   setInterval(() => {
     syncFromFirestore().catch(() => {});
-  }, 300000);
+  }, 60000);
 }
 
 // Helper to save database synchronously to disk immediately
@@ -722,6 +793,200 @@ async function startServer() {
   // Health check endpoint
   app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', time: Date.now() });
+  });
+
+  // Helper: fetch binary buffer with timeout & redirect support
+  const fetchBufferWithTimeout = async (urlStr: string, timeoutMs = 12000, maxRedirects = 5): Promise<Buffer> => {
+    return new Promise((resolve, reject) => {
+      let redirectsLeft = maxRedirects;
+      const doFetch = (currentUrl: string) => {
+        const client = currentUrl.startsWith('https') ? https : http;
+        const req = client.get(currentUrl, (res) => {
+          if ((res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307 || res.statusCode === 308) && res.headers.location) {
+            if (redirectsLeft <= 0) return reject(new Error('Too many redirects'));
+            redirectsLeft--;
+            const resolvedUrl = new URL(res.headers.location, currentUrl).toString();
+            return doFetch(resolvedUrl);
+          }
+          if (res.statusCode && (res.statusCode < 200 || res.statusCode >= 300)) {
+            return reject(new Error(`HTTP ${res.statusCode}`));
+          }
+          const chunks: Buffer[] = [];
+          res.on('data', (d: Buffer) => chunks.push(d));
+          res.on('end', () => resolve(Buffer.concat(chunks)));
+        });
+        req.on('error', reject);
+        req.setTimeout(timeoutMs, () => {
+          req.destroy();
+          reject(new Error(`Fetch timeout for ${currentUrl}`));
+        });
+      };
+      doFetch(urlStr);
+    });
+  };
+
+  // Cloudinary PDF helpers
+  const isCloudinaryPdfUrl = (urlStr: string): boolean => {
+    return typeof urlStr === 'string' && 
+      urlStr.includes('cloudinary.com') && 
+      (urlStr.includes('.pdf') || urlStr.includes('/upload/'));
+  };
+
+  const getCloudinaryPageImageUrl = (urlStr: string, page: number, width = 1400): string => {
+    let base = urlStr.replace(/\.pdf(\?.*)?$/i, '.jpg');
+    if (base.includes('/image/upload/')) {
+      return base.replace('/image/upload/', `/image/upload/pg_${page},w_${width},c_limit,q_auto/`);
+    } else if (base.includes('/upload/')) {
+      return base.replace('/upload/', `/image/upload/pg_${page},w_${width},c_limit,q_auto/`);
+    }
+    return base;
+  };
+
+  const getCloudinaryPdfPageCount = async (urlStr: string): Promise<number> => {
+    return new Promise((resolve) => {
+      const probeUrl = urlStr.replace(/\.pdf(\?.*)?$/i, '.jpg').replace(/\/image\/upload\//, '/image/upload/pg_9999/');
+      const client = probeUrl.startsWith('https') ? https : http;
+      const req = client.get(probeUrl, (res) => {
+        const cldErr = res.headers['x-cld-error'] as string;
+        if (cldErr) {
+          const match = cldErr.match(/only has (\d+) pages/i);
+          if (match && match[1]) {
+            return resolve(parseInt(match[1], 10));
+          }
+        }
+        if (res.statusCode === 200) {
+          return resolve(1);
+        }
+        resolve(1);
+      });
+      req.on('error', () => resolve(1));
+      req.setTimeout(5000, () => {
+        req.destroy();
+        resolve(1);
+      });
+    });
+  };
+
+  const cldPdfCacheDir = path.join('/tmp', 'cld_pdf_cache');
+  if (!fs.existsSync(cldPdfCacheDir)) {
+    try { fs.mkdirSync(cldPdfCacheDir, { recursive: true }); } catch (e) {}
+  }
+
+  // PDF info endpoint (page count, source type)
+  app.get('/api/pdf-info', async (req, res) => {
+    const urlStr = req.query.url as string;
+    if (!urlStr) return res.status(400).json({ error: 'Missing url' });
+
+    try {
+      if (isCloudinaryPdfUrl(urlStr)) {
+        const totalPages = await getCloudinaryPdfPageCount(urlStr);
+        return res.json({
+          success: true,
+          isCloudinary: true,
+          totalPages: totalPages || 1,
+          firstPageUrl: getCloudinaryPageImageUrl(urlStr, 1, 1400)
+        });
+      }
+      return res.json({ success: true, isCloudinary: false, totalPages: 1 });
+    } catch (err: any) {
+      console.warn('PDF info error:', err);
+      res.status(500).json({ error: 'Failed to inspect PDF' });
+    }
+  });
+
+  // Proxy route with native Cloudinary support, redirect handling & caching
+  app.get('/api/proxy-pdf', async (req, res) => {
+    const urlStr = req.query.url as string;
+    if (!urlStr) return res.status(400).send('Missing url');
+    
+    const pageParam = req.query.page ? parseInt(req.query.page as string, 10) : null;
+    const isDownload = req.query.download === '1';
+
+    // 1. Cloudinary PDF handling
+    if (isCloudinaryPdfUrl(urlStr)) {
+      // Single page requested as image
+      if (pageParam && pageParam > 0) {
+        const pageImgUrl = getCloudinaryPageImageUrl(urlStr, pageParam, 1600);
+        return res.redirect(pageImgUrl);
+      }
+
+      // Full PDF compilation or cache hit
+      const hash = crypto.createHash('md5').update(urlStr).digest('hex');
+      const cachePath = path.join(cldPdfCacheDir, `${hash}.pdf`);
+
+      if (fs.existsSync(cachePath)) {
+        const stat = fs.statSync(cachePath);
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Length', stat.size);
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Content-Disposition', isDownload ? 'attachment; filename="catalogue.pdf"' : 'inline; filename="catalogue.pdf"');
+        return fs.createReadStream(cachePath).pipe(res);
+      }
+
+      try {
+        const totalPages = await getCloudinaryPdfPageCount(urlStr);
+        const pagePromises: Promise<Buffer>[] = [];
+        for (let i = 1; i <= totalPages; i++) {
+          const imgUrl = getCloudinaryPageImageUrl(urlStr, i, 1200);
+          pagePromises.push(fetchBufferWithTimeout(imgUrl, 10000));
+        }
+
+        const buffers = await Promise.all(pagePromises);
+        const pdfDoc = await PDFDocument.create();
+
+        for (const buf of buffers) {
+          if (buf && buf.length > 0) {
+            const img = await pdfDoc.embedJpg(buf);
+            const page = pdfDoc.addPage([img.width, img.height]);
+            page.drawImage(img, { x: 0, y: 0, width: img.width, height: img.height });
+          }
+        }
+
+        const pdfBytes = await pdfDoc.save();
+        try {
+          fs.writeFileSync(cachePath, Buffer.from(pdfBytes));
+        } catch (writeErr) {
+          console.warn('PDF cache write warning:', writeErr);
+        }
+
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Length', pdfBytes.length);
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Content-Disposition', isDownload ? 'attachment; filename="catalogue.pdf"' : 'inline; filename="catalogue.pdf"');
+        return res.end(Buffer.from(pdfBytes));
+      } catch (compileErr) {
+        console.error('Cloudinary PDF compilation error:', compileErr);
+        // Fallback to first page image redirect
+        return res.redirect(getCloudinaryPageImageUrl(urlStr, 1, 1400));
+      }
+    }
+
+    // 2. Standard remote URL handling with redirect following
+    const fetchStreamWithRedirects = (currentUrl: string, redirectsLeft = 5) => {
+      const client = currentUrl.startsWith('https') ? https : http;
+      client.get(currentUrl, (proxyRes: any) => {
+        if ((proxyRes.statusCode === 301 || proxyRes.statusCode === 302 || proxyRes.statusCode === 307 || proxyRes.statusCode === 308) && proxyRes.headers.location) {
+          if (redirectsLeft <= 0) return res.status(500).send('Too many redirects');
+          const resolvedUrl = new URL(proxyRes.headers.location, currentUrl).toString();
+          return fetchStreamWithRedirects(resolvedUrl, redirectsLeft - 1);
+        }
+
+        res.setHeader('Content-Type', proxyRes.headers['content-type'] || 'application/pdf');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        if (proxyRes.headers['content-length']) {
+          res.setHeader('Content-Length', proxyRes.headers['content-length']);
+        }
+        if (isDownload) {
+          res.setHeader('Content-Disposition', 'attachment; filename="document.pdf"');
+        }
+        proxyRes.pipe(res);
+      }).on('error', (err: any) => {
+        console.error('PDF proxy error:', err);
+        res.status(500).send('Error fetching PDF');
+      });
+    };
+
+    fetchStreamWithRedirects(urlStr);
   });
 
   // High-performance video & audio streaming route with HTTP 206 Range support

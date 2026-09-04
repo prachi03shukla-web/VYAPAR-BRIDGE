@@ -182,9 +182,16 @@ export async function createPdfCatalogUrl(
   }
 
   // Step B: Upload PDF Catalog to permanent Storage
-  const downloadUrl = await uploadFileToFirebaseStorage(file, storagePath, onProgress);
+  let downloadUrl = await uploadFileToFirebaseStorage(file, storagePath, onProgress);
   if (!downloadUrl) {
-    throw new Error('Firebase Storage rejected the PDF Catalog upload.');
+    try {
+      const { saveVideoBlob } = await import('../utils/videoStorage');
+      await saveVideoBlob(generatedId, file);
+      downloadUrl = `indexeddb:${generatedId}`;
+    } catch (e) {
+      console.warn('Failed to save PDF to IndexedDB fallback:', e);
+      throw new Error('All storage methods failed for PDF upload.');
+    }
   }
 
   return {

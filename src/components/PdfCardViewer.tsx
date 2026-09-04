@@ -1,7 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import { getVideoBlobUrl } from '../utils/videoStorage';
-import { extractPdfFirstPageThumbnail, ensurePdfWorkerConfigured, generateFallbackPdfCover } from '../utils/pdfThumbnail';
+import { 
+  extractPdfFirstPageThumbnail, 
+  ensurePdfWorkerConfigured, 
+  generateFallbackPdfCover,
+  isCloudinaryPdfUrl,
+  getCloudinaryPdfPageUrl,
+  fetchCloudinaryPdfPageCount
+} from '../utils/pdfThumbnail';
 import { 
   FileText, 
   Download, 
@@ -17,7 +24,9 @@ import {
   Share2,
   FileCheck,
   Sparkles,
-  Layers
+  Layers,
+  RotateCcw,
+  Maximize2
 } from 'lucide-react';
 
 ensurePdfWorkerConfigured();
@@ -60,6 +69,8 @@ export const PdfCardViewer: React.FC<PdfCardViewerProps> = ({ post, variant = 'f
   const [renderError, setRenderError] = useState<boolean>(false);
   const [isReaderModalOpen, setIsReaderModalOpen] = useState<boolean>(false);
   
+  const isCloudinary = isCloudinaryPdfUrl(rawPdfUrl || effectivePdfUrl);
+
   const initialThumb = (
     post.thumbnailUrl && 
     !post.thumbnailUrl.startsWith('data:application/pdf') && 
@@ -68,7 +79,7 @@ export const PdfCardViewer: React.FC<PdfCardViewerProps> = ({ post, variant = 'f
     post.thumbnailUrl !== 'undefined' && 
     post.thumbnailUrl !== 'null' && 
     post.thumbnailUrl.trim() !== ''
-  ) ? post.thumbnailUrl : '';
+  ) ? post.thumbnailUrl : (isCloudinary ? getCloudinaryPdfPageUrl(rawPdfUrl || effectivePdfUrl, 1) : '');
 
   const [coverThumbUrl, setCoverThumbUrl] = useState<string>(initialThumb);
 
@@ -92,8 +103,14 @@ export const PdfCardViewer: React.FC<PdfCardViewerProps> = ({ post, variant = 'f
         if (!isCancelled) setEffectivePdfUrl(rawPdfUrl);
         return;
       }
-      if (post.id) {
-        const blobUrl = await getVideoBlobUrl(String(post.id));
+      
+      let blobId = String(post.id);
+      if (rawPdfUrl && rawPdfUrl.startsWith('indexeddb:')) {
+        blobId = rawPdfUrl.replace('indexeddb:', '');
+      }
+
+      if (blobId) {
+        const blobUrl = await getVideoBlobUrl(blobId);
         if (blobUrl && !isCancelled) {
           setEffectivePdfUrl(blobUrl);
           return;
@@ -129,6 +146,20 @@ export const PdfCardViewer: React.FC<PdfCardViewerProps> = ({ post, variant = 'f
       try {
         setIsRendering(true);
         setRenderError(false);
+
+        // Native Cloudinary support: Instant cover and page count
+        if (isCloudinaryPdfUrl(effectivePdfUrl)) {
+          const thumb = getCloudinaryPdfPageUrl(effectivePdfUrl, 1, { width: 900 });
+          setCoverThumbUrl(thumb);
+          setIsRendering(false);
+          setHasCanvasRendered(true);
+          fetchCloudinaryPdfPageCount(effectivePdfUrl).then((count) => {
+            if (!isCancelled && count > 0) {
+              setNumPages(count);
+            }
+          });
+          return;
+        }
 
         // If we don't have a thumbnail image yet, extract directly
         if (!coverThumbUrl) {
@@ -227,8 +258,11 @@ export const PdfCardViewer: React.FC<PdfCardViewerProps> = ({ post, variant = 'f
     e.stopPropagation();
     const downloadTarget = effectivePdfUrl || rawPdfUrl;
     if (!downloadTarget) return;
+    const downloadUrl = isCloudinaryPdfUrl(downloadTarget)
+      ? `/api/proxy-pdf?url=${encodeURIComponent(downloadTarget)}&download=1`
+      : downloadTarget;
     const a = document.createElement('a');
-    a.href = downloadTarget;
+    a.href = downloadUrl;
     a.download = `${companyName.replace(/[^a-zA-Z0-9]/g, '_')}_Catalogue.pdf`;
     document.body.appendChild(a);
     a.click();
@@ -369,16 +403,6 @@ export const PdfCardViewer: React.FC<PdfCardViewerProps> = ({ post, variant = 'f
               />
 
               {!hasCanvasRendered && !isRendering && (
-                effectivePdfUrl ? (
-                  <div className="w-full h-[460px] sm:h-[560px] relative rounded-xl overflow-hidden bg-white">
-                    <iframe 
-                      src={effectivePdfUrl.startsWith('data:') ? effectivePdfUrl : `${effectivePdfUrl}#page=1&view=FitH&toolbar=0&navpanes=0&scrollbar=0`}
-                      className="w-full h-full border-0 pointer-events-none"
-                      title={docTitle}
-                    />
-                    <div className="absolute inset-0 z-10 bg-transparent cursor-pointer" />
-                  </div>
-                ) : (
                   <div className="w-full min-h-[320px] bg-gradient-to-br from-slate-950 via-slate-900 to-emerald-950 p-8 rounded-xl text-center flex flex-col items-center justify-center my-auto border border-emerald-500/20">
                     <div className="w-16 h-16 rounded-2xl bg-emerald-500/15 border border-emerald-400/40 flex items-center justify-center text-emerald-400 mb-3 shadow-lg group-hover:scale-105 transition-transform">
                       <FileText className="w-8 h-8 text-emerald-400" />
@@ -394,7 +418,6 @@ export const PdfCardViewer: React.FC<PdfCardViewerProps> = ({ post, variant = 'f
                       <span>Tap to Open Full Catalogue</span>
                     </div>
                   </div>
-                )
               )}
             </div>
           )}
@@ -460,18 +483,58 @@ export const PdfReaderModal: React.FC<PdfReaderModalProps> = ({
   totalPageCount,
   onClose,
 }) => {
+  const isCloudinary = isCloudinaryPdfUrl(pdfUrl);
   const modalCanvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [totalPages, setTotalPages] = useState<number>(totalPageCount || 1);
-  const [scale, setScale] = useState<number>(1.2);
+  const [scale, setScale] = useState<number>(1.0);
   const [loading, setLoading] = useState<boolean>(true);
   const [pdfDoc, setPdfDoc] = useState<any>(null);
   const [pdfError, setPdfError] = useState<boolean>(false);
-  const [viewMode, setViewMode] = useState<'canvas' | 'embed'>('canvas');
+  const [showThumbnails, setShowThumbnails] = useState<boolean>(false);
+  const [isDownloading, setIsDownloading] = useState<boolean>(false);
+  const [touchStartX, setTouchStartX] = useState<number | null>(null);
 
+  // 1. Cloudinary PDF: Resolve total page count and preload adjacent pages
   useEffect(() => {
     let isMounted = true;
-    if (!pdfUrl) return;
+    if (!isCloudinary) return;
+
+    setLoading(true);
+    fetchCloudinaryPdfPageCount(pdfUrl).then((count) => {
+      if (isMounted && count > 0) {
+        setTotalPages(count);
+      }
+      if (isMounted) {
+        setLoading(false);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [pdfUrl, isCloudinary]);
+
+  // Preload next and previous Cloudinary page images for instant transitions
+  useEffect(() => {
+    if (!isCloudinary || totalPages <= 1) return;
+
+    if (currentPage < totalPages) {
+      const nextImg = new Image();
+      nextImg.src = getCloudinaryPdfPageUrl(pdfUrl, currentPage + 1, { width: 1400 });
+    }
+    if (currentPage > 1) {
+      const prevImg = new Image();
+      prevImg.src = getCloudinaryPdfPageUrl(pdfUrl, currentPage - 1, { width: 1400 });
+    }
+  }, [currentPage, totalPages, pdfUrl, isCloudinary]);
+
+  // 2. Non-Cloudinary PDF: Load using pdfjs-dist
+  useEffect(() => {
+    let isMounted = true;
+    if (isCloudinary || !pdfUrl) return;
 
     const loadPdfDoc = async () => {
       try {
@@ -482,7 +545,9 @@ export const PdfReaderModal: React.FC<PdfReaderModalProps> = ({
         const cMapUrl = `https://unpkg.com/pdfjs-dist@${pdfjsVer}/cmaps/`;
 
         let loadingTask: any;
-        if (pdfUrl.startsWith('http://') || pdfUrl.startsWith('https://') || pdfUrl.startsWith('blob:')) {
+        const isHttpUrl = pdfUrl.startsWith('http://') || pdfUrl.startsWith('https://');
+        
+        if (pdfUrl.startsWith('blob:') || pdfUrl.startsWith('data:')) {
           try {
             const resp = await fetch(pdfUrl);
             if (resp.ok) {
@@ -495,7 +560,8 @@ export const PdfReaderModal: React.FC<PdfReaderModalProps> = ({
             loadingTask = pdfjsLib.getDocument({ url: pdfUrl, cMapUrl, cMapPacked: true });
           }
         } else {
-          loadingTask = pdfjsLib.getDocument({ url: pdfUrl, cMapUrl, cMapPacked: true });
+          const targetUrl = isHttpUrl ? `/api/proxy-pdf?url=${encodeURIComponent(pdfUrl)}` : pdfUrl;
+          loadingTask = pdfjsLib.getDocument({ url: targetUrl, cMapUrl, cMapPacked: true });
         }
 
         const doc = await loadingTask.promise;
@@ -509,7 +575,6 @@ export const PdfReaderModal: React.FC<PdfReaderModalProps> = ({
         if (isMounted) {
           setLoading(false);
           setPdfError(true);
-          setViewMode('embed');
         }
       }
     };
@@ -519,12 +584,12 @@ export const PdfReaderModal: React.FC<PdfReaderModalProps> = ({
     return () => {
       isMounted = false;
     };
-  }, [pdfUrl]);
+  }, [pdfUrl, isCloudinary]);
 
-  // Render current page when page or scale changes
+  // 3. Render non-Cloudinary page onto canvas
   useEffect(() => {
     let isCancelled = false;
-    if (!pdfDoc) return;
+    if (isCloudinary || !pdfDoc) return;
 
     const renderPage = async () => {
       try {
@@ -532,7 +597,7 @@ export const PdfReaderModal: React.FC<PdfReaderModalProps> = ({
         const page = await pdfDoc.getPage(currentPage);
         if (isCancelled) return;
 
-        const viewport = page.getViewport({ scale });
+        const viewport = page.getViewport({ scale: scale * 1.5 });
         const canvas = modalCanvasRef.current;
 
         if (canvas) {
@@ -563,7 +628,62 @@ export const PdfReaderModal: React.FC<PdfReaderModalProps> = ({
     return () => {
       isCancelled = true;
     };
-  }, [pdfDoc, currentPage, scale]);
+  }, [pdfDoc, currentPage, scale, isCloudinary]);
+
+  // 4. Keyboard Navigation (Arrow Keys & Escape)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      } else if (e.key === 'ArrowRight' || e.key === 'PageDown') {
+        setCurrentPage(prev => Math.min(totalPages, prev + 1));
+      } else if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
+        setCurrentPage(prev => Math.max(1, prev - 1));
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [totalPages, onClose]);
+
+  // 5. Touch swipe gestures for mobile
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (e.touches && e.touches.length === 1) {
+      setTouchStartX(e.touches[0].clientX);
+    }
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    if (touchStartX === null) return;
+    const touchEndX = e.changedTouches[0].clientX;
+    const diff = touchEndX - touchStartX;
+    if (diff > 60) {
+      // Swipe Right -> Previous Page
+      setCurrentPage(prev => Math.max(1, prev - 1));
+    } else if (diff < -60) {
+      // Swipe Left -> Next Page
+      setCurrentPage(prev => Math.min(totalPages, prev + 1));
+    }
+    setTouchStartX(null);
+  };
+
+  // 6. Download handler
+  const handleDownload = async () => {
+    try {
+      setIsDownloading(true);
+      const dlUrl = isCloudinary
+        ? `/api/proxy-pdf?url=${encodeURIComponent(pdfUrl)}&download=1`
+        : pdfUrl;
+      const a = document.createElement('a');
+      a.href = dlUrl;
+      a.download = `${companyName.replace(/[^a-zA-Z0-9]/g, '_')}_Catalogue.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => setIsDownloading(false), 3000);
+    } catch {
+      setIsDownloading(false);
+    }
+  };
 
   return (
     <div 
@@ -587,80 +707,118 @@ export const PdfReaderModal: React.FC<PdfReaderModalProps> = ({
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
-          {/* View Mode Switcher */}
-          <div className="hidden md:flex items-center bg-slate-950/80 rounded-xl p-1 border border-slate-800 text-xs mr-2">
-            <button 
-              onClick={() => setViewMode('canvas')}
-              className={`px-3 py-1.5 rounded-lg font-bold transition-all cursor-pointer ${viewMode === 'canvas' ? 'bg-emerald-600 text-white shadow-md' : 'text-zinc-400 hover:text-white'}`}
+          {/* Thumbnails Drawer Toggle Button */}
+          {totalPages > 1 && (
+            <button
+              onClick={() => setShowThumbnails(prev => !prev)}
+              className={`px-3 py-2 rounded-xl transition-all border text-xs font-bold cursor-pointer flex items-center gap-1.5 shadow-md ${
+                showThumbnails 
+                  ? 'bg-emerald-600 text-white border-emerald-500' 
+                  : 'bg-slate-800 hover:bg-slate-700 text-zinc-300 border-slate-700'
+              }`}
+              title="All Pages Thumbnails"
             >
-              📄 Page View
+              <Layers className="w-4 h-4 text-emerald-400" />
+              <span className="hidden sm:inline">Pages</span>
+              <span className="bg-black/40 px-1.5 py-0.5 rounded text-[10px] font-mono">
+                {totalPages}
+              </span>
             </button>
-            <button 
-              onClick={() => setViewMode('embed')}
-              className={`px-3 py-1.5 rounded-lg font-bold transition-all cursor-pointer ${viewMode === 'embed' ? 'bg-emerald-600 text-white shadow-md' : 'text-zinc-400 hover:text-white'}`}
-            >
-              📱 Full PDF
-            </button>
-          </div>
+          )}
 
-          <a 
-            href={pdfUrl} 
-            download={`${companyName.replace(/[^a-zA-Z0-9]/g, '_')}_Catalogue.pdf`}
-            className="px-3 py-2 bg-slate-800 hover:bg-emerald-600 text-zinc-200 hover:text-white rounded-xl transition-colors border border-slate-700 cursor-pointer flex items-center gap-1.5 text-xs font-bold shadow-md"
+          {/* Download Button */}
+          <button
+            onClick={handleDownload}
+            disabled={isDownloading}
+            className="px-3 py-2 bg-slate-800 hover:bg-emerald-600 text-zinc-200 hover:text-white rounded-xl transition-colors border border-slate-700 cursor-pointer flex items-center gap-1.5 text-xs font-bold shadow-md disabled:opacity-50"
             title="Download PDF"
           >
-            <Download className="w-4 h-4 text-emerald-400" />
-            <span className="hidden sm:inline">Download</span>
-          </a>
+            {isDownloading ? (
+              <>
+                <div className="w-3.5 h-3.5 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />
+                <span className="hidden sm:inline">Saving...</span>
+              </>
+            ) : (
+              <>
+                <Download className="w-4 h-4 text-emerald-400" />
+                <span className="hidden sm:inline">Download</span>
+              </>
+            )}
+          </button>
 
+          {/* Close Modal Button */}
           <button
             onClick={onClose}
             className="p-2 bg-red-500/20 hover:bg-red-500/40 text-red-300 rounded-xl transition-colors border border-red-500/30 cursor-pointer ml-1"
+            title="Close Reader (Esc)"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
       </div>
 
-      {/* Main Page Canvas or Embedded Frame Display */}
-      <div className="relative flex-1 w-full max-w-5xl my-3 bg-slate-950 rounded-2xl border border-slate-800 flex items-center justify-center p-2 sm:p-4 overflow-hidden shadow-inner">
-        {loading && viewMode === 'canvas' && (
+      {/* Main Document Reading Area */}
+      <div 
+        ref={containerRef}
+        onTouchStart={handleTouchStart}
+        onTouchEnd={handleTouchEnd}
+        className="relative flex-1 w-full max-w-5xl my-3 bg-slate-950 rounded-2xl border border-slate-800 flex items-center justify-center p-2 sm:p-4 overflow-auto shadow-inner"
+      >
+        {/* Loading Overlay */}
+        {loading && (
           <div className="absolute inset-0 z-20 bg-slate-950/80 backdrop-blur-sm flex flex-col items-center justify-center gap-3 text-emerald-400 font-bold text-sm">
             <div className="w-8 h-8 border-3 border-emerald-400 border-t-transparent rounded-full animate-spin" />
-            Rendering PDF Page {currentPage}...
+            Loading Page {currentPage} of {totalPages}...
           </div>
         )}
 
-        {pdfError && !pdfUrl.startsWith('data:') ? (
-          <div className="flex flex-col items-center justify-center p-6 text-center bg-slate-900/90 border border-amber-500/30 rounded-2xl max-w-md my-auto shadow-2xl">
-            <div className="w-14 h-14 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 mb-3">
-              <FileText className="w-7 h-7" />
-            </div>
-            <h3 className="text-sm font-black text-white uppercase tracking-wider mb-1">
-              {companyName}
-            </h3>
-            <p className="text-xs text-amber-300 font-bold mb-3">
-              📄 Catalogue PDF Document
-            </p>
-            <p className="text-[11px] text-zinc-300 mb-5 leading-relaxed">
-              This catalogue file can be opened directly or downloaded to your device.
-            </p>
-            <a 
-              href={pdfUrl} 
-              target="_blank" 
-              rel="noopener noreferrer"
-              className="px-5 py-2.5 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black rounded-xl text-xs shadow-lg transition-transform active:scale-95 cursor-pointer"
-            >
-              Open PDF in New Window
-            </a>
+        {/* 1. Cloudinary Native High-Def Page Display */}
+        {isCloudinary ? (
+          <div className="relative max-h-full max-w-full flex items-center justify-center transition-transform duration-150">
+            <img 
+              key={`page-${currentPage}`}
+              src={getCloudinaryPdfPageUrl(pdfUrl, currentPage, { width: Math.round(1400 * scale) })} 
+              alt={`Page ${currentPage} of ${totalPages}`}
+              onLoad={() => setLoading(false)}
+              onError={() => setLoading(false)}
+              style={{
+                transform: `scale(${scale})`,
+                transformOrigin: 'center center',
+              }}
+              className="max-h-[75vh] max-w-full object-contain rounded-xl shadow-2xl border border-white/10 select-none pointer-events-auto transition-transform duration-150"
+            />
           </div>
-        ) : viewMode === 'embed' || !pdfDoc ? (
-          <iframe 
-            src={pdfUrl.startsWith('data:') ? pdfUrl : (pdfUrl.startsWith('http') ? `https://docs.google.com/viewer?url=${encodeURIComponent(pdfUrl)}&embedded=true` : pdfUrl)} 
-            className="w-full h-full rounded-xl border border-slate-800 bg-white" 
-            title="In-App PDF Reader"
-          />
+        ) : pdfError ? (
+          /* 2. Non-Cloudinary Fallback Card (No broken Google Docs!) */
+          <div className="flex flex-col items-center text-center p-6 max-w-md bg-slate-900/90 border border-slate-800 rounded-2xl shadow-2xl">
+            <div className="w-14 h-14 rounded-2xl bg-emerald-500/20 border border-emerald-400/30 flex items-center justify-center text-emerald-400 mb-4">
+              <BookOpen className="w-7 h-7" />
+            </div>
+            <h4 className="text-base font-bold text-white mb-2">Trade Catalogue Ready</h4>
+            <p className="text-xs text-zinc-400 mb-6 leading-relaxed">
+              This document is ready to view. You can open the original PDF file directly in your browser or save it to your device.
+            </p>
+            <div className="flex flex-col sm:flex-row gap-3 w-full">
+              <a 
+                href={pdfUrl} 
+                target="_blank" 
+                rel="noopener noreferrer"
+                className="flex-1 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition-all shadow-lg flex items-center justify-center gap-2"
+              >
+                <ExternalLink className="w-4 h-4" />
+                Open PDF
+              </a>
+              <button
+                onClick={handleDownload}
+                className="flex-1 py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-zinc-200 rounded-xl text-xs font-bold transition-all border border-slate-700 flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <Download className="w-4 h-4 text-emerald-400" />
+                Download
+              </button>
+            </div>
+          </div>
         ) : (
+          /* 3. Canvas rendering for non-Cloudinary PDFs */
           <div className="w-full h-full flex items-center justify-center overflow-auto">
             <canvas 
               ref={modalCanvasRef} 
@@ -670,26 +828,103 @@ export const PdfReaderModal: React.FC<PdfReaderModalProps> = ({
         )}
       </div>
 
+      {/* Thumbnail Bar (Expandable) */}
+      {showThumbnails && totalPages > 1 && (
+        <div className="w-full max-w-5xl bg-slate-900/95 backdrop-blur-md border border-slate-800 rounded-2xl p-3 mb-2 shadow-2xl">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider">
+              Jump to Page ({totalPages} Pages Total)
+            </span>
+            <button 
+              onClick={() => setShowThumbnails(false)}
+              className="text-zinc-400 hover:text-white text-xs cursor-pointer"
+            >
+              ✕ Close
+            </button>
+          </div>
+          <div className="flex items-center gap-3 overflow-x-auto pb-2 scrollbar-thin scrollbar-thumb-emerald-600">
+            {Array.from({ length: totalPages }, (_, i) => i + 1).map((pageNum) => (
+              <button
+                key={pageNum}
+                onClick={() => {
+                  setCurrentPage(pageNum);
+                  setLoading(true);
+                }}
+                className={`relative shrink-0 flex flex-col items-center rounded-xl p-1.5 transition-all border cursor-pointer ${
+                  currentPage === pageNum
+                    ? 'bg-emerald-600/30 border-emerald-400 ring-2 ring-emerald-500/50'
+                    : 'bg-slate-950 border-slate-800 hover:border-slate-700 opacity-80 hover:opacity-100'
+                }`}
+              >
+                {isCloudinary ? (
+                  <img
+                    src={getCloudinaryPdfPageUrl(pdfUrl, pageNum, { width: 140 })}
+                    alt={`Thumb ${pageNum}`}
+                    className="w-14 h-20 object-cover rounded-lg bg-slate-800 shadow"
+                    loading="lazy"
+                  />
+                ) : (
+                  <div className="w-14 h-20 bg-slate-800 rounded-lg flex items-center justify-center text-zinc-400 text-xs font-bold">
+                    P.{pageNum}
+                  </div>
+                )}
+                <span className={`text-[10px] font-mono mt-1 font-bold ${
+                  currentPage === pageNum ? 'text-emerald-300' : 'text-zinc-400'
+                }`}>
+                  Page {pageNum}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Bottom Controls Bar */}
       <div className="w-full max-w-5xl bg-slate-900 border border-slate-800 rounded-2xl px-4 py-2.5 flex items-center justify-between text-white shadow-2xl">
         {/* Page Navigation */}
         <div className="flex items-center gap-2">
           <button
             disabled={currentPage <= 1}
-            onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
-            className="p-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 rounded-xl text-zinc-200 transition-colors border border-slate-700 cursor-pointer"
+            onClick={() => {
+              setCurrentPage(prev => Math.max(1, prev - 1));
+              setLoading(true);
+            }}
+            className="p-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 rounded-xl text-zinc-200 transition-colors border border-slate-700 cursor-pointer disabled:cursor-not-allowed"
+            title="Previous Page (Left Arrow)"
           >
             <ChevronLeft className="w-4 h-4" />
           </button>
           
-          <span className="text-xs font-black tracking-wider px-2 text-emerald-300">
-            Page {currentPage} of {totalPages}
-          </span>
+          <div className="flex items-center gap-1.5 px-2">
+            <span className="text-xs font-black tracking-wider text-emerald-300">
+              Page {currentPage} of {totalPages}
+            </span>
+            {totalPages > 1 && (
+              <select
+                value={currentPage}
+                onChange={(e) => {
+                  setCurrentPage(Number(e.target.value));
+                  setLoading(true);
+                }}
+                className="bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-xs text-white font-mono cursor-pointer ml-1"
+              >
+                {Array.from({ length: totalPages }, (_, i) => i + 1).map((num) => (
+                  <option key={num} value={num}>
+                    Go to {num}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
 
           <button
             disabled={currentPage >= totalPages}
-            onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
-            className="p-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 rounded-xl text-zinc-200 transition-colors border border-slate-700 cursor-pointer"
+            onClick={() => {
+              setCurrentPage(prev => Math.min(totalPages, prev + 1));
+              setLoading(true);
+            }}
+            className="p-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 rounded-xl text-zinc-200 transition-colors border border-slate-700 cursor-pointer disabled:cursor-not-allowed"
+            title="Next Page (Right Arrow)"
           >
             <ChevronRight className="w-4 h-4" />
           </button>
@@ -698,19 +933,23 @@ export const PdfReaderModal: React.FC<PdfReaderModalProps> = ({
         {/* Zoom Controls */}
         <div className="flex items-center gap-2">
           <button
-            onClick={() => setScale(prev => Math.max(0.6, prev - 0.2))}
+            onClick={() => setScale(prev => Math.max(0.6, Number((prev - 0.15).toFixed(2))))}
             className="p-2 bg-slate-800 hover:bg-slate-700 rounded-xl text-zinc-200 transition-colors border border-slate-700 cursor-pointer"
             title="Zoom Out"
           >
             <ZoomOut className="w-4 h-4" />
           </button>
 
-          <span className="text-xs font-bold text-zinc-400 min-w-[45px] text-center">
+          <button
+            onClick={() => setScale(1.0)}
+            className="text-xs font-bold text-zinc-400 min-w-[50px] text-center hover:text-white cursor-pointer px-1 py-1 rounded bg-slate-950/60 border border-slate-800"
+            title="Reset Zoom"
+          >
             {Math.round(scale * 100)}%
-          </span>
+          </button>
 
           <button
-            onClick={() => setScale(prev => Math.min(3.0, prev + 0.2))}
+            onClick={() => setScale(prev => Math.min(2.5, Number((prev + 0.15).toFixed(2))))}
             className="p-2 bg-slate-800 hover:bg-slate-700 rounded-xl text-zinc-200 transition-colors border border-slate-700 cursor-pointer"
             title="Zoom In"
           >

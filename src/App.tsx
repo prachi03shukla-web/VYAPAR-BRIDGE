@@ -11056,6 +11056,15 @@ function ProfilePage({ user, onUpdateUser }: { user: any; onUpdateUser?: (u: any
   const [activeTab, setActiveTab] = useState<'posts' | 'stories' | 'catalog' | 'info' | 'reviews'>('posts');
   const [activeStoryIndex, setActiveStoryIndex] = useState<number | null>(null);
   const [activeStoryPosts, setActiveStoryPosts] = useState<any[] | null>(null);
+  const [isFollowing, setIsFollowing] = useState(() => isUserFollowed(String(id)));
+
+  useEffect(() => {
+    const syncFollow = () => {
+      setIsFollowing(isUserFollowed(String(id)));
+    };
+    window.addEventListener('followedUsersUpdated', syncFollow);
+    return () => window.removeEventListener('followedUsersUpdated', syncFollow);
+  }, [id]);
 
   // Engagement & Settings Modals
   const [isEngagementModalOpen, setIsEngagementModalOpen] = useState(false);
@@ -11679,34 +11688,65 @@ function ProfilePage({ user, onUpdateUser }: { user: any; onUpdateUser?: (u: any
           </div>
         </div>
 
-        {/* 3. Action Buttons Row: Edit Profile, Engagement, Settings */}
+        {/* 3. Action Buttons Row: Edit Profile, Engagement, Settings, or Follow */}
         <div className="flex items-center gap-3 pt-1">
-          <button
-            type="button"
-            onClick={() => setIsEditing(true)}
-            className="flex-1 py-2.5 px-4 bg-[#EBF5FF] hover:bg-[#DDF0FF] text-[#0066CC] border border-[#B8DBFF] rounded-2xl font-extrabold text-sm shadow-xs flex items-center justify-center gap-2 transition-all active:scale-95 cursor-pointer"
-          >
-            <Pencil className="w-4 h-4" />
-            <span>Edit Profile</span>
-          </button>
+          {isOwnProfile ? (
+            <>
+              <button
+                type="button"
+                onClick={() => setIsEditing(true)}
+                className="flex-1 py-2.5 px-4 bg-[#EBF5FF] hover:bg-[#DDF0FF] text-[#0066CC] border border-[#B8DBFF] rounded-2xl font-extrabold text-sm shadow-xs flex items-center justify-center gap-2 transition-all active:scale-95 cursor-pointer"
+              >
+                <Pencil className="w-4 h-4" />
+                <span>Edit Profile</span>
+              </button>
 
-          <button
-            type="button"
-            onClick={() => setIsEngagementModalOpen(true)}
-            className="flex-1 py-2.5 px-4 bg-[#FFF4E5] hover:bg-[#FFE8CC] text-[#B85D00] border border-[#FFDDB3] rounded-2xl font-extrabold text-sm shadow-xs flex items-center justify-center gap-2 transition-all active:scale-95 cursor-pointer"
-          >
-            <TrendingUp className="w-4 h-4 text-amber-600" />
-            <span>Engagement</span>
-          </button>
+              <button
+                type="button"
+                onClick={() => setIsEngagementModalOpen(true)}
+                className="flex-1 py-2.5 px-4 bg-[#FFF4E5] hover:bg-[#FFE8CC] text-[#B85D00] border border-[#FFDDB3] rounded-2xl font-extrabold text-sm shadow-xs flex items-center justify-center gap-2 transition-all active:scale-95 cursor-pointer"
+              >
+                <TrendingUp className="w-4 h-4 text-amber-600" />
+                <span>Engagement</span>
+              </button>
 
-          <button
-            type="button"
-            onClick={() => setIsSettingsModalOpen(true)}
-            className="p-2.5 bg-white hover:bg-slate-50 text-slate-600 border border-slate-200 rounded-2xl shadow-xs transition-all active:scale-95 flex items-center justify-center cursor-pointer shrink-0"
-            title="Profile Settings"
-          >
-            <Settings className="w-5 h-5" />
-          </button>
+              <button
+                type="button"
+                onClick={() => setIsSettingsModalOpen(true)}
+                className="p-2.5 bg-white hover:bg-slate-50 text-slate-600 border border-slate-200 rounded-2xl shadow-xs transition-all active:scale-95 flex items-center justify-center cursor-pointer shrink-0"
+                title="Profile Settings"
+              >
+                <Settings className="w-5 h-5" />
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                if (!user) {
+                  toast.error("Please login to follow");
+                  return;
+                }
+                const next = toggleFollowUser(String(id));
+                setIsFollowing(next);
+                if (next) {
+                  toast.success(`Following ${displayCompanyName}`);
+                  followUserInFirestore(String(id), String(user.id)).catch(() => {});
+                } else {
+                  toast.success(`Unfollowed ${displayCompanyName}`);
+                }
+              }}
+              className={cn(
+                "flex-1 py-2.5 px-4 rounded-2xl font-extrabold text-sm shadow-xs flex items-center justify-center gap-2 transition-all active:scale-95 cursor-pointer",
+                isFollowing
+                  ? "bg-slate-100 hover:bg-red-50 text-slate-800 hover:text-red-600 border border-slate-300"
+                  : "bg-[#1A73E8] hover:bg-[#1557B0] text-white border-[#1557B0]"
+              )}
+            >
+              <UserPlus className="w-4 h-4" />
+              <span>{isFollowing ? 'Following' : 'Follow'}</span>
+            </button>
+          )}
 
           {isOwnProfile && (
             <button
@@ -12373,14 +12413,17 @@ function ProfilePage({ user, onUpdateUser }: { user: any; onUpdateUser?: (u: any
           isOpen={isPdfModalOpen}
           userId={profileUser.id || 'user'}
           onClose={() => setIsPdfModalOpen(false)}
-          onUploadSuccess={async ({ mediaUrl }) => {
+          onUploadSuccess={async ({ mediaUrl, thumbnailUrl }) => {
             if (mediaUrl) {
               const updated = {
                 ...profileUser,
                 catalogueUrl: mediaUrl,
-                catalogUrl: mediaUrl
+                catalogUrl: mediaUrl,
+                catalogueThumbnailUrl: thumbnailUrl,
+                catalogThumbnailUrl: thumbnailUrl
               };
               setCatalogUrl(mediaUrl);
+              setCatalogThumbnailUrl(thumbnailUrl);
               setProfileUser(updated);
               await syncUserToFirestore(updated);
               if (isOwnProfile && onUpdateUser) {

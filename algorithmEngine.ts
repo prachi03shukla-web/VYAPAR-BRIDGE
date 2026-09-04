@@ -124,8 +124,8 @@ export function generateInstagramFeed(
       if (!isTargetUser) return false;
     }
 
-    // Filter out rejected posts
-    if (p.status === 'rejected') return false;
+    // Filter out rejected posts, but protect valid user posts with title/media/content
+    if (p.status === 'rejected' && !(p.title || p.content || p.mediaUrl)) return false;
 
     // Retain all valid posts and reels permanently on feed and profiles
     return true;

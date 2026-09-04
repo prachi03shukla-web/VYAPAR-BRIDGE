@@ -77,8 +77,9 @@ window.addEventListener('unhandledrejection', (event) => {
     msg.includes('Disconnecting idle stream')
   ) {
     event.preventDefault();
+    try { event.stopImmediatePropagation(); } catch (e) {}
   }
-});
+}, true);
 
 window.addEventListener('error', (event) => {
   const msg = (event.message || '') + ' ' + (event.error?.message || '') + ' ' + String(event.error || '');
@@ -101,8 +102,9 @@ window.addEventListener('error', (event) => {
     msg.includes('Disconnecting idle stream')
   ) {
     event.preventDefault();
+    try { event.stopImmediatePropagation(); } catch (e) {}
   }
-});
+}, true);
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {

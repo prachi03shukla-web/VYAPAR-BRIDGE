@@ -5,12 +5,7 @@ import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 // Configure worker URL robustly using local same-origin public file, bundle URL or fast CDN fallback
 export function ensurePdfWorkerConfigured() {
   try {
-    if (typeof window !== 'undefined') {
-      // Prioritize local same-origin static file to prevent cross-origin and iframe restrictions
-      pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
-    } else if (pdfWorker) {
-      pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
-    }
+    pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
   } catch (e) {
     console.warn('PDF Worker setup note:', e);
   }
@@ -120,6 +115,79 @@ export function generateFallbackPdfCover(docTitle = 'Product Catalogue', company
 }
 
 /**
+ * Detects if a URL is hosted on Cloudinary and represents a PDF or document
+ */
+export function isCloudinaryPdfUrl(url: string | undefined | null): boolean {
+  if (!url || typeof url !== 'string') return false;
+  return url.includes('cloudinary.com') && (url.includes('.pdf') || url.includes('/image/upload/') || url.includes('/upload/'));
+}
+
+/**
+ * Returns a high-definition image URL for a specific page of a Cloudinary PDF
+ */
+export function getCloudinaryPdfPageUrl(
+  url: string, 
+  pageNum = 1, 
+  options: { width?: number; quality?: string | number } = {}
+): string {
+  if (!url || typeof url !== 'string') return '';
+  const { width = 1400, quality = 'auto' } = options;
+  let base = url.replace(/\.pdf(\?.*)?$/i, '.jpg');
+  
+  const transform = `pg_${pageNum},w_${width},c_limit,q_${quality}`;
+  if (base.includes('/image/upload/')) {
+    return base.replace('/image/upload/', `/image/upload/${transform}/`);
+  } else if (base.includes('/upload/')) {
+    return base.replace('/upload/', `/image/upload/${transform}/`);
+  }
+  return base;
+}
+
+// In-memory cache for page counts to avoid duplicate network lookups
+const pageCountCache = new Map<string, number>();
+
+/**
+ * Queries total pages for a Cloudinary PDF document
+ */
+export async function fetchCloudinaryPdfPageCount(url: string): Promise<number> {
+  if (!url || typeof url !== 'string') return 1;
+  if (pageCountCache.has(url)) {
+    return pageCountCache.get(url)!;
+  }
+
+  try {
+    const res = await fetch(`/api/pdf-info?url=${encodeURIComponent(url)}`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data && typeof data.totalPages === 'number' && data.totalPages > 0) {
+        pageCountCache.set(url, data.totalPages);
+        return data.totalPages;
+      }
+    }
+  } catch (err) {
+    console.warn('Could not fetch PDF info from API:', err);
+  }
+
+  // Direct fast probe fallback
+  try {
+    const probeUrl = url.replace(/\.pdf(\?.*)?$/i, '.jpg').replace(/\/image\/upload\//, '/image/upload/pg_9999/');
+    const res = await fetch(probeUrl, { method: 'GET' });
+    const cldErr = res.headers.get('x-cld-error');
+    if (cldErr) {
+      const match = cldErr.match(/only has (\d+) pages/i);
+      if (match && match[1]) {
+        const count = parseInt(match[1], 10);
+        pageCountCache.set(url, count);
+        return count;
+      }
+    }
+  } catch {}
+
+  pageCountCache.set(url, 1);
+  return 1;
+}
+
+/**
  * Extracts a high-definition JPEG/DataURL thumbnail from the first page of a PDF.
  * Works seamlessly with File, Blob, Uint8Array, ArrayBuffer, IndexedDB key, or URL strings.
  */
@@ -129,6 +197,13 @@ export async function extractPdfFirstPageThumbnail(
   maxHeight = 1600
 ): Promise<{ thumbnailUrl: string; numPages: number }> {
   try {
+    // If source is a Cloudinary PDF URL, use native high-resolution page 1 image
+    if (typeof source === 'string' && isCloudinaryPdfUrl(source)) {
+      const thumb = getCloudinaryPdfPageUrl(source, 1, { width: maxWidth });
+      const numPages = await fetchCloudinaryPdfPageCount(source);
+      return { thumbnailUrl: thumb, numPages: numPages || 1 };
+    }
+
     ensurePdfWorkerConfigured();
 
     let loadingTask: any;
@@ -149,8 +224,12 @@ export async function extractPdfFirstPageThumbnail(
       return { thumbnailUrl: source, numPages: 1 };
     }
 
+    if (typeof source === 'string' && (source.startsWith('http://') || source.startsWith('https://'))) {
+      source = `/api/proxy-pdf?url=${encodeURIComponent(source)}`;
+    }
+
     // If source is a URL or Blob URL, attempt fetching ArrayBuffer first for optimal worker reliability
-    if (typeof source === 'string' && (source.startsWith('http://') || source.startsWith('https://') || source.startsWith('blob:') || source.startsWith('/'))) {
+    if (typeof source === 'string' && (source.startsWith('blob:') || source.startsWith('/'))) {
       try {
         const response = await fetch(source);
         if (response.ok) {

@@ -47,7 +47,7 @@ export async function uploadToCloudinary(
   return new Promise<string>((resolve, reject) => {
     try {
       const xhr = new XMLHttpRequest();
-      const url = `https://api.cloudinary.com/v1_1/${cloudName}/auto/upload`;
+      const isVideo = file.type?.includes('video');      const isAudio = file.type?.includes('audio');      const endpointType = isVideo ? 'video' : (isAudio ? 'video' : 'image');      const url = `https://api.cloudinary.com/v1_1/${cloudName}/${endpointType}/upload`;
       const formData = new FormData();
 
       let filename = 'upload';

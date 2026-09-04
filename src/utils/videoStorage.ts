@@ -22,16 +22,9 @@ function resetDB() {
   dbPromise = null;
 }
 
-// Reset connections safely on tab visibility hidden, freeze, or pagehide
+// Handle cleanup gracefully on actual window unload / pagehide only
 if (typeof window !== 'undefined') {
   window.addEventListener('pagehide', () => resetDB());
-  if (typeof document !== 'undefined') {
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'hidden') {
-        resetDB();
-      }
-    });
-  }
 }
 
 function isDbOpen(db: IDBDatabase | null): boolean {
