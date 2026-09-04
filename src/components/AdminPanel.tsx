@@ -1,12 +1,14 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
   Shield, Terminal, Sparkles, Film, ShieldAlert, Volume2, Users, CreditCard, 
   Trash2, CheckCircle, CheckCircle2, X, Upload, Wrench, RotateCcw, Database, 
   Download, QrCode, Lock, KeyRound, ArrowRight, Eye, RefreshCw, AlertTriangle, 
-  ExternalLink, Phone, Copy, Check, Plus, Loader2, Play, Image as ImageIcon
+  ExternalLink, Phone, Copy, Check, Plus, Loader2, Play, Image as ImageIcon,
+  Crown, ShieldCheck, BadgeCheck, Search, Filter, SlidersHorizontal, UserCheck,
+  Building2, MapPin
 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { collection, doc, setDoc, getDocs, deleteDoc } from 'firebase/firestore';
+import { collection, doc, setDoc, getDocs, updateDoc, deleteDoc } from 'firebase/firestore';
 import { db as firestoreDb } from '../firebase';
 import { 
   fetchPostsFromFirestore, 
@@ -16,10 +18,15 @@ import {
   saveAdminSettingsToFirestore, 
   authenticateUserInFirestore, 
   deletePostFromFirestore, 
-  deleteUserFromFirestore 
+  deleteUserFromFirestore,
+  fetchAllUsersFromFirestore,
+  subscribeToUsersFromFirestore,
+  subscribeToPaymentsFromFirestore,
+  updateUserVerificationInFirestore
 } from '../services/firebaseDataSync';
 import { clearLockout } from '../utils/lockoutManager';
 import { UniversalYouTubePlayer, isYouTubeUrl } from './UniversalYouTubePlayer';
+import { AdminUserDetailModal } from './AdminUserDetailModal';
 
 // Helper for class names
 function cn(...classes: (string | boolean | undefined | null)[]) {
@@ -79,6 +86,13 @@ export function AdminPanel({ user, onUpdateUser }: AdminPanelProps) {
   const [selectedPostIds, setSelectedPostIds] = useState<string[]>([]);
   const [userToDelete, setUserToDelete] = useState<any>(null);
   const [isDeletingUser, setIsDeletingUser] = useState(false);
+
+  // Members Management State
+  const [userSearchQuery, setUserSearchQuery] = useState('');
+  const [userRoleFilter, setUserRoleFilter] = useState('all');
+  const [userBadgeFilter, setUserBadgeFilter] = useState<'all' | 'golden' | 'blue' | 'unverified'>('all');
+  const [selectedUserForDetail, setSelectedUserForDetail] = useState<any | null>(null);
+  const [isLoadingUsers, setIsLoadingUsers] = useState(false);
 
   // Top Branding State
   const [brandAdsList, setBrandAdsList] = useState<BrandAdItem[]>(() => {
@@ -161,6 +175,44 @@ export function AdminPanel({ user, onUpdateUser }: AdminPanelProps) {
     }).catch(() => {});
   }, []);
 
+  const filterDummyUsers = (list: any[]) => {
+    if (!Array.isArray(list)) return [];
+    return list.filter((u: any) => {
+      if (!u) return false;
+      const uid = String(u.id || '');
+      const uname = String(u.name || '').toLowerCase();
+      const uuser = String(u.username || '').toLowerCase();
+      const ucomp = String(u.companyName || '').toLowerCase();
+      if (['sys_user_1', 'sys_user_2', 'sys_user_3'].includes(uid)) return false;
+      if (uname.includes('morbi ceramic') || uname.includes('global sanitaryware')) return false;
+      if (uuser.includes('morbi_ceramic') || uuser.includes('global_sanitary')) return false;
+      if (ucomp.includes('morbi ceramic') || ucomp.includes('global sanitaryware')) return false;
+      return true;
+    });
+  };
+
+  const refreshAllUsers = async () => {
+    setIsLoadingUsers(true);
+    try {
+      const uList = await fetchAllUsersFromFirestore();
+      if (Array.isArray(uList)) {
+        setUsersList(filterDummyUsers(uList));
+      }
+    } catch {}
+    try {
+      const apiUsers = await safeFetch('/api/users');
+      if (Array.isArray(apiUsers) && apiUsers.length > 0) {
+        setUsersList(prev => {
+          const map = new Map();
+          filterDummyUsers(prev).forEach(u => map.set(String(u.id), u));
+          filterDummyUsers(apiUsers).forEach(u => map.set(String(u.id), u));
+          return Array.from(map.values());
+        });
+      }
+    } catch {}
+    setIsLoadingUsers(false);
+  };
+
   // Fetch initial posts, reports, music, users, payments
   useEffect(() => {
     if (!isAdmin) return;
@@ -183,10 +235,22 @@ export function AdminPanel({ user, onUpdateUser }: AdminPanelProps) {
       } catch {}
 
       try {
-        const snap = await getDocs(collection(firestoreDb, 'users'));
-        const uList: any[] = [];
-        snap.forEach(d => uList.push({ id: d.id, ...d.data() }));
-        if (!isCancelled) setUsersList(uList);
+        const uList = await fetchAllUsersFromFirestore();
+        if (!isCancelled && Array.isArray(uList)) {
+          setUsersList(filterDummyUsers(uList));
+        }
+      } catch {}
+
+      try {
+        const apiUsers = await safeFetch('/api/users');
+        if (!isCancelled && Array.isArray(apiUsers) && apiUsers.length > 0) {
+          setUsersList(prev => {
+            const map = new Map();
+            filterDummyUsers(prev).forEach(u => map.set(String(u.id), u));
+            filterDummyUsers(apiUsers).forEach(u => map.set(String(u.id), u));
+            return Array.from(map.values());
+          });
+        }
       } catch {}
 
       try {
@@ -197,15 +261,274 @@ export function AdminPanel({ user, onUpdateUser }: AdminPanelProps) {
 
     loadAll();
 
-    const unsub = subscribeToPostsFromFirestore((realtimePosts) => {
+    const unsubPosts = subscribeToPostsFromFirestore((realtimePosts) => {
       if (!isCancelled && Array.isArray(realtimePosts)) setPosts(realtimePosts);
+    });
+
+    const unsubUsers = subscribeToUsersFromFirestore((realtimeUsers) => {
+      if (!isCancelled && Array.isArray(realtimeUsers)) {
+        setUsersList(prev => {
+          const map = new Map();
+          filterDummyUsers(prev).forEach(u => map.set(String(u.id), u));
+          filterDummyUsers(realtimeUsers).forEach(u => map.set(String(u.id), u));
+          return Array.from(map.values());
+        });
+      }
+    });
+
+    const unsubPayments = subscribeToPaymentsFromFirestore((realtimePayments) => {
+      if (!isCancelled && Array.isArray(realtimePayments)) {
+        setPayments(realtimePayments);
+      }
     });
 
     return () => {
       isCancelled = true;
-      unsub();
+      unsubPosts();
+      if (typeof unsubUsers === 'function') unsubUsers();
+      if (typeof unsubPayments === 'function') unsubPayments();
     };
   }, [isAdmin]);
+
+  // Grant Golden Badge (Yearly ₹1188)
+  const handleGrantGoldenBadge = async (targetUser: any) => {
+    const tid = toast.loading(`Granting 👑 Golden Badge (Yearly Plan) to ${targetUser.name || targetUser.username}...`);
+    try {
+      const now = Date.now();
+      const validityDays = 365;
+      const payload = {
+        isVerified: true,
+        verifiedBadge: true,
+        goldenBadge: true,
+        verifiedPlan: 'yearly',
+        subscriptionPlan: 'yearly',
+        subscriptionAmount: 1188,
+        subscriptionActive: true,
+        verifiedAt: now,
+        expiresAt: now + (validityDays * 24 * 60 * 60 * 1000),
+        validityDays
+      };
+
+      await updateUserVerificationInFirestore(targetUser.id, true, 'yearly', validityDays, {
+        goldenBadge: true,
+        subscriptionAmount: 1188
+      });
+
+      await fetch(`/api/users/${targetUser.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }).catch(() => {});
+
+      setUsersList(prev => prev.map(u => u.id === targetUser.id ? { ...u, ...payload } : u));
+      toast.success(`👑 Golden Badge Granted to ${targetUser.name || targetUser.username}!`, { id: tid });
+    } catch (err: any) {
+      toast.error('Failed to grant Golden Badge: ' + (err?.message || 'Error'), { id: tid });
+    }
+  };
+
+  // Grant Blue Badge (Monthly ₹99)
+  const handleGrantBlueBadge = async (targetUser: any) => {
+    const tid = toast.loading(`Granting 🛡️ Blue Badge (Monthly Plan) to ${targetUser.name || targetUser.username}...`);
+    try {
+      const now = Date.now();
+      const validityDays = 30;
+      const payload = {
+        isVerified: true,
+        verifiedBadge: true,
+        goldenBadge: false,
+        verifiedPlan: 'monthly',
+        subscriptionPlan: 'monthly',
+        subscriptionAmount: 99,
+        subscriptionActive: true,
+        verifiedAt: now,
+        expiresAt: now + (validityDays * 24 * 60 * 60 * 1000),
+        validityDays
+      };
+
+      await updateUserVerificationInFirestore(targetUser.id, true, 'monthly', validityDays, {
+        goldenBadge: false,
+        subscriptionAmount: 99
+      });
+
+      await fetch(`/api/users/${targetUser.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }).catch(() => {});
+
+      setUsersList(prev => prev.map(u => u.id === targetUser.id ? { ...u, ...payload } : u));
+      toast.success(`✅ Blue Verified Badge Granted to ${targetUser.name || targetUser.username}!`, { id: tid });
+    } catch (err: any) {
+      toast.error('Failed to grant Blue Badge: ' + (err?.message || 'Error'), { id: tid });
+    }
+  };
+
+  // Revoke Badge
+  const handleRevokeBadge = async (targetUser: any) => {
+    if (!confirm(`Revoke verification badge for ${targetUser.name || targetUser.username}?`)) return;
+    const tid = toast.loading(`Revoking badge for ${targetUser.name || targetUser.username}...`);
+    try {
+      const payload = {
+        isVerified: false,
+        verifiedBadge: false,
+        goldenBadge: false,
+        verifiedPlan: null,
+        subscriptionPlan: null,
+        subscriptionAmount: 0,
+        subscriptionActive: false
+      };
+
+      await updateUserVerificationInFirestore(targetUser.id, false, 'free', 0, {
+        goldenBadge: false,
+        subscriptionAmount: 0
+      });
+
+      await fetch(`/api/users/${targetUser.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }).catch(() => {});
+
+      setUsersList(prev => prev.map(u => u.id === targetUser.id ? { ...u, ...payload } : u));
+      toast.success(`Verification badge revoked for ${targetUser.name || targetUser.username}.`, { id: tid });
+    } catch (err: any) {
+      toast.error('Failed to revoke badge: ' + (err?.message || 'Error'), { id: tid });
+    }
+  };
+
+  // Approve Payment Submission
+  const handleApprovePayment = async (p: any) => {
+    const tid = toast.loading(`Approving payment (UTR: ${p.utr || 'N/A'})...`);
+    try {
+      const isYearlyOrGolden = (p.plan || '').toLowerCase().includes('year') || (p.plan || '').toLowerCase().includes('gold') || Number(p.amount) >= 999;
+      const validityDays = isYearlyOrGolden ? 365 : 30;
+      const planName = isYearlyOrGolden ? 'yearly' : 'monthly';
+      const amountVal = Number(p.amount) || (isYearlyOrGolden ? 1188 : 99);
+
+      // 1. Update Payment Status in Backend & Firestore
+      await fetch(`/api/admin/payments/${p.id}/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isGolden: isYearlyOrGolden })
+      }).catch(() => {});
+
+      try {
+        await updateDoc(doc(firestoreDb, 'payments', String(p.id)), {
+          status: 'approved',
+          approvedAt: Date.now()
+        });
+      } catch(e) {}
+
+      // 2. Identify Target User
+      const targetUser = usersList.find(u => 
+        (p.userId && String(u.id) === String(p.userId)) ||
+        (u.phone && p.userPhone && String(u.phone).trim() === String(p.userPhone).trim()) ||
+        (u.username && p.userName && String(u.username).toLowerCase() === String(p.userName).toLowerCase()) ||
+        (u.name && p.userName && String(u.name).toLowerCase() === String(p.userName).toLowerCase())
+      );
+
+      if (targetUser && targetUser.id) {
+        const payload = {
+          isVerified: true,
+          verifiedBadge: true,
+          goldenBadge: isYearlyOrGolden,
+          verifiedPlan: planName,
+          subscriptionPlan: planName,
+          subscriptionAmount: amountVal,
+          subscriptionActive: true,
+          verifiedAt: Date.now(),
+          expiresAt: Date.now() + (validityDays * 24 * 60 * 60 * 1000),
+          validityDays
+        };
+
+        await updateUserVerificationInFirestore(targetUser.id, true, planName, validityDays, {
+          goldenBadge: isYearlyOrGolden,
+          subscriptionAmount: amountVal
+        });
+
+        await fetch(`/api/users/${targetUser.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        }).catch(() => {});
+
+        setUsersList(prev => prev.map(u => u.id === targetUser.id ? { ...u, ...payload } : u));
+      }
+
+      setPayments(prev => prev.map(item => item.id === p.id ? { ...item, status: 'approved' } : item));
+      toast.success(`🎉 Payment approved & ${isYearlyOrGolden ? '👑 Golden' : '✅ Blue'} Badge granted!`, { id: tid });
+    } catch (err: any) {
+      toast.error('Failed to approve payment: ' + (err?.message || 'Error'), { id: tid });
+    }
+  };
+
+  // Reject Payment Submission
+  const handleRejectPayment = async (p: any) => {
+    const tid = toast.loading('Rejecting payment...');
+    try {
+      await fetch(`/api/admin/payments/${p.id}/reject`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      }).catch(() => {});
+
+      try {
+        await updateDoc(doc(firestoreDb, 'payments', String(p.id)), {
+          status: 'rejected',
+          rejectedAt: Date.now()
+        });
+      } catch(e) {}
+
+      setPayments(prev => prev.map(item => item.id === p.id ? { ...item, status: 'rejected' } : item));
+      toast.success('Payment rejected.', { id: tid });
+    } catch (err: any) {
+      toast.error('Failed to reject payment: ' + (err?.message || 'Error'), { id: tid });
+    }
+  };
+
+  // Filtered Users List computation
+  const filteredUsers = useMemo(() => {
+    return usersList.filter(u => {
+      if (!u) return false;
+
+      // 1. Search filter
+      if (userSearchQuery.trim()) {
+        const q = userSearchQuery.toLowerCase().trim();
+        const name = (u.name || '').toLowerCase();
+        const username = (u.username || '').toLowerCase();
+        const phone = (u.phone || '').toLowerCase();
+        const company = (u.companyName || '').toLowerCase();
+        const gstin = (u.gstin || '').toLowerCase();
+        const city = (u.city || '').toLowerCase();
+        const role = (u.role || '').toLowerCase();
+        if (!name.includes(q) && !username.includes(q) && !phone.includes(q) && !company.includes(q) && !gstin.includes(q) && !city.includes(q) && !role.includes(q)) {
+          return false;
+        }
+      }
+
+      // 2. Role filter
+      if (userRoleFilter !== 'all') {
+        const role = (u.role || '').toLowerCase();
+        const cat = (u.category || '').toLowerCase();
+        if (userRoleFilter === 'factory' && !role.includes('factory') && !role.includes('manufacturer') && !cat.includes('factory') && !cat.includes('manufacturing')) return false;
+        if (userRoleFilter === 'dealer' && !role.includes('dealer') && !role.includes('distributor') && !cat.includes('dealer') && !cat.includes('distribution')) return false;
+        if (userRoleFilter === 'customer' && !role.includes('customer') && !role.includes('retailer') && !cat.includes('retail') && !cat.includes('buyer')) return false;
+        if (userRoleFilter === 'architect' && !role.includes('architect') && !role.includes('interior') && !cat.includes('architect')) return false;
+        if (userRoleFilter === 'karigar' && !role.includes('karigar') && !role.includes('mistri') && !cat.includes('karigar')) return false;
+      }
+
+      // 3. Badge filter
+      if (userBadgeFilter !== 'all') {
+        const isGold = Boolean(u.goldenBadge || u.verifiedPlan === 'yearly' || u.plan === 'yearly');
+        const isBlue = Boolean((u.isVerified || u.verifiedBadge) && !isGold);
+        if (userBadgeFilter === 'golden' && !isGold) return false;
+        if (userBadgeFilter === 'blue' && !isBlue) return false;
+        if (userBadgeFilter === 'unverified' && (isGold || isBlue)) return false;
+      }
+
+      return true;
+    });
+  }, [usersList, userSearchQuery, userRoleFilter, userBadgeFilter]);
 
   // Handle Admin Direct Login
   const handleAdminLogin = async (e: React.FormEvent) => {
@@ -1285,29 +1608,28 @@ export function AdminPanel({ user, onUpdateUser }: AdminPanelProps) {
                         </span>
                       </td>
                       <td className="px-4 py-3">
-                        {p.status === 'pending' && (
+                        {p.status === 'pending' ? (
                           <div className="flex items-center gap-1.5">
                             <button
                               type="button"
-                              onClick={async () => {
-                                setPayments(prev => prev.map(item => item.id === p.id ? { ...item, status: 'approved' } : item));
-                                toast.success('Payment approved!');
-                              }}
-                              className="p-1.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg cursor-pointer"
+                              onClick={() => handleApprovePayment(p)}
+                              title="Approve Payment & Grant Badge"
+                              className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg cursor-pointer flex items-center gap-1 font-bold shadow-sm text-[11px]"
                             >
                               <Check className="w-3.5 h-3.5" />
+                              <span>Approve & Grant Badge</span>
                             </button>
                             <button
                               type="button"
-                              onClick={async () => {
-                                setPayments(prev => prev.map(item => item.id === p.id ? { ...item, status: 'rejected' } : item));
-                                toast.success('Payment rejected.');
-                              }}
+                              onClick={() => handleRejectPayment(p)}
+                              title="Reject Payment"
                               className="p-1.5 bg-red-500 hover:bg-red-600 text-white rounded-lg cursor-pointer"
                             >
                               <X className="w-3.5 h-3.5" />
                             </button>
                           </div>
+                        ) : (
+                          <span className="text-[11px] font-bold text-slate-400 capitalize">{p.status}</span>
                         )}
                       </td>
                     </tr>
@@ -1659,61 +1981,316 @@ export function AdminPanel({ user, onUpdateUser }: AdminPanelProps) {
       )}
 
       {/* ======================================================== */}
-      {/* TAB 6: USERS LIST                                        */}
+      {/* TAB 6: USERS LIST & BADGE MANAGEMENT                     */}
       {/* ======================================================== */}
       {activeTab === 'users' && (
-        <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-5 shadow-sm space-y-4">
-          <h4 className="font-extrabold text-sm text-black dark:text-white flex items-center gap-2">
-            <Users className="w-4 h-4 text-indigo-600" />
-            <span>Registered Members ({usersList.length})</span>
-          </h4>
+        <div className="space-y-6">
+          {/* Members Stats Banner */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="p-4 bg-white dark:bg-zinc-900 rounded-2xl border border-slate-200 dark:border-zinc-800 shadow-sm space-y-1">
+              <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                <Users className="w-3.5 h-3.5 text-indigo-600" />
+                <span>Total Members</span>
+              </div>
+              <div className="text-2xl font-black text-black dark:text-white">{usersList.length}</div>
+              <p className="text-[10px] text-slate-400">All registered traders</p>
+            </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="bg-slate-50 dark:bg-zinc-950 border-b border-slate-200 dark:border-zinc-800">
-                <tr>
-                  <th className="px-4 py-3 font-black uppercase text-slate-600 dark:text-zinc-400">Member</th>
-                  <th className="px-4 py-3 font-black uppercase text-slate-600 dark:text-zinc-400">Role & Phone</th>
-                  <th className="px-4 py-3 font-black uppercase text-slate-600 dark:text-zinc-400">GSTIN</th>
-                  <th className="px-4 py-3 font-black uppercase text-slate-600 dark:text-zinc-400">Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 dark:divide-zinc-800">
-                {usersList.map((u, i) => (
-                  <tr key={u.id || `u-${i}`} className="hover:bg-slate-50 dark:hover:bg-zinc-800/50">
-                    <td className="px-4 py-3">
-                      <div className="font-bold text-black dark:text-white">{u.name || u.companyName || u.username}</div>
-                      <div className="text-[10px] text-slate-400">@{u.username}</div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="font-bold">{u.phone || 'No phone'}</div>
-                      <span className="text-[10px] text-indigo-600 font-bold uppercase">{u.role || 'Member'}</span>
-                    </td>
-                    <td className="px-4 py-3 font-mono text-[11px] text-slate-600 dark:text-zinc-400">
-                      {u.gstin || '—'}
-                    </td>
-                    <td className="px-4 py-3">
-                      {u.role !== 'admin' && (
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            if (!confirm(`Delete user "${u.name || u.username}" permanently?`)) return;
-                            setUsersList(prev => prev.filter(x => x.id !== u.id));
-                            await deleteUserFromFirestore(String(u.id));
-                            toast.success('User profile removed.');
-                          }}
-                          className="p-1.5 bg-red-100 hover:bg-red-200 text-red-600 rounded-lg cursor-pointer"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-                    </td>
+            <div className="p-4 bg-gradient-to-br from-amber-50 to-amber-100/50 dark:from-amber-950/30 dark:to-zinc-900 rounded-2xl border border-amber-300 dark:border-amber-800/60 shadow-sm space-y-1">
+              <div className="text-[11px] font-bold text-amber-700 dark:text-amber-400 uppercase tracking-wider flex items-center gap-1.5">
+                <Crown className="w-3.5 h-3.5 text-amber-500" />
+                <span>Golden Badges</span>
+              </div>
+              <div className="text-2xl font-black text-amber-900 dark:text-amber-200">
+                {usersList.filter(u => u.goldenBadge || u.verifiedPlan === 'yearly' || u.plan === 'yearly').length}
+              </div>
+              <p className="text-[10px] text-amber-700/80 dark:text-amber-400/80">₹1188/Year verified</p>
+            </div>
+
+            <div className="p-4 bg-gradient-to-br from-blue-50 to-blue-100/50 dark:from-blue-950/30 dark:to-zinc-900 rounded-2xl border border-blue-300 dark:border-blue-800/60 shadow-sm space-y-1">
+              <div className="text-[11px] font-bold text-blue-700 dark:text-blue-400 uppercase tracking-wider flex items-center gap-1.5">
+                <BadgeCheck className="w-3.5 h-3.5 text-blue-500" />
+                <span>Blue Badges</span>
+              </div>
+              <div className="text-2xl font-black text-blue-900 dark:text-blue-200">
+                {usersList.filter(u => (u.isVerified || u.verifiedBadge) && !u.goldenBadge && u.verifiedPlan !== 'yearly' && u.plan !== 'yearly').length}
+              </div>
+              <p className="text-[10px] text-blue-700/80 dark:text-blue-400/80">₹99/Month verified</p>
+            </div>
+
+            <div className="p-4 bg-gradient-to-br from-emerald-50 to-emerald-100/50 dark:from-emerald-950/30 dark:to-zinc-900 rounded-2xl border border-emerald-300 dark:border-emerald-800/60 shadow-sm space-y-1">
+              <div className="text-[11px] font-bold text-emerald-700 dark:text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
+                <CreditCard className="w-3.5 h-3.5 text-emerald-600" />
+                <span>Pending Payments</span>
+              </div>
+              <div className="text-2xl font-black text-emerald-900 dark:text-emerald-200">
+                {payments.filter(p => p.status === 'pending').length}
+              </div>
+              <p className="text-[10px] text-emerald-700/80 dark:text-emerald-400/80">Awaiting approval</p>
+            </div>
+          </div>
+
+          {/* Members Table Card */}
+          <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-5 shadow-sm space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100 dark:border-zinc-800">
+              <div>
+                <h4 className="font-extrabold text-base text-black dark:text-white flex items-center gap-2">
+                  <Users className="w-5 h-5 text-indigo-600" />
+                  <span>Members & Badges Directory ({filteredUsers.length} of {usersList.length})</span>
+                </h4>
+                <p className="text-xs text-slate-500">
+                  Manage seller verification badges (Golden ₹1188 / Blue ₹99), passwords, and profile details.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={refreshAllUsers}
+                  disabled={isLoadingUsers}
+                  className="px-3 py-1.5 bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 text-black dark:text-white text-xs font-bold rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <RefreshCw className={cn("w-3.5 h-3.5 text-indigo-600", isLoadingUsers && "animate-spin")} />
+                  <span>{isLoadingUsers ? 'Syncing...' : 'Live Refresh'}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Filter & Search Bar */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="relative">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  placeholder="Search name, phone, @user, GSTIN, city..."
+                  value={userSearchQuery}
+                  onChange={(e) => setUserSearchQuery(e.target.value)}
+                  className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl text-black dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+
+              <div className="flex items-center gap-2">
+                <Filter className="w-4 h-4 text-slate-400 shrink-0" />
+                <select
+                  value={userRoleFilter}
+                  onChange={(e) => setUserRoleFilter(e.target.value)}
+                  className="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl text-black dark:text-white font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+                  <option value="all">All Roles & Categories</option>
+                  <option value="factory">Factories & Manufacturers</option>
+                  <option value="dealer">Dealers & Distributors</option>
+                  <option value="customer">Retailers & Buyers</option>
+                  <option value="architect">Architects & Designers</option>
+                  <option value="karigar">Karigars & Mistris</option>
+                </select>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-slate-400 shrink-0" />
+                <select
+                  value={userBadgeFilter}
+                  onChange={(e) => setUserBadgeFilter(e.target.value as any)}
+                  className="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl text-black dark:text-white font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+                  <option value="all">All Verification Status</option>
+                  <option value="golden">👑 Golden Badge Only (₹1188)</option>
+                  <option value="blue">🛡️ Blue Badge Only (₹99)</option>
+                  <option value="unverified">⚪ Unverified / Free</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Members Data Table */}
+            <div className="overflow-x-auto rounded-2xl border border-slate-200 dark:border-zinc-800">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-50 dark:bg-zinc-950 border-b border-slate-200 dark:border-zinc-800">
+                  <tr>
+                    <th className="px-4 py-3 font-black uppercase text-slate-600 dark:text-zinc-400">Member Profile</th>
+                    <th className="px-4 py-3 font-black uppercase text-slate-600 dark:text-zinc-400">Role & Phone</th>
+                    <th className="px-4 py-3 font-black uppercase text-slate-600 dark:text-zinc-400">Company & GSTIN</th>
+                    <th className="px-4 py-3 font-black uppercase text-slate-600 dark:text-zinc-400">Badge & Plan</th>
+                    <th className="px-4 py-3 font-black uppercase text-slate-600 dark:text-zinc-400 text-right">Actions</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-zinc-800">
+                  {filteredUsers.map((u, i) => {
+                    const isGolden = Boolean(u.goldenBadge || u.verifiedPlan === 'yearly' || u.plan === 'yearly');
+                    const isBlue = Boolean((u.isVerified || u.verifiedBadge) && !isGolden);
+
+                    return (
+                      <tr key={u.id || `u-${i}`} className="hover:bg-slate-50 dark:hover:bg-zinc-800/50 transition-colors">
+                        {/* Member Profile */}
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-2.5">
+                            <div className={cn(
+                              "w-9 h-9 rounded-full overflow-hidden shrink-0 border-2 bg-slate-200 dark:bg-zinc-700 flex items-center justify-center font-bold text-xs",
+                              isGolden ? "border-amber-400 shadow-sm" : isBlue ? "border-blue-500" : "border-transparent"
+                            )}>
+                              {u.avatar || u.photoURL || u.profileImage ? (
+                                <img
+                                  src={u.avatar || u.photoURL || u.profileImage}
+                                  alt={u.name || u.username}
+                                  className="w-full h-full object-cover"
+                                />
+                              ) : (
+                                <span>{(u.name || u.username || 'U').charAt(0).toUpperCase()}</span>
+                              )}
+                            </div>
+                            <div>
+                              <div className="font-bold text-black dark:text-white flex items-center gap-1.5">
+                                <span>{u.name || u.companyName || u.username}</span>
+                                {isGolden && <Crown className="w-3.5 h-3.5 text-amber-500 fill-amber-500 shrink-0" />}
+                                {isBlue && <BadgeCheck className="w-3.5 h-3.5 text-blue-500 fill-blue-500 shrink-0" />}
+                              </div>
+                              <div className="text-[10px] text-slate-400 font-mono">@{u.username}</div>
+                              {u.city && (
+                                <div className="text-[10px] text-slate-500 flex items-center gap-0.5 mt-0.5">
+                                  <MapPin className="w-2.5 h-2.5" />
+                                  <span>{u.city}{u.state ? `, ${u.state}` : ''}</span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+
+                        {/* Role & Phone */}
+                        <td className="px-4 py-3">
+                          <div className="font-bold text-black dark:text-white">{u.phone || 'No phone'}</div>
+                          <span className="inline-block mt-0.5 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800/60">
+                            {u.role || u.category || 'Member'}
+                          </span>
+                        </td>
+
+                        {/* Company & GSTIN */}
+                        <td className="px-4 py-3">
+                          <div className="font-medium text-black dark:text-white">{u.companyName || '—'}</div>
+                          <div className="font-mono text-[10px] text-slate-500 dark:text-zinc-400">
+                            GST: {u.gstin || '—'}
+                          </div>
+                        </td>
+
+                        {/* Badge Status */}
+                        <td className="px-4 py-3">
+                          {isGolden ? (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-black uppercase bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-700 shadow-xs">
+                              <Crown className="w-3 h-3 text-amber-500 fill-amber-500" />
+                              <span>Golden Verified (₹1188/Yr)</span>
+                            </span>
+                          ) : isBlue ? (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-black uppercase bg-blue-100 dark:bg-blue-950/80 text-blue-800 dark:text-blue-300 border border-blue-300 dark:border-blue-700 shadow-xs">
+                              <BadgeCheck className="w-3 h-3 text-blue-500 fill-blue-500" />
+                              <span>Blue Verified (₹99/Mo)</span>
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold text-slate-500 bg-slate-100 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700">
+                              <span>Free Member</span>
+                            </span>
+                          )}
+                        </td>
+
+                        {/* Actions */}
+                        <td className="px-4 py-3 text-right">
+                          <div className="flex items-center justify-end gap-1.5">
+                            {/* Quick Golden Badge Button */}
+                            <button
+                              type="button"
+                              onClick={() => handleGrantGoldenBadge(u)}
+                              title="Grant Golden Badge (₹1188 Yearly)"
+                              className={cn(
+                                "p-1.5 rounded-lg border transition-all cursor-pointer",
+                                isGolden
+                                  ? "bg-amber-500 text-white border-amber-600 shadow-xs"
+                                  : "bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800 hover:bg-amber-100"
+                              )}
+                            >
+                              <Crown className="w-3.5 h-3.5" />
+                            </button>
+
+                            {/* Quick Blue Badge Button */}
+                            <button
+                              type="button"
+                              onClick={() => handleGrantBlueBadge(u)}
+                              title="Grant Blue Badge (₹99 Monthly)"
+                              className={cn(
+                                "p-1.5 rounded-lg border transition-all cursor-pointer",
+                                isBlue
+                                  ? "bg-blue-600 text-white border-blue-700 shadow-xs"
+                                  : "bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800 hover:bg-blue-100"
+                              )}
+                            >
+                              <BadgeCheck className="w-3.5 h-3.5" />
+                            </button>
+
+                            {/* Revoke Button if verified */}
+                            {(isGolden || isBlue) && (
+                              <button
+                                type="button"
+                                onClick={() => handleRevokeBadge(u)}
+                                title="Revoke Verification Badge"
+                                className="p-1.5 bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 text-slate-600 dark:text-zinc-300 rounded-lg cursor-pointer"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+
+                            {/* Full User Details & Password Modal Trigger */}
+                            <button
+                              type="button"
+                              onClick={() => setSelectedUserForDetail(u)}
+                              title="Inspect Details, Master Passwords & Full Settings"
+                              className="p-1.5 bg-indigo-50 dark:bg-indigo-950/50 hover:bg-indigo-100 text-indigo-600 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 rounded-lg cursor-pointer"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                            </button>
+
+                            {/* Delete User Button */}
+                            {u.role !== 'admin' && (
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  if (!confirm(`Delete user "${u.name || u.username}" permanently?`)) return;
+                                  setUsersList(prev => prev.filter(x => x.id !== u.id));
+                                  await deleteUserFromFirestore(String(u.id));
+                                  toast.success('User profile removed.');
+                                }}
+                                title="Delete User Permanently"
+                                className="p-1.5 bg-red-50 dark:bg-red-950/50 hover:bg-red-100 text-red-600 rounded-lg border border-red-200 dark:border-red-900 cursor-pointer"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+
+                  {filteredUsers.length === 0 && (
+                    <tr>
+                      <td colSpan={5} className="px-4 py-12 text-center text-slate-400 italic">
+                        {usersList.length === 0 
+                          ? 'No registered members found in database.' 
+                          : 'No members match the current search / filter criteria.'}
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
+      )}
+
+      {/* Admin User Detail Modal */}
+      {selectedUserForDetail && (
+        <AdminUserDetailModal
+          user={selectedUserForDetail}
+          onClose={() => setSelectedUserForDetail(null)}
+          onUserUpdated={(updated) => {
+            setUsersList(prev => prev.map(u => u.id === updated.id ? { ...u, ...updated } : u));
+            setSelectedUserForDetail(updated);
+          }}
+        />
       )}
     </div>
   );
