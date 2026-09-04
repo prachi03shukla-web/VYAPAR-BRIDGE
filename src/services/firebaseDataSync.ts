@@ -2053,7 +2053,7 @@ export async function syncUserToFirestore(userData: any): Promise<boolean> {
       let list: any[] = existingStr ? JSON.parse(existingStr) : [];
       if (!Array.isArray(list)) list = [];
       const filtered = list.filter(u => String(u.id) !== uId);
-      safeSetLocalStorage(LOCAL_USERS_CACHE_KEY, [cleanData, ...filtered].slice(0, 50));
+      safeSetLocalStorage(LOCAL_USERS_CACHE_KEY, [cleanData, ...filtered].slice(0, 5000));
     } catch (localErr) {
       console.warn('Local users cache backup note:', localErr);
     }
@@ -2270,7 +2270,7 @@ export async function fetchAllUsersFromFirestore(): Promise<any[]> {
 
   try {
     updateCachedUsers(result);
-    safeSetLocalStorage(LOCAL_USERS_CACHE_KEY, result.slice(0, 50));
+    safeSetLocalStorage(LOCAL_USERS_CACHE_KEY, result.slice(0, 5000));
   } catch (e) {}
   return result;
 }
@@ -2470,7 +2470,7 @@ export async function updateUserVerificationInFirestore(
             }
             return u;
           });
-          safeSetLocalStorage(LOCAL_USERS_CACHE_KEY, updated.slice(0, 50));
+          safeSetLocalStorage(LOCAL_USERS_CACHE_KEY, updated.slice(0, 5000));
         }
       }
     } catch (e) {}
@@ -2782,7 +2782,7 @@ export async function updateUserPresence(userId: string | number, isOnline: bool
             }
             return u;
           });
-          safeSetLocalStorage(LOCAL_USERS_CACHE_KEY, updated.slice(0, 50));
+          safeSetLocalStorage(LOCAL_USERS_CACHE_KEY, updated.slice(0, 5000));
         }
       }
     } catch (e) {}

@@ -1603,9 +1603,17 @@ Return ONLY a valid raw JSON object (NO markdown, NO \`\`\`json backticks, NO ex
       } else if (req.body.mediaUrl) {
         mediaUrl = req.body.mediaUrl;
         if (mediaUrls.length === 0) mediaUrls = [req.body.mediaUrl];
-        const isVid = String(mediaUrl).includes('youtube.com') || String(mediaUrl).includes('youtu.be') || /\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(String(mediaUrl));
+        const isVid = 
+          requestedType === 'video' ||
+          requestedType === 'reel' ||
+          req.body.isReel === true ||
+          req.body.isReel === 'true' ||
+          String(mediaUrl).includes('/video/upload/') ||
+          String(mediaUrl).includes('youtube.com') ||
+          String(mediaUrl).includes('youtu.be') ||
+          /\.(mp4|webm|mov|m4v|avi|mkv)(\?.*)?$/i.test(String(mediaUrl));
         const isPdfUrl = String(mediaUrl).match(/\.pdf(\?.*)?$/i) || String(mediaUrl).startsWith('data:application/pdf');
-        postType = isVid ? 'video' : (isPdfUrl ? 'pdf' : (requestedType || 'image'));
+        postType = isVid ? (requestedType || 'video') : (isPdfUrl ? 'pdf' : (requestedType || 'image'));
       } else if (mediaUrls.length > 0) {
         mediaUrl = mediaUrls[0];
         postType = requestedType || 'image';
@@ -1656,9 +1664,14 @@ Return ONLY a valid raw JSON object (NO markdown, NO \`\`\`json backticks, NO ex
         createdAt: req.body.createdAt ? parseTimestampMs(req.body.createdAt) : Date.now(),
         postedFrom: req.body.postedFrom || null,
         isPermanent: req.body.isPermanent === 'true' || req.body.isPermanent === true || false,
+        isStory: req.body.isStory === true || req.body.isStory === 'true' || postType === 'story' || req.body.postedFrom === 'story_tray',
+        isReel: req.body.isReel === true || req.body.isReel === 'true' || postType === 'reel',
+        expiresAt: req.body.expiresAt ? Number(req.body.expiresAt) : null,
+        videoThumbnailUrl: req.body.videoThumbnailUrl || req.body.thumbnailUrl || thumbnailUrl || (mediaUrl || null),
+        middleThumbnail: req.body.middleThumbnail || req.body.videoThumbnailUrl || null,
         externalLink: req.body.externalLink || null,
-        videoUrl: postType === 'video' ? (req.body.videoUrl || mediaUrl || req.body.externalLink || null) : null,
-        video: postType === 'video' ? (req.body.video || mediaUrl || req.body.externalLink || null) : null,
+        videoUrl: (postType === 'video' || req.body.isReel || req.body.isStory) ? (req.body.videoUrl || mediaUrl || req.body.externalLink || null) : null,
+        video: (postType === 'video' || req.body.isReel || req.body.isStory) ? (req.body.video || mediaUrl || req.body.externalLink || null) : null,
         ratingAverage: Number(req.body.ratingAverage || 0),
         averageRating: Number(req.body.ratingAverage || 0),
         ratingCount: Number(req.body.ratingCount || 0),

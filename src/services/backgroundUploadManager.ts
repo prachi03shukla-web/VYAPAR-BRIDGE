@@ -346,6 +346,7 @@ class BackgroundUploadService {
       syncPostToFirestore(finalStory).catch(() => {});
 
       window.dispatchEvent(new CustomEvent('postCreated', { detail: finalStory }));
+      window.dispatchEvent(new CustomEvent('storyCreated', { detail: finalStory }));
       
       try {
         if (typeof BroadcastChannel !== 'undefined') {

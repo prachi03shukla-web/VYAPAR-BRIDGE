@@ -7,19 +7,45 @@ import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react'
  * - https://www.youtube.com/shorts/VIDEO_ID
  * - https://www.youtube.com/embed/VIDEO_ID
  * - https://www.youtube.com/live/VIDEO_ID
+ * - https://m.youtube.com/watch?v=VIDEO_ID
+ * - Links with tracking params like ?si=..., &feature=shared
  */
 export function extractYouTubeId(url?: string | null): string | null {
   if (!url) return null;
   const str = String(url).trim();
   if (!str) return null;
-  
-  // Standard 11 character video ID matching
-  const match = str.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|shorts\/|live\/|watch\?.+&v=))([\w-]{11})/);
+
+  try {
+    const parsed = new URL(str.startsWith('http') ? str : `https://${str}`);
+    if (
+      parsed.hostname.includes('youtube.com') ||
+      parsed.hostname.includes('youtu.be') ||
+      parsed.hostname.includes('youtube-nocookie.com')
+    ) {
+      // 1. Check v query parameter (works regardless of param order)
+      const v = parsed.searchParams.get('v');
+      if (v && /^[\w-]{11}$/.test(v)) return v;
+
+      // 2. Check path segments: /shorts/ID, /embed/ID, /live/ID, /v/ID
+      const parts = parsed.pathname.split('/').filter(Boolean);
+      for (let i = 0; i < parts.length; i++) {
+        if (['shorts', 'embed', 'live', 'v'].includes(parts[i].toLowerCase()) && parts[i + 1] && /^[\w-]{11}$/.test(parts[i + 1])) {
+          return parts[i + 1];
+        }
+      }
+
+      // 3. For youtu.be/ID
+      if (parsed.hostname.includes('youtu.be') && parts[0] && /^[\w-]{11}$/.test(parts[0])) {
+        return parts[0];
+      }
+    }
+  } catch {
+    // Continue to regex fallback
+  }
+
+  // Regex fallback matching
+  const match = str.match(/(?:youtu\.be\/|youtube(?:-nocookie)?\.com\/(?:embed\/|v\/|watch\?(?:.*&)?v=|shorts\/|live\/))([\w-]{11})/i);
   if (match && match[1]) return match[1];
-  
-  // Generic fallback if query params or trailing slashes exist
-  const fallback = str.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|shorts\/|live\/))([^#&?\/]{11})/);
-  if (fallback && fallback[1]) return fallback[1];
 
   return null;
 }
@@ -27,7 +53,7 @@ export function extractYouTubeId(url?: string | null): string | null {
 export function isYouTubeUrl(url?: string | null): boolean {
   if (!url) return false;
   const s = String(url).toLowerCase();
-  return s.includes('youtube.com') || s.includes('youtu.be');
+  return s.includes('youtube.com') || s.includes('youtu.be') || s.includes('youtube-nocookie.com');
 }
 
 export interface UniversalYouTubePlayerProps {
@@ -292,15 +318,22 @@ export const UniversalYouTubePlayer = React.memo(function UniversalYouTubePlayer
   }
 
   const isVertical = isReel || url.includes('/shorts/') || aspectRatio === '9:16' || aspectRatio === '9/16';
-  const origin = typeof window !== 'undefined' && window.location.origin ? encodeURIComponent(window.location.origin) : '';
+  
+  // Clean origin parameter without broken encoding for production
+  let originParam = '';
+  try {
+    if (typeof window !== 'undefined' && window.location.origin && window.location.origin.startsWith('http')) {
+      originParam = `&origin=${window.location.origin}`;
+    }
+  } catch {}
 
   // High-performance embed parameters:
+  // - Using youtube-nocookie.com for maximum cross-origin privacy and zero cookie blocking in production
   // - enablejsapi=1 enables programmatic postMessage pauseVideo & mute commands
-  // - origin sets security boundary for postMessage
   // - playsinline=1 avoids hijacking fullscreen on mobile iOS/Android
   // - rel=0 disables unrelated recommended videos
   // - modestbranding=1 minimizes player overlays
-  const embedUrl = `https://www.youtube.com/embed/${ytId}?autoplay=${autoPlay ? 1 : 0}&mute=${muted ? 1 : 0}&controls=1&rel=0&playsinline=1&modestbranding=1&enablejsapi=1${origin ? `&origin=${origin}` : ''}${isVertical ? `&loop=1&playlist=${ytId}` : ''}`;
+  const embedUrl = `https://www.youtube-nocookie.com/embed/${ytId}?autoplay=${autoPlay ? 1 : 0}&mute=${muted ? 1 : 0}&controls=1&rel=0&playsinline=1&modestbranding=1&enablejsapi=1${originParam}${isVertical ? `&loop=1&playlist=${ytId}` : ''}`;
 
   return (
     <div
@@ -320,6 +353,7 @@ export const UniversalYouTubePlayer = React.memo(function UniversalYouTubePlayer
         allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
         allowFullScreen
         loading="eager"
+        referrerPolicy="strict-origin-when-cross-origin"
       />
     </div>
   );

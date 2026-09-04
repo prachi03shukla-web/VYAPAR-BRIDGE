@@ -85,6 +85,14 @@ export function generateInstagramFeed(
       } else if (p.videoUrl && !p.videoUrl.startsWith('blob:')) {
         p.mediaUrl = p.videoUrl;
         media = p.videoUrl;
+      } else if (p.videoThumbnailUrl && !p.videoThumbnailUrl.startsWith('blob:')) {
+        p.mediaUrl = p.videoThumbnailUrl;
+        media = p.videoThumbnailUrl;
+      } else if (p.thumbnailUrl && !p.thumbnailUrl.startsWith('blob:')) {
+        p.mediaUrl = p.thumbnailUrl;
+        media = p.thumbnailUrl;
+      } else if (p.isStory || p.isReel || p.type === 'story' || p.type === 'reel') {
+        // Retain active stories and reels during background sync
       } else {
         return false;
       }

@@ -28,10 +28,13 @@ import {
   Wrench,
   Bot,
   ArrowDownToDot,
-  ExternalLink
+  ExternalLink,
+  Sun,
+  Moon
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import toast from 'react-hot-toast';
+import { useTheme } from '../context/ThemeContext';
 import { BRAND_LOGO_SRC, BRAND_NAME } from '../constants/brandLogo';
 import { resolveUserAvatar } from '../utils/userAvatar';
 import { safeSaveUser } from '../utils/safeStorage';
@@ -69,6 +72,7 @@ export const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
   onLogOut
 }) => {
   const navigate = useNavigate();
+  const { isDark, toggleDark } = useTheme();
   const [isAiOnHome, setIsAiOnHome] = useState<boolean>(() => {
     return localStorage.getItem('vyapar_ai_pinned_home') === 'true';
   });
@@ -474,7 +478,22 @@ export const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
         </div>
 
         {/* Footer Actions */}
-        <div className="p-4 border-t border-slate-100 bg-slate-50/60 space-y-2">
+        <div className="p-4 border-t border-slate-100 dark:border-zinc-800 bg-slate-50/60 dark:bg-zinc-900/60 space-y-2">
+          {/* Dark / Light Theme Mode Switcher */}
+          <button
+            onClick={toggleDark}
+            className="w-full py-2.5 px-3 bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 hover:bg-slate-100 dark:hover:bg-zinc-700/80 text-slate-800 dark:text-zinc-100 text-xs font-bold rounded-xl transition-colors flex items-center justify-between cursor-pointer shadow-2xs"
+            title="Toggle Light / Dark Mode"
+          >
+            <div className="flex items-center gap-2.5">
+              {isDark ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-indigo-500" />}
+              <span>{isDark ? 'Light Theme (लाइट थीम)' : 'Dark Theme (डार्क थीम)'}</span>
+            </div>
+            <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-slate-100 dark:bg-zinc-700 text-slate-600 dark:text-zinc-300">
+              {isDark ? 'Dark Mode' : 'Light Mode'}
+            </span>
+          </button>
+
           {user ? (
             <button
               onClick={() => { onClose(); onLogOut(); }}

@@ -1,7 +1,7 @@
 import { UniversalYouTubePlayer, extractYouTubeId, isYouTubeUrl } from './components/UniversalYouTubePlayer';
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { BrowserRouter, Routes, Route, Link, useNavigate, useLocation, useParams } from 'react-router-dom';
-import { Facebook, Twitter, Instagram, Home, Shield, Moon, Sun, PlusSquare, MessageCircle, MessageSquare, Menu, LogOut, LogIn, Check, X, XCircle, Search, Compass, Film, Heart, Calculator, Bookmark, Info, MoreHorizontal, MoreVertical, Music, Image, ImageIcon, ImagePlus, Eye, EyeOff, Camera, Upload, Trash2, Plus, ShieldCheck, BadgeCheck, Sparkles, QrCode, CheckCircle, CheckCircle2, Award, Smile, Volume2, VolumeX, Play, Pause, ChevronUp, ChevronDown, ArrowLeft, ChevronLeft, ChevronRight, UserPlus, UserCheck, Share2, Phone, Mail, Globe, Building2, Store, MapPin, Locate, Navigation, Tag, Filter, ShieldAlert, User, UserX, Lock, Key, Clock, FileText, FileCheck, Maximize2, Crop, Loader2, Send, BarChart2, Users, Map as MapIcon, Hash, Pencil, Rocket, ExternalLink, Star, Scale, Video, TrendingUp, ClipboardList, Bell, CreditCard, Calendar, Copy, RefreshCw, AlertTriangle, Gift, Fingerprint, Megaphone, Download, Settings, ShoppingCart, Scan, Terminal, Wrench, RotateCcw, Database } from 'lucide-react';
+import { Facebook, Twitter, Instagram, Home, Shield, Moon, Sun, PlusSquare, MessageCircle, MessageSquare, Menu, LogOut, LogIn, Check, X, XCircle, Search, Compass, Film, Heart, Calculator, Bookmark, Info, MoreHorizontal, MoreVertical, Music, Image, ImageIcon, ImagePlus, Eye, EyeOff, Camera, Upload, Trash2, Plus, ShieldCheck, BadgeCheck, Sparkles, QrCode, CheckCircle, CheckCircle2, Award, Smile, Volume2, VolumeX, Play, Pause, ChevronUp, ChevronDown, ArrowLeft, ChevronLeft, ChevronRight, UserPlus, UserCheck, Share2, Phone, Mail, Globe, Building2, Store, MapPin, Locate, Navigation, Tag, Filter, ShieldAlert, User, UserX, Lock, Key, Clock, FileText, FileCheck, Maximize2, Minimize2, Crop, Loader2, Send, BarChart2, Users, Map as MapIcon, Hash, Pencil, Rocket, ExternalLink, Star, Scale, Video, TrendingUp, ClipboardList, Bell, CreditCard, Calendar, Copy, RefreshCw, AlertTriangle, Gift, Fingerprint, Megaphone, Download, Settings, ShoppingCart, Scan, Terminal, Wrench, RotateCcw, Database } from 'lucide-react';
 import toast, { Toaster } from 'react-hot-toast';
 
 if (typeof (toast as any).info !== 'function') {
@@ -61,6 +61,7 @@ import { addToCart, isItemInCart, getCartItems } from './utils/cartManager';
 import { safeSaveUser, safeSetLocalStorage, safeGetLocalStorage, safeRemoveLocalStorage, cleanupStorageQuota } from './utils/safeStorage';
 import { BackgroundUploadFloatingWidget } from './components/BackgroundUploadFloatingWidget';
 import { backgroundUploader } from './services/backgroundUploadManager';
+import { uploadToCloudinary } from './services/cloudinaryService';
 
 
 export function renderSafeCommentText(content: string, isAuthorOrAdmin = false): { text: string; masked: boolean } {
@@ -979,10 +980,8 @@ export function AdMediaDisplay({ ad, className, onMediaEnded, autoPlay = false }
   );
 }
 
-export const ThemeContext = React.createContext<{ isDark: boolean; toggleDark: () => void }>({
-  isDark: false,
-  toggleDark: () => {},
-});
+import { ThemeContext, useTheme, ThemeProvider } from './context/ThemeContext';
+export { ThemeContext, useTheme, ThemeProvider };
 
 export function getFollowedUsers(): string[] {
   try {
@@ -8182,6 +8181,7 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
   const [currentAdIndex, setCurrentAdIndex] = useState(0);
   const [adSlideDirection, setAdSlideDirection] = useState<number>(1);
   const [isBrandAdDismissed, setIsBrandAdDismissed] = useState(false);
+  const [isAdMinimized, setIsAdMinimized] = useState(false);
 
   // Facebook-style Header User Live Search states
   const [headerSearchQuery, setHeaderSearchQuery] = useState('');
@@ -8702,20 +8702,31 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
       setUploadProgress(currentPct);
     }, 150);
 
-    // 1. Direct Cloudinary / Firebase Storage Upload for Permanent Multi-device & Vercel Playback
+    // 1. Direct Cloudinary Upload for Permanent Multi-device & Vercel Playback
     let cloudStorageUrl = '';
     try {
-      const sanitizedName = (pendingReelFile.name || (isVideoFile ? 'video.mp4' : 'story.jpg')).replace(/[^a-zA-Z0-9.-]/g, '_');
-      const storagePath = `reels/${reelId}_${sanitizedName}`;
-      cloudStorageUrl = await uploadFileToFirebaseStorage(
+      cloudStorageUrl = await uploadToCloudinary(
         pendingReelFile,
-        storagePath,
         (pct) => {
           setUploadProgress(Math.max(currentPct, Math.round(pct)));
-        }
+        },
+        'vyapar_stories'
       );
-    } catch (storageErr) {
-      console.warn('Direct Cloud upload note:', storageErr);
+    } catch (cdnErr) {
+      console.warn('Direct Cloudinary upload note, trying Firebase storage:', cdnErr);
+      try {
+        const sanitizedName = (pendingReelFile.name || (isVideoFile ? 'video.mp4' : 'story.jpg')).replace(/[^a-zA-Z0-9.-]/g, '_');
+        const storagePath = `reels/${reelId}_${sanitizedName}`;
+        cloudStorageUrl = await uploadFileToFirebaseStorage(
+          pendingReelFile,
+          storagePath,
+          (pct) => {
+            setUploadProgress(Math.max(currentPct, Math.round(pct)));
+          }
+        );
+      } catch (storageErr) {
+        console.warn('Direct Cloud upload fallback note:', storageErr);
+      }
     }
 
     // Convert file to resilient persistent Data URL & Thumbnail (compressed to lightweight KB)
@@ -8729,7 +8740,12 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
         persistentMediaUrl = cloudStorageUrl || compressedBase64;
         videoThumbnailUrl = compressedBase64 || persistentMediaUrl;
       } else {
-        videoThumbnailUrl = await generateVideoThumbnail(pendingReelFile);
+        if (cloudStorageUrl && cloudStorageUrl.includes('cloudinary.com')) {
+          videoThumbnailUrl = getCloudinaryVideoMiddleThumbnail(cloudStorageUrl);
+        }
+        if (!videoThumbnailUrl) {
+          videoThumbnailUrl = await generateVideoThumbnail(pendingReelFile);
+        }
         if (!cloudStorageUrl && pendingReelFile.size <= 0.5 * 1024 * 1024) {
           try {
             const videoBase64 = await fileToDataURL(pendingReelFile);
@@ -8866,7 +8882,24 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
 
   const filteredPosts = posts.filter(p => {
     if (!selectedTag || selectedTag === '#All' || selectedTag === '#Latest') return true;
-    if (selectedTag === '#Reels') return p.type === 'video' || p.mediaUrl?.match(/\.(mp4|webm|mov|m4v)$/i);
+    if (selectedTag === '#Reels') {
+      return Boolean(
+        p.isReel ||
+        p.isStory ||
+        p.type === 'reel' ||
+        p.type === 'story' ||
+        p.type === 'video' ||
+        p.videoUrl ||
+        p.video ||
+        (typeof p.mediaUrl === 'string' && (
+          p.mediaUrl.match(/\.(mp4|webm|mov|m4v|avi|mkv)/i) ||
+          p.mediaUrl.includes('/video/upload/') ||
+          p.mediaUrl.includes('youtube.com') ||
+          p.mediaUrl.includes('youtu.be')
+        )) ||
+        (typeof p.hashtags === 'string' && p.hashtags.toLowerCase().includes('#reel'))
+      );
+    }
     const tagKeyword = selectedTag.replace('#', '').toLowerCase();
     const titleStr = p.title || '';
     const contentStr = p.content || '';
@@ -9157,23 +9190,26 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
         };
         
         return (
-          <div className="mb-6 bg-white dark:bg-zinc-950 border-2 border-amber-500/80 dark:border-amber-500/60 rounded-2xl overflow-hidden shadow-2xl relative text-zinc-900 dark:text-zinc-100 transition-all duration-300">
-            {/* Header: Large Bold Rainbow Animated Company / Seller Name ONLY with clean Skip Ad button */}
-            <div className="w-full px-4 py-3 sm:py-3.5 bg-zinc-950 border-b border-amber-500/40 backdrop-blur-md flex items-center justify-between gap-3 select-none">
-              <div className="flex-1 min-w-0 text-center sm:text-left">
-                <h2 className="text-xl sm:text-2xl md:text-3xl font-black uppercase tracking-wide rainbow-bold-animated-text truncate leading-tight drop-shadow-md">
+          <div className="mb-6 sticky top-[58px] sm:top-[66px] z-30 bg-white dark:bg-zinc-950 border-2 border-amber-500/80 dark:border-amber-500/60 rounded-2xl overflow-hidden shadow-2xl relative text-zinc-900 dark:text-zinc-100 transition-all duration-300">
+            {/* Header: Large Bold Rainbow Animated Company / Seller Name with Pin Indicator and Cut (X) button */}
+            <div className="w-full px-3 sm:px-4 py-2.5 sm:py-3 bg-zinc-950 border-b border-amber-500/40 backdrop-blur-md flex items-center justify-between gap-2.5 select-none">
+              <div className="flex-1 min-w-0 text-left flex items-center gap-2">
+                <span className="hidden sm:inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-wider bg-amber-500/20 text-amber-400 border border-amber-500/40 shrink-0">
+                  Pinned Ad
+                </span>
+                <h2 className="text-base sm:text-xl md:text-2xl font-black uppercase tracking-wide rainbow-bold-animated-text truncate leading-tight drop-shadow-md">
                   {activeAd.companyName || activeAd.title || 'VYAPAR BRAND SHOWCASE'}
                 </h2>
               </div>
 
-              <div className="flex items-center gap-2 shrink-0">
-                <div className="flex items-center gap-1 bg-zinc-900 rounded-full p-0.5 border border-zinc-700 shadow-sm">
+              <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+                <div className="flex items-center gap-0.5 sm:gap-1 bg-zinc-900 rounded-full p-0.5 border border-zinc-700 shadow-sm">
                   <button 
                     onClick={() => handlePrevAd(combinedAdsList.length)}
                     className="p-1 hover:bg-zinc-800 rounded-full transition-colors cursor-pointer text-amber-400"
                     title="Previous Ad"
                   >
-                    <ChevronLeft className="w-4 h-4 stroke-[2.5]" />
+                    <ChevronLeft className="w-3.5 h-3.5 sm:w-4 sm:h-4 stroke-[2.5]" />
                   </button>
                   <span className="text-[10px] text-amber-300 font-black px-1 font-mono">
                     {normalizedActiveIndex + 1}/{combinedAdsList.length}
@@ -9183,24 +9219,38 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
                     className="p-1 hover:bg-zinc-800 rounded-full transition-colors cursor-pointer text-amber-400"
                     title="Next Ad"
                   >
-                    <ChevronRight className="w-4 h-4 stroke-[2.5]" />
+                    <ChevronRight className="w-3.5 h-3.5 sm:w-4 sm:h-4 stroke-[2.5]" />
                   </button>
                 </div>
 
-                {/* Skip Ad Button */}
+                {/* Minimize / Expand Toggle */}
+                <button
+                  type="button"
+                  onClick={() => setIsAdMinimized(prev => !prev)}
+                  className="p-1 sm:p-1.5 bg-zinc-900 hover:bg-zinc-800 text-amber-300 hover:text-amber-200 rounded-full border border-zinc-700 transition-colors cursor-pointer"
+                  title={isAdMinimized ? "Expand Media (विज्ञापन बड़ा करें)" : "Compact / Minimize (छोटा करें)"}
+                >
+                  {isAdMinimized ? <Maximize2 className="w-3.5 h-3.5" /> : <Minimize2 className="w-3.5 h-3.5" />}
+                </button>
+
+                {/* Prominent Cut (X) Button */}
                 <button 
+                  type="button"
                   onClick={() => {
                     setIsBrandAdDismissed(true);
-                    toast('Ad showcase skipped', { icon: '👁️' });
+                    toast('Sponsored showcase closed', { icon: '✂️' });
                   }}
-                  className="flex items-center justify-center gap-1 p-1.5 sm:px-3 sm:py-1 bg-rose-600 hover:bg-rose-700 text-white rounded-full text-xs font-black border border-rose-400/50 shadow-md transition-all cursor-pointer hover:scale-105 active:scale-95 shrink-0"
-                  title="Skip Advertisement (विज्ञापन हटाएं)"
+                  className="flex items-center justify-center gap-1 px-2.5 sm:px-3 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded-full text-xs font-black border border-rose-400/50 shadow-md transition-all cursor-pointer hover:scale-105 active:scale-95 shrink-0"
+                  title="Cut / Remove Advertisement (विज्ञापन हटाएं)"
                 >
                   <X className="w-4 h-4 stroke-[3]" />
-                  <span className="hidden sm:inline">Skip Ad</span>
+                  <span>Cut</span>
                 </button>
               </div>
             </div>
+
+            {!isAdMinimized && (
+              <>
 
             {/* Media Canvas - Smooth fluid slide transition with rigid height to prevent layout shifts */}
             <div className="relative w-full h-[280px] sm:h-[340px] md:h-[380px] bg-zinc-950 flex items-center justify-center overflow-hidden select-none">
@@ -9315,6 +9365,24 @@ function Feed({ user, onUpdateUser, userLocation }: { user: any, onUpdateUser?: 
                 );
               })()}
             </div>
+            </>
+            )}
+
+            {isAdMinimized && (
+              <div className="px-3.5 py-2 bg-zinc-900 border-t border-amber-500/30 text-zinc-100 flex items-center justify-between gap-2 text-xs">
+                <div className="flex items-center gap-2 truncate">
+                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse shrink-0"></span>
+                  <span className="font-bold truncate text-amber-300">{activeAd.title || activeAd.companyName || 'Featured Brand'}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsAdMinimized(false)}
+                  className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 rounded text-[11px] font-bold transition-colors shrink-0"
+                >
+                  Expand Ad ↗
+                </button>
+              </div>
+            )}
           </div>
         );
       })()}
@@ -12535,6 +12603,7 @@ function ProfilePage({ user, onUpdateUser }: { user: any; onUpdateUser?: (u: any
 }
 
 export default function App() {
+  const { isDark, toggleDark } = useTheme();
   const [user, setUser] = useState<any>(() => {
     try {
       const saved = safeGetLocalStorage('VyaparBridge_user') || safeGetLocalStorage('user');
@@ -12729,7 +12798,17 @@ export default function App() {
               )}
             </nav>
 
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 sm:gap-3">
+              {/* Dark / Light Theme Toggle Button */}
+              <button
+                onClick={toggleDark}
+                className="w-9 h-9 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-slate-700 dark:text-amber-300 transition-colors flex items-center justify-center cursor-pointer shadow-2xs shrink-0"
+                title={isDark ? "Switch to Light Theme (लाइट थीम)" : "Switch to Dark Theme (डार्क थीम)"}
+                aria-label="Toggle Dark/Light Mode"
+              >
+                {isDark ? <Sun className="w-4.5 h-4.5 text-amber-400 stroke-[2.5]" /> : <Moon className="w-4.5 h-4.5 text-slate-700 stroke-[2.5]" />}
+              </button>
+
               {user ? (
                 <Link to={`/profile/${user.id}`} className="flex items-center gap-2 p-1 rounded-xl hover:bg-slate-50 transition-colors">
                   <div className="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center overflow-hidden border border-slate-300 shrink-0">

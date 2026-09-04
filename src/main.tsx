@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import App from './App.tsx';
 import './index.css';
 import { BRAND_LOGO_SRC } from './constants/brandLogo';
+import { ThemeProvider } from './context/ThemeContext';
 
 
 // Suppress benign Firebase GrpcConnection and IndexedDB lifecycle stream warnings
@@ -118,6 +119,8 @@ if ('serviceWorker' in navigator) {
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App />
+    <ThemeProvider>
+      <App />
+    </ThemeProvider>
   </StrictMode>,
 );

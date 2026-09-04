@@ -32,7 +32,7 @@ export interface CloudinaryUploadResponse {
 
 /**
  * Uploads a file (video, image, audio, pdf) directly to Cloudinary via Unsigned Preset
- * with real-time percentage progress callback.
+ * with real-time percentage progress callback and automatic retry without folder restriction.
  */
 export async function uploadToCloudinary(
   file: File | Blob,
@@ -44,72 +44,97 @@ export async function uploadToCloudinary(
 
   if (!file) return '';
 
-  return new Promise<string>((resolve, reject) => {
-    try {
-      const xhr = new XMLHttpRequest();
-      const isVideo = file.type?.includes('video');      const isAudio = file.type?.includes('audio');      const endpointType = isVideo ? 'video' : (isAudio ? 'video' : 'image');      const url = `https://api.cloudinary.com/v1_1/${cloudName}/${endpointType}/upload`;
-      const formData = new FormData();
+  const isVideo = Boolean(
+    file.type?.includes('video') ||
+    (file instanceof File && /\.(mp4|webm|mov|m4v|avi|mkv|3gp|flv)$/i.test(file.name))
+  );
+  const isAudio = Boolean(file.type?.includes('audio') || (file instanceof File && /\.(mp3|wav|ogg|m4a|aac)$/i.test(file.name)));
+  const endpointType = isVideo ? 'video' : (isAudio ? 'video' : 'auto');
 
-      let filename = 'upload';
-      if (file instanceof File && file.name) {
-        filename = file.name;
-      } else if (file.type) {
-        if (file.type.includes('video')) filename = 'video.mp4';
-        else if (file.type.includes('audio')) filename = 'audio.mp3';
-        else if (file.type.includes('pdf')) filename = 'catalog.pdf';
-        else filename = 'image.jpg';
-      }
+  // Internal helper to perform XMLHttpRequest
+  const attemptUpload = (useFolder?: string): Promise<string> => {
+    return new Promise<string>((resolve, reject) => {
+      try {
+        const xhr = new XMLHttpRequest();
+        const url = `https://api.cloudinary.com/v1_1/${cloudName}/${endpointType}/upload`;
+        const formData = new FormData();
 
-      formData.append('file', file, filename);
-      formData.append('upload_preset', uploadPreset);
-      if (folder) {
-        formData.append('folder', folder);
-      }
-
-      // Track granular upload progress
-      xhr.upload.addEventListener('progress', (e) => {
-        if (e.lengthComputable && e.total > 0 && typeof onProgress === 'function') {
-          const pct = Math.min(99, Math.round((e.loaded / e.total) * 100));
-          onProgress(pct);
+        let filename = 'upload';
+        if (file instanceof File && file.name) {
+          filename = file.name;
+        } else if (file.type) {
+          if (isVideo) filename = 'video.mp4';
+          else if (isAudio) filename = 'audio.mp3';
+          else if (file.type.includes('pdf')) filename = 'catalog.pdf';
+          else filename = 'image.jpg';
         }
-      });
 
-      xhr.addEventListener('load', () => {
-        if (xhr.status >= 200 && xhr.status < 300) {
-          try {
-            const data: CloudinaryUploadResponse = JSON.parse(xhr.responseText);
-            if (data.secure_url || data.url) {
-              const finalUrl = data.secure_url || data.url || '';
-              if (typeof onProgress === 'function') onProgress(100);
-              console.log('⚡ Cloudinary CDN upload complete:', finalUrl);
-              resolve(finalUrl);
-              return;
-            }
-          } catch (err) {
-            console.warn('Cloudinary JSON parse error:', err);
+        formData.append('file', file, filename);
+        formData.append('upload_preset', uploadPreset);
+        if (useFolder) {
+          formData.append('folder', useFolder);
+        }
+
+        // Track granular upload progress
+        xhr.upload.addEventListener('progress', (e) => {
+          if (e.lengthComputable && e.total > 0 && typeof onProgress === 'function') {
+            const pct = Math.min(99, Math.round((e.loaded / e.total) * 100));
+            onProgress(pct);
           }
-        }
-        reject(new Error(`Cloudinary responded with status ${xhr.status}: ${xhr.responseText}`));
-      });
+        });
 
-      xhr.addEventListener('error', () => {
-        reject(new Error('Network error connecting to Cloudinary'));
-      });
+        xhr.addEventListener('load', () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              const data: CloudinaryUploadResponse = JSON.parse(xhr.responseText);
+              if (data.secure_url || data.url) {
+                const finalUrl = data.secure_url || data.url || '';
+                if (typeof onProgress === 'function') onProgress(100);
+                console.log('⚡ Cloudinary CDN upload complete:', finalUrl);
+                resolve(finalUrl);
+                return;
+              }
+            } catch (err) {
+              console.warn('Cloudinary JSON parse error:', err);
+            }
+          }
+          reject(new Error(`Cloudinary status ${xhr.status}: ${xhr.responseText}`));
+        });
 
-      xhr.addEventListener('abort', () => {
-        reject(new Error('Cloudinary upload aborted by user'));
-      });
+        xhr.addEventListener('error', () => {
+          reject(new Error('Network error connecting to Cloudinary'));
+        });
 
-      // 60-second timeout for large 4K / HD videos
-      xhr.timeout = 60000;
-      xhr.addEventListener('timeout', () => {
-        reject(new Error('Cloudinary upload timed out'));
-      });
+        xhr.addEventListener('abort', () => {
+          reject(new Error('Cloudinary upload aborted by user'));
+        });
 
-      xhr.open('POST', url, true);
-      xhr.send(formData);
-    } catch (err) {
-      reject(err);
+        xhr.timeout = 70000;
+        xhr.addEventListener('timeout', () => {
+          reject(new Error('Cloudinary upload timed out'));
+        });
+
+        xhr.open('POST', url, true);
+        xhr.send(formData);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  };
+
+  try {
+    // First try with folder (if specified)
+    return await attemptUpload(folder);
+  } catch (err: any) {
+    if (folder) {
+      console.warn('Retrying Cloudinary upload without folder constraint:', err?.message);
+      try {
+        return await attemptUpload(undefined);
+      } catch (retryErr) {
+        console.error('Cloudinary retry without folder failed:', retryErr);
+        throw retryErr;
+      }
     }
-  });
+    throw err;
+  }
 }
