@@ -180,10 +180,24 @@ export const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
                     <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">
                       {user.role || 'Member'}
                     </span>
-                    {user.phone && (
-                      <span className="text-[10px] text-slate-400 font-mono">
-                        {user.phone}
+                    {user.goldenBadge ? (
+                      <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-300 flex items-center gap-1">
+                        <Crown className="w-3 h-3 text-amber-600 fill-amber-600" />
+                        <span>Golden VIP</span>
                       </span>
+                    ) : user.isVerified ? (
+                      <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 border border-blue-300 flex items-center gap-1">
+                        <BadgeCheck className="w-3 h-3 text-blue-600 fill-blue-600" />
+                        <span>Blue Verified</span>
+                      </span>
+                    ) : (
+                      <button 
+                        onClick={() => { onClose(); onOpenBoost(); }}
+                        className="text-[10px] font-black px-2 py-0.5 rounded-full bg-gradient-to-r from-amber-500 to-amber-600 text-slate-950 hover:from-amber-400 hover:to-amber-500 flex items-center gap-1 shadow-2xs cursor-pointer animate-pulse"
+                      >
+                        <Crown className="w-3 h-3" />
+                        <span>Upgrade Plan</span>
+                      </button>
                     )}
                   </div>
                 </div>
@@ -329,7 +343,19 @@ export const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
               className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-slate-700 hover:text-blue-600 hover:bg-blue-50/70 transition-colors text-xs font-bold"
             >
               <MessageSquare className="w-4.5 h-4.5 text-indigo-600" />
-              <span>B2B Chat & Inquiries (चैट व पूछताछ)</span>
+              <span>B2B WhatsApp Chat (चैट व पूछताछ)</span>
+            </button>
+            <button
+              onClick={() => { onClose(); onOpenBoost(); }}
+              className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-amber-950 bg-gradient-to-r from-amber-200/90 via-yellow-100 to-amber-200/90 hover:from-amber-300 hover:to-amber-200 transition-all text-xs font-black border border-amber-300 shadow-2xs group cursor-pointer"
+            >
+              <div className="flex items-center gap-3">
+                <Crown className="w-4.5 h-4.5 text-amber-700 fill-amber-500 animate-bounce" />
+                <span>Subscription Mode (प्लान व पेमेंट)</span>
+              </div>
+              <span className="text-[9px] font-black uppercase px-2 py-0.5 bg-amber-500 text-slate-950 rounded-md shadow-2xs">
+                ₹99 / ₹1,188
+              </span>
             </button>
             <button
               onClick={() => {

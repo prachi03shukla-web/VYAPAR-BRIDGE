@@ -2830,60 +2830,117 @@ Assistant:`;
     }
   });
 
-  // Get messages (mock)
+  // Get messages (filtered by user and deletions)
   app.get('/api/messages', (req, res) => {
     const { userId } = req.query;
     const userMessages = db.messages
-      .filter(m => m.senderId === userId || m.receiverId === userId)
+      .filter(m => (m.senderId === userId || m.receiverId === userId) && (!m.deletedForMe || !m.deletedForMe.includes(String(userId))))
       .map(m => ({
         ...m,
         sender: db.users.find(u => u.id === m.senderId),
         receiver: db.users.find(u => u.id === m.receiverId)
       }))
-      .sort((a, b) => a.createdAt - b.createdAt);
+      .sort((a, b) => (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0));
     res.json(userMessages);
   });
 
-  // Send message with AI Safety Check
+  // Send message with AI Safety Check & Rich Media Support
   app.post('/api/messages', async (req, res) => {
-    const { senderId, receiverId, text } = req.body;
-    if (!text || !senderId || !receiverId) return res.status(400).json({ error: 'Missing message fields' });
+    const { 
+      senderId, 
+      receiverId, 
+      text, 
+      imageUrl, 
+      mediaType, 
+      documentUrl, 
+      documentName, 
+      fileSize, 
+      locationData, 
+      contactData, 
+      audioUrl,
+      quotedMessage 
+    } = req.body;
+    
+    if ((!text && !imageUrl && !documentUrl && !locationData && !contactData && !audioUrl) || !senderId || !receiverId) {
+      return res.status(400).json({ error: 'Missing message fields' });
+    }
 
-    // AI Safety moderation for direct chat messages
-    const moderation = await moderateContentWithAI(text);
-    if (!moderation.approved) {
-      return res.status(400).json({ 
-        success: false, 
-        blocked: true, 
-        error: moderation.reason || '⛔ AI Safety Guardrail: Direct message blocked due to inappropriate language or explicit content.' 
-      });
+    // AI Safety moderation for text if provided
+    if (text && text.trim().length > 0) {
+      const moderation = await moderateContentWithAI(text);
+      if (!moderation.approved) {
+        return res.status(400).json({ 
+          success: false, 
+          blocked: true, 
+          error: moderation.reason || '⛔ AI Safety Guardrail: Direct message blocked due to inappropriate language or explicit content.' 
+        });
+      }
     }
 
     const newMsg = {
-      id: 'm' + Date.now(),
+      id: 'm' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
       senderId,
       receiverId,
-      text,
+      text: text || '',
+      imageUrl,
+      mediaType: mediaType || (imageUrl ? 'image' : documentUrl ? 'pdf' : locationData ? 'location' : contactData ? 'contact' : undefined),
+      documentUrl,
+      documentName,
+      fileSize,
+      locationData,
+      contactData,
+      audioUrl,
+      quotedMessage,
       createdAt: Date.now()
     };
     db.messages.push(newMsg);
+    saveDatabase();
     res.json({ success: true, message: { ...newMsg, sender: db.users.find(u => u.id === senderId) } });
   });
 
   // Send Image Message
   app.post('/api/messages/image', upload.single('image'), async (req, res) => {
-    const { senderId, receiverId, text } = req.body;
-    if (!req.file || !senderId || !receiverId) {
+    const { senderId, receiverId, text, compressedPreview } = req.body;
+    if ((!req.file && !compressedPreview) || !senderId || !receiverId) {
       return res.status(400).json({ error: 'Missing fields or file' });
     }
     
-    const imageUrl = await uploadToFirebaseOrLocal(req.file);
+    let imageUrl = compressedPreview;
+    if (req.file) {
+      imageUrl = await uploadToFirebaseOrLocal(req.file);
+    }
+
     const newMsg = {
-      id: 'm' + Date.now(),
+      id: 'm' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
       senderId,
       receiverId,
-      text: text || '[Image]',
+      text: text || '',
       imageUrl,
+      mediaType: 'image',
+      createdAt: Date.now()
+    };
+    db.messages.push(newMsg);
+    saveDatabase();
+    res.json({ success: true, message: { ...newMsg, sender: db.users.find(u => u.id === senderId) } });
+  });
+
+  // Send Document / PDF Message
+  app.post('/api/messages/document', upload.single('document'), async (req, res) => {
+    const { senderId, receiverId, text } = req.body;
+    if (!req.file || !senderId || !receiverId) {
+      return res.status(400).json({ error: 'Missing fields or document file' });
+    }
+    
+    const documentUrl = await uploadToFirebaseOrLocal(req.file);
+    const newMsg = {
+      id: 'm' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+      senderId,
+      receiverId,
+      text: text || req.file.originalname || 'Document',
+      documentUrl,
+      documentName: req.file.originalname || 'Document.pdf',
+      fileSize: req.file.size ? (req.file.size > 1024 * 1024 ? `${(req.file.size / (1024 * 1024)).toFixed(1)} MB` : `${Math.round(req.file.size / 1024)} KB`) : 'PDF',
+      mediaType: 'pdf',
       createdAt: Date.now()
     };
     db.messages.push(newMsg);
@@ -2897,6 +2954,7 @@ Assistant:`;
     db.messages.forEach(m => {
       if (m.receiverId === userId && (!contactId || m.senderId === contactId)) {
         m.read = true;
+        m.readAt = Date.now();
       }
     });
     db.notifications.forEach(n => {
@@ -2904,6 +2962,121 @@ Assistant:`;
         n.read = true;
       }
     });
+    saveDatabase();
+    res.json({ success: true });
+  });
+
+  // Get detailed unread message counts per contact & total
+  app.get('/api/messages/unread-counts', (req, res) => {
+    const userId = req.query.userId;
+    if (!userId) return res.json({ totalUnread: 0, bySender: {} });
+
+    const bySender: Record<string, number> = {};
+    let totalUnread = 0;
+
+    db.messages.forEach(m => {
+      if (m.receiverId === userId && !m.read && (!m.deletedForMe || !m.deletedForMe.includes(String(userId)))) {
+        totalUnread++;
+        const sId = String(m.senderId);
+        bySender[sId] = (bySender[sId] || 0) + 1;
+      }
+    });
+
+    res.json({ totalUnread, bySender });
+  });
+
+  // Message Reactions (❤️, 👍, 😂, 😮, 😢, 🙏, 🤝)
+  app.post('/api/messages/react', (req, res) => {
+    const { messageId, userId, userName, emoji } = req.body;
+    if (!messageId || !userId || !emoji) {
+      return res.status(400).json({ error: 'Missing messageId, userId, or emoji' });
+    }
+
+    const msg = db.messages.find(m => String(m.id) === String(messageId));
+    if (!msg) {
+      return res.status(404).json({ error: 'Message not found' });
+    }
+
+    if (!Array.isArray(msg.reactions)) {
+      msg.reactions = [];
+    }
+
+    const existingIdx = msg.reactions.findIndex((r: any) => String(r.userId) === String(userId));
+    if (existingIdx !== -1) {
+      if (msg.reactions[existingIdx].emoji === emoji) {
+        msg.reactions.splice(existingIdx, 1); // toggle off
+      } else {
+        msg.reactions[existingIdx].emoji = emoji; // update
+      }
+    } else {
+      msg.reactions.push({ emoji, userId, userName: userName || 'Trader' });
+    }
+
+    saveDatabase();
+    res.json({ success: true, reactions: msg.reactions, messageId });
+  });
+
+  // Delete message: "Delete for me", "Delete for everyone (placeholder)", OR "Permanent Purge Both Sides (no placeholder)"
+  app.post('/api/messages/delete', (req, res) => {
+    const { messageId, userId, deleteType } = req.body;
+    if (!messageId || !userId) {
+      return res.status(400).json({ error: 'Missing messageId or userId' });
+    }
+
+    const msgIndex = db.messages.findIndex(m => String(m.id) === String(messageId));
+    if (msgIndex === -1) {
+      return res.status(404).json({ error: 'Message not found' });
+    }
+
+    const msg = db.messages[msgIndex];
+
+    if (deleteType === 'purge_both' || deleteType === 'permanent_both') {
+      // Complete permanent purge from both sides (no placeholder left)
+      db.messages.splice(msgIndex, 1);
+      saveDatabase();
+      return res.json({ success: true, purged: true, messageId });
+    } else if (deleteType === 'for_everyone') {
+      // Both side delete: show placeholder
+      if (msg.senderId === userId || String(msg.senderId) === String(userId)) {
+        msg.deletedForEveryone = true;
+        msg.text = '🚫 This message was deleted';
+        delete msg.imageUrl;
+        delete msg.documentUrl;
+        delete msg.locationData;
+        delete msg.contactData;
+        delete msg.audioUrl;
+      } else {
+        // If non-sender requested for_everyone, fallback to delete for me
+        msg.deletedForMe = Array.from(new Set([...(msg.deletedForMe || []), String(userId)]));
+      }
+    } else {
+      // Delete for me
+      msg.deletedForMe = Array.from(new Set([...(msg.deletedForMe || []), String(userId)]));
+    }
+
+    saveDatabase();
+    res.json({ success: true, message: msg });
+  });
+
+  // Clear entire conversation for me or both
+  app.post('/api/messages/clear-chat', (req, res) => {
+    const { userId, contactId, deleteBothSides } = req.body;
+    if (!userId || !contactId) {
+      return res.status(400).json({ error: 'Missing userId or contactId' });
+    }
+
+    db.messages.forEach(m => {
+      const isChatMsg = (m.senderId === userId && m.receiverId === contactId) || (m.senderId === contactId && m.receiverId === userId);
+      if (isChatMsg) {
+        if (deleteBothSides) {
+          m.deletedForMe = Array.from(new Set([...(m.deletedForMe || []), String(userId), String(contactId)]));
+          m.deletedForEveryone = true;
+        } else {
+          m.deletedForMe = Array.from(new Set([...(m.deletedForMe || []), String(userId)]));
+        }
+      }
+    });
+
     saveDatabase();
     res.json({ success: true });
   });
@@ -2922,6 +3095,353 @@ Assistant:`;
       like: unreadNotifs.some(n => n.type === 'like' || n.type === 'comment' || n.type === 'share' || n.type === 'save'),
       count: unreadMsgs.length + unreadNotifs.length
     });
+  });
+
+  // Update User AI Auto-Reply & Assistant Settings
+  app.post('/api/users/:id/ai-settings', (req, res) => {
+    const userId = String(req.params.id);
+    const { aiAutoReplyEnabled, aiAutoReplyMode, aiCustomInstructions, aiTone, aiLanguage } = req.body;
+    
+    const user = db.users.find(u => String(u.id) === userId);
+    if (!user) {
+      return res.status(404).json({ success: false, error: 'User not found' });
+    }
+
+    user.aiAutoReplyEnabled = aiAutoReplyEnabled !== undefined ? Boolean(aiAutoReplyEnabled) : (user.aiAutoReplyEnabled ?? false);
+    user.aiAutoReplyMode = aiAutoReplyMode || user.aiAutoReplyMode || 'when_offline';
+    user.aiCustomInstructions = aiCustomInstructions !== undefined ? aiCustomInstructions : (user.aiCustomInstructions || '');
+    user.aiTone = aiTone || user.aiTone || 'professional_courteous';
+    user.aiLanguage = aiLanguage || user.aiLanguage || 'hinglish';
+
+    saveDatabase();
+
+    if (firestoreDb) {
+      setDoc(doc(firestoreDb, 'users', userId), {
+        aiAutoReplyEnabled: user.aiAutoReplyEnabled,
+        aiAutoReplyMode: user.aiAutoReplyMode,
+        aiCustomInstructions: user.aiCustomInstructions,
+        aiTone: user.aiTone,
+        aiLanguage: user.aiLanguage
+      }, { merge: true }).catch(e => console.error('Firestore user AI settings update error:', e));
+    }
+
+    res.json({
+      success: true,
+      message: '🤖 Vyapar AI Chat Assistant Settings Updated!',
+      user
+    });
+  });
+
+  // Generate Gemini-powered B2B Trade Auto-Reply with Category & Catalog Intelligence Algorithm
+  app.post('/api/ai/chat-auto-reply', async (req, res) => {
+    try {
+      const { receiverId, senderId, lastMessageText, conversationHistory } = req.body;
+      if (!receiverId || !lastMessageText) {
+        return res.status(400).json({ success: false, error: 'Missing receiverId or message text' });
+      }
+
+      const trader = db.users.find(u => String(u.id) === String(receiverId)) || {
+        name: 'Vyapar Trader',
+        companyName: 'B2B Enterprise',
+        role: 'dealer',
+        businessCategory: 'General Trade',
+        city: 'India'
+      };
+
+      const buyer = db.users.find(u => String(u.id) === String(senderId)) || {
+        name: 'Prospective Buyer',
+        companyName: 'Buyer Firm',
+        city: 'India'
+      };
+
+      // 1. Extract all posts, reels, and catalogue products of this trader from database
+      const traderPosts = (db.posts || []).filter(p => 
+        String(p.userId || p.user?.id || '') === String(receiverId)
+      );
+
+      // Detailed timeline of trader's posts and activities
+      const postsActivityLog = traderPosts.slice(0, 15).map((p: any, idx: number) => {
+        const title = p.title || p.productName || p.caption || 'Trade Product';
+        const price = p.price ? `₹${p.price} ${p.unit ? `per ${p.unit}` : ''}` : 'Wholesale factory rate';
+        const moq = p.moq || p.minOrder || 'Standard wholesale lot';
+        const specs = p.specifications || p.specs || p.category || '';
+        const dateStr = p.createdAt ? new Date(p.createdAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : 'Recent';
+        const mediaType = p.videoUrl ? 'Video Reel 🎥' : (p.imageUrl || (p.images && p.images.length > 0) ? 'Photo Post 📷' : 'Trade Post 📝');
+        return `• [POST_ID: ${p.id}] (${dateStr}) ${title} | Type: ${mediaType} | Quoted Rate: ${price} | MOQ: ${moq} ${specs ? `| Specs: ${specs}` : ''}`;
+      }).join('\n');
+
+      // 2. Extract historical chat rate memory and deal quotes discussed by this trader
+      const pastTraderMessages = (db.messages || []).filter(m => 
+        (String(m.senderId) === String(receiverId) || String(m.receiverId) === String(receiverId)) &&
+        m.text && (/\d+/.test(m.text) || /rate|price|₹|rs|discount|moq|quote|box|meter|piece/i.test(m.text))
+      ).slice(-12);
+
+      const pastDealsMemory = pastTraderMessages.map((m: any) => {
+        const cleanTxt = (m.text || '').replace(/\n+/g, ' ').substring(0, 100);
+        return `- Past Chat Note: "${cleanTxt}"`;
+      }).join('\n');
+
+      // Helper to strip any brackets / parentheses like (Kanpur) from display names
+      const cleanName = (str: string) => {
+        if (!str) return '';
+        return str.replace(/\s*\([^)]*\)/g, '').replace(/\s*\[[^\]]*\]/g, '').trim();
+      };
+
+      const rawTraderName = trader.name || 'Trader';
+      const rawTraderCompany = trader.companyName || trader.name || 'Vyapar Enterprise';
+      const rawBuyerName = buyer.name || 'Trader';
+      const rawBuyerCompany = buyer.companyName || '';
+
+      const traderName = cleanName(rawTraderName) || 'Trader';
+      const traderCompany = cleanName(rawTraderCompany) || traderName || 'Vyapar Enterprise';
+      const buyerName = cleanName(rawBuyerName) || 'Sir';
+      const buyerCompany = cleanName(rawBuyerCompany);
+      const traderCategory = trader.businessCategory || trader.category || 'B2B Trade & Manufacturing';
+      const traderCity = trader.city || '';
+      const traderState = trader.state || '';
+      const traderPhone = trader.phone || '';
+      const customNotes = trader.aiCustomInstructions || '';
+      const tone = trader.aiTone || 'professional_courteous';
+      const traderBio = trader.bio || trader.about || trader.description || '';
+      const buyerCity = buyer.city || '';
+
+      // 3. Domain Knowledge Mapping for Indian B2B Wholesale Hubs & Industries
+      let domainContext = '';
+      const catLower = (traderCategory + ' ' + traderCompany + ' ' + traderBio).toLowerCase();
+
+      if (catLower.includes('med') || catLower.includes('pharma') || catLower.includes('health') || catLower.includes('surgic') || catLower.includes('hospital')) {
+        domainContext = `INDUSTRY EXPERTISE: Medical, Healthcare, Pharma & Surgical B2B Supply.
+- Core Knowledge: Surgical disposables, latex/nitrile gloves, 3-ply/N95 masks, IV cannulas, syringes, hospital bulk linen, diagnostic kits, pharma formulations.
+- Quality Standards: CDSCO, ISO 13485, CE, GMP batch certifications, sterile tamper-evident packaging.
+- Supply Logistics: Bulk carton dispatch, cold chain wherever applicable, wholesale hospital/distributor trade margins.
+- Hub Context: North India & All-India express cargo dispatch.`;
+      } else if (catLower.includes('tile') || catLower.includes('ceramic') || catLower.includes('porcelain') || catLower.includes('gvt') || catLower.includes('pgvt') || catLower.includes('morbi')) {
+        domainContext = `INDUSTRY EXPERTISE: Tiles, Ceramics & Vitrified Slabs.
+- Core Knowledge: GVT/PGVT, Double Charge, Nano Polished, Full Body, Porcelain Tiles, High Gloss/Matt/Carving finish.
+- Standard Sizes: 600x1200mm, 800x1600mm, 1200x1800mm, 1200x2400mm slabs, 300x450mm & 300x600mm wall tiles, 600x600mm floor tiles.
+- Logistics: Pallet packing, container direct loading, breakage insurance terms, box coverage (sq.ft / sq.meter).
+- Hub Context: Morbi (Gujarat) ceramic zone direct factory dispatch across all Indian states.`;
+      } else if (catLower.includes('sanitar') || catLower.includes('bath') || catLower.includes('faucet') || catLower.includes('plumb')) {
+        domainContext = `INDUSTRY EXPERTISE: Sanitaryware, Bath Fittings & Plumbing.
+- Core Knowledge: One-piece water closets (EWC), wall-hung commodes, wash basins, tabletop counter basins, CP brass faucets, shower sets.
+- Quality: Vitreous china ceramic, 10-year glaze warranty, SS 304 fittings.`;
+      } else if (catLower.includes('garment') || catLower.includes('textile') || catLower.includes('fabric') || catLower.includes('cotton') || catLower.includes('cloth') || catLower.includes('saree')) {
+        domainContext = `INDUSTRY EXPERTISE: Textiles, Apparel & Wholesale Fabrics.
+- Core Knowledge: Pure cotton, rayon, viscose, polyester, denim, GSM weight, yarn count, roll packaging, wholesale bale/than supply.
+- Hub Context: Surat / Tirupur / Ahmedabad / Ludhiana mill direct pricing.`;
+      } else if (catLower.includes('agro') || catLower.includes('food') || catLower.includes('spice') || catLower.includes('grain') || catLower.includes('kirana')) {
+        domainContext = `INDUSTRY EXPERTISE: Agriculture, Spices & Food Commodities.
+- Core Knowledge: Mandi wholesale rates, quintal/tonnage supply, moisture percentage, sortex cleaned, FSSAI certified bulk packaging.`;
+      } else if (catLower.includes('hardware') || catLower.includes('steel') || catLower.includes('metal') || catLower.includes('tool') || catLower.includes('pipe')) {
+        domainContext = `INDUSTRY EXPERTISE: Industrial Hardware, Metals & Engineering Tools.
+- Core Knowledge: Stainless steel (SS 304/316), brass fittings, mild steel fasteners, CNC machined parts, PVC/CPVC pipes.`;
+      } else {
+        domainContext = `INDUSTRY EXPERTISE: ${traderCategory} B2B Wholesale & Manufacturing.
+- Core Knowledge: Direct factory wholesale rates, customized B2B bulk orders, GST tax invoicing, transparent logistics.`;
+      }
+
+      // 4. Dynamic Prompt for Live Gemini Intelligence with Activity & Post Memory
+      const systemInstruction = `You are the modern, smart "Vyapar AI Trade Desk (व्यापार AI डेस्क)" for "${traderCompany}", operating on behalf of ${traderName}.
+You act as an intelligent B2B sales and trade manager who continuously reads and remembers all activities, published posts, and historical trade rates of ${traderName}.
+
+TRADER IDENTITY & KNOWLEDGE:
+- Business: ${traderCompany}
+- Trader / Owner: ${traderName}
+- Category: ${traderCategory}
+- Hub / Location: ${traderCity ? `${traderCity}` : 'India'}
+- Business Bio: ${traderBio || 'Direct B2B Wholesaler & Manufacturer'}
+- Specific Owner Business Policy: ${customNotes || 'Polite, prompt assistance. Share specs, catalog info, benchmark rates, and invite required order quantity.'}
+
+${traderPosts.length > 0 ? `TRADER'S ACTIVITY & POSTS TIMELINE:\n${postsActivityLog}\n` : `TRADER'S PRIMARY FOCUS: Wholesale B2B supply in ${traderCategory}.\n`}
+
+${pastTraderMessages.length > 0 ? `HISTORICAL TRADE RATE MEMORY & PAST CHAT QUOTES:\n${pastDealsMemory}\n` : ''}
+
+${domainContext}
+
+BUYER DETAILS:
+- Buyer Name: ${buyerName}
+- Buyer Company: ${buyerCompany || 'Prospective Trading Partner'}
+- Buyer City: ${buyerCity}
+
+CRITICAL RULES (SMART ALGORITHM & NATURAL HINGLISH):
+1. GREETING & TONE: Use modern, professional Indian B2B Hinglish style (e.g., "Hello ${buyerName} ji! 👋", "Hi ${buyerName} ji!"). Avoid outdated/stiff pure-Hindi templates.
+2. NO SPAMMING OFFLINE: Do NOT repeatedly say "ye offline hain / owner is offline". Address the buyer's query directly and naturally as the active AI Trade Desk.
+3. HISTORICAL RATES & POST INTELLIGENCE:
+   - When buyer asks for RATE / PRICE / MOQ: Cite the benchmark rate from recent posts or past discussions (e.g., "Hamare latest post aur recent deal ke mutabiq iska benchmark rate ₹... quoted hai").
+   - Mention the matching post/reel if available (e.g. "Aap hamari recent post me iski live photos/specs dekh sakte hain"). If citing a post, you can include the tag [POST: post_id] so the buyer gets a direct link!
+   - Clearly state: "Real-time custom batch negotiation aur final bulk rate lock karne ke liye jaise hi hamare profile manager online aayenge, aap unse direct final confirmation le sakte hain."
+4. STRICT NAME CLEANLINESS: Never include brackets, parentheses, or city names inside brackets like "(Kanpur)" or "[City]" when referring to names or businesses. Use clean names only ("${traderCompany}", "${traderName}").
+5. ALGORITHMIC VIRALITY & POST DISCOVERY: When appropriate, guide the buyer to relevant posts/reels of ${traderCompany} to boost post engagement, likes, and profile discovery (similar to Instagram/YouTube algorithmic trending feeds).
+6. LENGTH & FORMAT: 2 to 4 crisp, human-like sentences with appropriate trade emojis (📦, 🤝, ✨, 🏭). Keep it conversational and scannable.`;
+
+      const ai = getAI();
+      let replyText = '';
+
+      if (ai) {
+        try {
+          const prompt = `Buyer's Latest Message: "${lastMessageText}"\n` + 
+            (conversationHistory && Array.isArray(conversationHistory) && conversationHistory.length > 0 
+              ? `Previous Conversation Context:\n${conversationHistory.slice(-4).map((m: any) => `${cleanName(m.senderName) || 'User'}: ${m.text || ''}`).join('\n')}\n`
+              : '') +
+            `\nGenerate a modern, natural Hinglish B2B response for ${buyerName}:`;
+
+          const aiRes = await ai.models.generateContent({
+            model: 'gemini-3.8-flash',
+            contents: prompt,
+            config: {
+              systemInstruction,
+              temperature: 0.65
+            }
+          });
+          
+          if (aiRes && aiRes.text) {
+            replyText = aiRes.text.trim();
+          }
+        } catch (genErr) {
+          console.warn('Gemini chat auto-reply intelligent engine error:', genErr);
+        }
+      }
+
+      // High-quality intelligent fallback in modern Hinglish if Gemini is offline
+      if (!replyText) {
+        if (catLower.includes('med') || catLower.includes('pharma') || catLower.includes('surgic')) {
+          replyText = `Hello ${buyerName} ji! 👋\n${traderCompany} me aapka swagat hai. Hamare paas surgical disposables, certified gloves aur hospital bulk supplies ki full certified range available hai. Hamare recent quotes me standard wholesale rates listed hain. Aap apni required quantity aur delivery location share karein, aur real-time custom rate lock ke liye jaise hi hamare profile manager online aayenge, aap unse direct confirm kar sakte hain. 📦💉`;
+        } else if (catLower.includes('tile') || catLower.includes('ceramic') || catLower.includes('morbi')) {
+          replyText = `Hello ${buyerName} ji! 👋\n${traderCompany} me aapka swagat hai. Hamare paas premium GVT/PGVT vitrified tiles aur slabs ki latest range factory wholesale rates par available hai. Hamari recent post me iske benchmark rates updated hain. Aapko kaunsi size aur kitne box ki requirement hai batayein, aur live final rate negotiation ke liye hamare profile manager ke aate hi aap direct deal finalize kar sakte hain. 📦🏢`;
+        } else {
+          replyText = `Hello ${buyerName} ji! 👋\n${traderCompany} me aapka swagat hai. Hamare paas ${traderCategory} ke top quality products wholesale rate par ready stock me available hain. Hamari post aur recent quotes me benchmark rates diye gaye hain. Aap apni required quantity share kar dijiye, aur live negotiation ke liye hamare profile manager ke aate hi aap unse direct finalize kar sakte hain. 📦🤝`;
+        }
+      }
+
+      // Extract recommended posts for direct linking & interactive preview cards
+      const postMatchRegex = /\[POST:\s*([a-zA-Z0-9_-]+)\]/g;
+      const mentionedPostIds = new Set<string>();
+      let match;
+      while ((match = postMatchRegex.exec(replyText)) !== null) {
+        mentionedPostIds.add(match[1]);
+      }
+
+      // If no explicit tags were placed, intelligently find up to 2 best matching posts based on buyer query
+      let matchedPosts = traderPosts.filter(p => mentionedPostIds.has(String(p.id)));
+      if (matchedPosts.length === 0 && traderPosts.length > 0) {
+        const queryTerms = (lastMessageText + ' ' + (conversationHistory || []).map((m: any) => m.text).join(' ')).toLowerCase();
+        matchedPosts = traderPosts.filter(p => {
+          const pText = `${p.title || ''} ${p.productName || ''} ${p.caption || ''} ${p.category || ''}`.toLowerCase();
+          const words = queryTerms.split(/\s+/).filter(w => w.length > 3);
+          return words.some(w => pText.includes(w));
+        }).slice(0, 2);
+      }
+
+      // Clean up [POST: xxx] tags from replyText so it reads cleanly in chat
+      replyText = replyText.replace(/\[POST:\s*[a-zA-Z0-9_-]+\]/g, '').trim();
+
+      const recommendedPosts = matchedPosts.slice(0, 2).map(p => ({
+        id: p.id,
+        title: p.title || p.productName || p.caption || 'Trade Product',
+        price: p.price,
+        unit: p.unit,
+        moq: p.moq || p.minOrder,
+        imageUrl: p.imageUrl || (p.images && p.images[0]) || null,
+        videoUrl: p.videoUrl || null,
+        createdAt: p.createdAt,
+        likesCount: p.likesCount || p.likes?.length || 0,
+        viewsCount: p.viewsCount || p.views || 0,
+        category: p.category || traderCategory
+      }));
+
+      // Context-aware human-like reaction emoji for buyer's message
+      let aiReaction = '👍';
+      const msgLower = (lastMessageText || '').toLowerCase();
+      if (msgLower.includes('namaste') || msgLower.includes('pranam') || msgLower.includes('dhanyawad') || msgLower.includes('thanks') || msgLower.includes('thank')) {
+        aiReaction = '🙏';
+      } else if (msgLower.includes('deal') || msgLower.includes('order') || msgLower.includes('confirm') || msgLower.includes('pakka') || msgLower.includes('book')) {
+        aiReaction = '🤝';
+      } else if (msgLower.includes('great') || msgLower.includes('super') || msgLower.includes('nice') || msgLower.includes('badiya') || msgLower.includes('mast')) {
+        aiReaction = '❤️';
+      } else if (msgLower.includes('rate') || msgLower.includes('price') || msgLower.includes('moq') || msgLower.includes('catalog') || msgLower.includes('sample')) {
+        aiReaction = '👍';
+      }
+
+      res.json({
+        success: true,
+        replyText,
+        aiReaction,
+        recommendedPosts,
+        isAiGenerated: true,
+        traderInfo: {
+          name: traderName,
+          companyName: traderCompany,
+          category: traderCategory,
+          city: traderCity
+        }
+      });
+    } catch (err: any) {
+      console.error('Error in chat-auto-reply endpoint:', err);
+      res.status(500).json({ success: false, error: err.message || 'Failed to generate AI auto reply' });
+    }
+  });
+
+  // Smart Chat Suggestions (1-tap reply drafting, inquiry templates, deal closure)
+  app.post('/api/ai/smart-suggestions', async (req, res) => {
+    try {
+      const { actionType, lastMessages, traderProfile, userProfile, currentDraft } = req.body;
+      const ai = getAI();
+
+      let prompt = '';
+      let systemInstruction = `You are the Vyapar AI Smart Trading Assistant for an Indian B2B wholesale platform. 
+Draft concise, professional, courteous business messages in natural Hinglish or Hindi. Keep responses ready-to-send without any placeholders.`;
+
+      if (actionType === 'draft_reply') {
+        prompt = `Based on the latest chat conversation:
+${(lastMessages || []).slice(-3).map((m: any) => `${m.senderName || 'Trader'}: ${m.text}`).join('\n')}
+Draft a 1-2 sentence professional, polite response from the viewpoint of ${userProfile?.name || 'Trader'} (${userProfile?.companyName || ''}).`;
+      } else if (actionType === 'moq_quote') {
+        prompt = `Draft a polite 1-2 sentence B2B message asking for the minimum order quantity (MOQ), wholesale rate card, and payment terms for their products.`;
+      } else if (actionType === 'catalog_gst') {
+        prompt = `Draft a polite B2B request asking the trader to share their latest product catalog (PDF) and confirm if GST billing is available.`;
+      } else if (actionType === 'deal_confirm') {
+        prompt = `Draft a clear and respectful deal confirmation message confirming agreement on the discussed pricing, requesting proforma invoice and dispatch date.`;
+      } else if (actionType === 'polish_text') {
+        prompt = `Rewrite and polish this draft message into clean, professional, respectful B2B trading Hinglish: "${currentDraft || ''}"`;
+      } else {
+        prompt = `Generate a warm and professional trade greeting with interest in buying or collaborating.`;
+      }
+
+      let suggestion = '';
+      if (ai) {
+        try {
+          const aiRes = await ai.models.generateContent({
+            model: 'gemini-3.8-flash',
+            contents: prompt,
+            config: {
+              systemInstruction,
+              temperature: 0.6
+            }
+          });
+          if (aiRes && aiRes.text) {
+            suggestion = aiRes.text.trim();
+          }
+        } catch (e) {
+          console.warn('Gemini smart suggestion note:', e);
+        }
+      }
+
+      if (!suggestion) {
+        if (actionType === 'moq_quote') {
+          suggestion = 'नमस्ते जी! 🙏 कृपया इस उत्पाद की न्यूनतम ऑर्डर मात्रा (MOQ) और बेस्ट होलसेल रेट कोटेशन बताएं। 📦';
+        } else if (actionType === 'catalog_gst') {
+          suggestion = 'नमस्ते! क्या आप अपनी कंपनी का नवीनतम प्रोडक्ट कैटलॉग (PDF) और GST इनवॉइस डिटेल शेयर कर सकते हैं? 📄';
+        } else if (actionType === 'deal_confirm') {
+          suggestion = 'सहमति है जी! 🤝 दिए गए रेट और शर्तें स्वीकार हैं। कृपया आगे की प्रोसेस हेतु परफॉर्मा इनवॉइस (PI) भेजें। ✅';
+        } else {
+          suggestion = 'नमस्ते! आपका संदेश मिला। हम जल्द ही आपकी आवश्यकता अनुसार संपूर्ण डिटेल और कोटेशन उपलब्ध करा रहे हैं। 🤝';
+        }
+      }
+
+      res.json({ success: true, suggestion });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: 'Could not generate suggestion' });
+    }
   });
 
   // Delete message

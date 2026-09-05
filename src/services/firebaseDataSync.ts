@@ -2789,8 +2789,8 @@ export async function updateUserPresence(userId: string | number, isOnline: bool
 
     if (isFirestoreQuotaExhausted) return true;
 
-    // Rate-limit network presence writes to once every 5 minutes (300,000 ms) to avoid burning quota
-    if (isOnline && now - lastPresenceSyncTimestamp < 300000) {
+    // Rate-limit network presence writes to once every 45 seconds (45,000 ms) to avoid burning quota
+    if (isOnline && now - lastPresenceSyncTimestamp < 45000) {
       return true;
     }
     lastPresenceSyncTimestamp = now;
@@ -2821,12 +2821,12 @@ export function startPresenceHeartbeat(userId: string | number): () => void {
   // 1. Send immediate online ping
   updateUserPresence(uId, true).catch(() => {});
 
-  // 2. Periodic heartbeat every 5 minutes (conserves write quota)
+  // 2. Periodic heartbeat every 45 seconds
   const intervalId = setInterval(() => {
     if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
       updateUserPresence(uId, true).catch(() => {});
     }
-  }, 300000);
+  }, 45000);
 
   // 3. Tab visibility listener (switched tabs / minimized)
   const handleVisibilityChange = () => {
@@ -2870,7 +2870,7 @@ export function startPresenceHeartbeat(userId: string | number): () => void {
 }
 
 /**
- * Returns true if a user is currently online and active within the heartbeat window (65 seconds).
+ * Returns true if a user is currently online and active within the heartbeat window (90 seconds).
  */
 export function isUserActiveOnline(userData: any): boolean {
   if (!userData) return false;
@@ -2881,8 +2881,8 @@ export function isUserActiveOnline(userData: any): boolean {
   if (isNaN(numTime) || numTime <= 0) return false;
 
   const diff = Date.now() - numTime;
-  // Consider online if heartbeat was updated within 65 seconds
-  return diff < 65000;
+  // Consider online if heartbeat was updated within 90 seconds
+  return diff < 90000;
 }
 
 /**

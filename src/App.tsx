@@ -55,6 +55,7 @@ import { AdminUserDetailModal } from './components/AdminUserDetailModal';
 import { CustomerCartCouponsModal } from './components/CustomerCartCouponsModal';
 import { SellerDiscountScannerModal } from './components/SellerDiscountScannerModal';
 import { NavigationSidebar } from './components/NavigationSidebar';
+import { WhatsAppChatView } from './components/WhatsAppChatView';
 import { captureReferralCodeFromUrl, recordNewUserReferral, checkAndUpdateReferralOnPost, getOrCreateFingerprint, getReferralStats, getUserReferralLink } from './utils/referralManager';
 import { resolveUserAvatar, getInitialsAvatar, updateCachedUsers, resolveAuthorInfo } from './utils/userAvatar';
 import { addToCart, isItemInCart, getCartItems } from './utils/cartManager';
@@ -2950,6 +2951,29 @@ function InternalReelCard({
       return;
     }
     if (!commentText.trim() && !reelCommentImagePreview) return;
+
+    // Subscription & Verification Lock: ONLY Paid & Badge Members can post comments
+    const isPaidBadgeUser = Boolean(
+      currentUser?.role === 'admin' ||
+      currentUser?.isAdmin ||
+      currentUser?.phone === '9889104477' ||
+      currentUser?.username === 'manit' ||
+      currentUser?.goldenBadge ||
+      currentUser?.isVerified ||
+      currentUser?.verifiedBadge ||
+      currentUser?.verifiedPlan ||
+      currentUser?.subscriptionActive ||
+      currentUser?.subscriptionPlan ||
+      currentUser?.activeFreeOneYearPlan ||
+      (currentUser?.verifiedUntil && new Date(currentUser.verifiedUntil).getTime() > Date.now()) ||
+      (currentUser?.planExpiry && Number(currentUser.planExpiry) > Date.now())
+    );
+    
+    if (!isPaidBadgeUser) {
+      toast.error("🔒 Reels par comment karne ke liye Verified Badge Plan subscribe karein.", { duration: 5000 });
+      window.dispatchEvent(new CustomEvent('openBoostModal'));
+      return;
+    }
 
     const content = commentText.trim();
     const commentImg = reelCommentImagePreview;
@@ -6621,14 +6645,26 @@ const PostItem = React.memo(function PostItem({
     }
     if (!newComment.trim() && !commentImage && !commentImagePreview) return;
 
-    // Subscription & Verification Lock:
-    // 1. Consumers/Buyers must have ₹99 Verified Plan or active membership
-    const isVerifiedUser = Boolean(currentUser?.isVerified || currentUser?.verifiedPlan || currentUser?.membershipType || (currentUser?.planExpiry && currentUser.planExpiry > Date.now()) || isUser1188GoldenPlan(currentUser));
-    const isConsumer = currentUser?.role === 'customer' || currentUser?.role === 'buyer';
+    // Subscription & Verification Lock: ONLY Paid & Badge Members can post comments
+    const isPaidBadgeUser = Boolean(
+      currentUser?.role === 'admin' ||
+      currentUser?.isAdmin ||
+      currentUser?.phone === '9889104477' ||
+      currentUser?.username === 'manit' ||
+      currentUser?.goldenBadge ||
+      currentUser?.isVerified ||
+      currentUser?.verifiedBadge ||
+      currentUser?.verifiedPlan ||
+      currentUser?.subscriptionActive ||
+      currentUser?.subscriptionPlan ||
+      currentUser?.activeFreeOneYearPlan ||
+      (currentUser?.verifiedUntil && new Date(currentUser.verifiedUntil).getTime() > Date.now()) ||
+      (currentUser?.planExpiry && Number(currentUser.planExpiry) > Date.now())
+    );
     
-    if (isConsumer && !isVerifiedUser) {
-      toast.error("🔒 Vyapar posts par comment karne ke liye ₹99 Verified Buyer Plan (Red Badge) lena zaroori hai.");
-      window.dispatchEvent(new CustomEvent('openVerifyModal', { detail: { role: 'customer' } }));
+    if (!isPaidBadgeUser) {
+      toast.error("🔒 Comments are reserved for Verified Badge & Paid Members only. Kripya apna Verified Badge Plan subscribe karein.", { duration: 5000 });
+      window.dispatchEvent(new CustomEvent('openBoostModal'));
       return;
     }
 
@@ -10165,6 +10201,94 @@ function CreatePost({ user, onPostSuccess }: { user: any; onPostSuccess?: () => 
     (postExternalLink && isVideo)
   );
 
+  const isPaidBadgeUser = Boolean(
+    user?.role === 'admin' ||
+    user?.isAdmin ||
+    user?.phone === '9889104477' ||
+    user?.username === 'manit' ||
+    user?.goldenBadge ||
+    user?.isVerified ||
+    user?.verifiedBadge ||
+    user?.verifiedPlan ||
+    user?.subscriptionActive ||
+    user?.subscriptionPlan ||
+    user?.activeFreeOneYearPlan ||
+    (user?.verifiedUntil && new Date(user.verifiedUntil).getTime() > Date.now()) ||
+    (user?.planExpiry && Number(user.planExpiry) > Date.now())
+  );
+
+  if (!user) {
+    return (
+      <div className="max-w-2xl mx-auto w-full pt-8 pb-24 px-4">
+        <div className="bg-white dark:bg-zinc-900 rounded-3xl border border-slate-200 dark:border-zinc-800 shadow-xl p-8 text-center space-y-4">
+          <div className="w-16 h-16 rounded-2xl bg-amber-100 dark:bg-amber-950/60 text-amber-600 flex items-center justify-center mx-auto">
+            <Lock className="w-8 h-8" />
+          </div>
+          <h3 className="text-xl font-black text-slate-900 dark:text-white">Login Required to Post</h3>
+          <p className="text-xs text-slate-600 dark:text-slate-400 max-w-md mx-auto">
+            Vyapar Bridge par post upload karne ke liye apna account login ya register karein.
+          </p>
+          <button
+            type="button"
+            onClick={() => window.dispatchEvent(new CustomEvent('openAuthModal'))}
+            className="px-6 py-2.5 rounded-full bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs shadow-md cursor-pointer"
+          >
+            Sign In / Register
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isPaidBadgeUser) {
+    return (
+      <div className="max-w-2xl mx-auto w-full pt-8 pb-24 px-4">
+        <div className="bg-white dark:bg-zinc-900 rounded-3xl border-2 border-amber-400/80 dark:border-amber-500/60 shadow-2xl p-6 sm:p-8 text-center space-y-5 relative overflow-hidden">
+          <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-amber-500 to-yellow-400 text-slate-950 flex items-center justify-center mx-auto shadow-lg">
+            <Crown className="w-9 h-9 animate-bounce" />
+          </div>
+          
+          <div className="space-y-1.5">
+            <span className="text-[10px] font-black uppercase tracking-wider px-3 py-1 rounded-full bg-amber-100 dark:bg-amber-950/70 text-amber-900 dark:text-amber-300 border border-amber-300">
+              👑 Exclusive for Verified & Paid Badge Members
+            </span>
+            <h3 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
+              Unlock Product Posting & Catalogues
+            </h3>
+            <p className="text-xs text-slate-600 dark:text-slate-400 max-w-md mx-auto leading-relaxed">
+              Vyapar Bridge par posts, photos aur video catalogues upload karne ke liye <strong>Verified Badge (₹99/Month ya ₹1,188/Year)</strong> plan lena zaroori hai. Isse aapko verified business leads aur 10X direct reach milti hai.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 max-w-md mx-auto pt-1">
+            <div className="p-3 bg-amber-50/60 dark:bg-zinc-800/60 rounded-2xl border border-amber-200 dark:border-zinc-700 text-left">
+              <span className="text-[10px] font-bold text-amber-800 dark:text-amber-400 block">Monthly Blue Badge</span>
+              <span className="text-lg font-black text-slate-900 dark:text-white">₹99 <span className="text-[10px] font-normal text-slate-500">/mo</span></span>
+              <p className="text-[10px] text-slate-500 mt-0.5">30 Days Verified Badge & Feed Posting</p>
+            </div>
+
+            <div className="p-3 bg-amber-100/60 dark:bg-amber-950/30 rounded-2xl border-2 border-amber-400 dark:border-amber-600 text-left relative">
+              <span className="text-[10px] font-black text-amber-900 dark:text-amber-300 block">👑 Yearly Golden VIP</span>
+              <span className="text-lg font-black text-amber-600 dark:text-amber-400">₹1,188 <span className="text-[10px] font-normal text-slate-500">/yr</span></span>
+              <p className="text-[10px] text-slate-500 mt-0.5">365 Days Unlimited Boost & Priority Leads</p>
+            </div>
+          </div>
+
+          <div className="pt-2 flex flex-col sm:flex-row items-center justify-center gap-2 max-w-sm mx-auto">
+            <button
+              type="button"
+              onClick={() => window.dispatchEvent(new CustomEvent('openBoostModal'))}
+              className="w-full py-3 px-6 rounded-2xl bg-gradient-to-r from-amber-500 via-yellow-400 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black text-xs uppercase tracking-wider shadow-lg shadow-amber-500/30 transition-all cursor-pointer flex items-center justify-center gap-2 active:scale-95"
+            >
+              <Crown className="w-4 h-4" />
+              <span>Subscribe to Badge Plan (Scan QR)</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-2xl mx-auto w-full pt-8 pb-24 px-4">
       <div className="bg-white dark:bg-zinc-900 rounded-3xl border border-slate-200 dark:border-zinc-800 shadow-xl overflow-hidden">
@@ -11204,7 +11328,35 @@ function ProfilePage({ user, onUpdateUser }: { user: any; onUpdateUser?: (u: any
   const [activeTab, setActiveTab] = useState<'posts' | 'stories' | 'catalog' | 'info' | 'reviews'>('posts');
   const [activeStoryIndex, setActiveStoryIndex] = useState<number | null>(null);
   const [activeStoryPosts, setActiveStoryPosts] = useState<any[] | null>(null);
+  const [videoMiddleThumbnails, setVideoMiddleThumbnails] = useState<Record<string, string>>({});
   const [isFollowing, setIsFollowing] = useState(() => isUserFollowed(String(id)));
+
+  // Dynamic extraction of video middle thumbnail for profile stories tab
+  useEffect(() => {
+    const allReelPosts = profilePosts.filter(p => p && (p.isStory || p.isReel || p.type === 'story' || p.type === 'reel' || (p.hashtags && (p.hashtags.includes('#story') || p.hashtags.includes('#reel')))));
+    allReelPosts.forEach(p => {
+      if (!p || !p.id) return;
+      const candidateVideoUrl = p.mediaUrl || p.videoUrl || p.video || p.persistentMediaUrl || '';
+      const isVideo = p.type === 'video' || p.isReel === true || isVideoMediaUrl(candidateVideoUrl);
+      if (!isVideo) return;
+
+      if (videoMiddleThumbnails[p.id]) return;
+
+      const preThumb = getStoryCoverThumbnail(p);
+      if (preThumb && !isVideoMediaUrl(preThumb)) {
+        setVideoMiddleThumbnails(prev => prev[p.id] ? prev : { ...prev, [p.id]: preThumb });
+        return;
+      }
+
+      if (candidateVideoUrl) {
+        generateVideoThumbnail(candidateVideoUrl).then(thumb => {
+          if (thumb) {
+            setVideoMiddleThumbnails(prev => ({ ...prev, [p.id]: thumb }));
+          }
+        }).catch(() => {});
+      }
+    });
+  }, [profilePosts]);
 
   useEffect(() => {
     const syncFollow = () => {
@@ -12755,6 +12907,38 @@ export default function App() {
     };
   }, [user?.id]);
 
+  // Real-time unread chat messages counter
+  const [unreadChatCount, setUnreadChatCount] = useState<number>(0);
+
+  useEffect(() => {
+    if (!user?.id) {
+      setUnreadChatCount(0);
+      return;
+    }
+
+    const updateUnread = () => {
+      fetch(`/api/messages/unread-counts?userId=${user.id}`)
+        .then(res => res.json())
+        .then(data => {
+          if (data && typeof data.totalUnread === 'number') {
+            setUnreadChatCount(data.totalUnread);
+          }
+        })
+        .catch(() => {});
+    };
+
+    updateUnread();
+    const interval = setInterval(updateUnread, 3000);
+
+    const handleCustomUpdate = () => updateUnread();
+    window.addEventListener('vyapar_unread_messages_updated', handleCustomUpdate);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('vyapar_unread_messages_updated', handleCustomUpdate);
+    };
+  }, [user?.id]);
+
   const handleUpdateUser = (updated: any) => {
     setUser(updated);
     safeSaveUser(updated);
@@ -12793,8 +12977,8 @@ export default function App() {
           <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between gap-4">
             <div className="flex items-center gap-2">
               <Link to="/" className="flex items-center gap-2 focus:outline-none select-none">
-                <div className="w-9 h-9 rounded-xl overflow-hidden p-1 bg-gradient-to-tr from-blue-600 to-indigo-600 shadow-md flex items-center justify-center">
-                  <img src={BRAND_LOGO_SRC} alt="Vyapar Bridge" className="w-full h-full object-contain" />
+                <div className="w-9 h-9 rounded-full overflow-hidden p-1 bg-gradient-to-tr from-blue-600 to-indigo-600 shadow-md flex items-center justify-center shrink-0">
+                  <img src={BRAND_LOGO_SRC} alt="Vyapar Bridge" className="w-full h-full object-contain rounded-full" />
                 </div>
                 <div>
                   <span className="font-black text-slate-900 text-sm tracking-tight leading-none uppercase select-none block">{BRAND_NAME}</span>
@@ -12810,8 +12994,14 @@ export default function App() {
               <Link to="/directory" className="px-4 py-2 text-xs font-black uppercase tracking-wider text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-lg transition-colors flex items-center gap-1.5" title="All-India Business Directory (सभी रजिस्टर्ड व्यापार)">
                 <Building2 className="w-4 h-4 text-amber-500" /> Businesses
               </Link>
-              <Link to="/chat" className="px-4 py-2 text-xs font-black uppercase tracking-wider text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-lg transition-colors flex items-center gap-1.5">
-                <MessageSquare className="w-4 h-4" /> Chat
+              <Link to="/chat" className="px-4 py-2 text-xs font-black uppercase tracking-wider text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-lg transition-colors flex items-center gap-1.5 relative">
+                <MessageSquare className="w-4 h-4" /> 
+                <span>Chat</span>
+                {unreadChatCount > 0 && (
+                  <span className="px-1.5 py-0.2 text-[10px] font-black rounded-full bg-emerald-600 text-white shadow-sm shadow-emerald-500/50 animate-pulse">
+                    {unreadChatCount > 99 ? '99+' : unreadChatCount}
+                  </span>
+                )}
               </Link>
               <button 
                 onClick={() => {
@@ -12879,7 +13069,7 @@ export default function App() {
             <Route path="/" element={<Feed user={user} onUpdateUser={handleUpdateUser} userLocation={userLocation} />} />
             <Route path="/directory" element={<BusinessDirectoryPage user={user} userLocation={userLocation} onOpenAuth={(tab) => { setAuthModalTab(tab); setShowAuthModal(true); }} />} />
             <Route path="/businesses" element={<BusinessDirectoryPage user={user} userLocation={userLocation} onOpenAuth={(tab) => { setAuthModalTab(tab); setShowAuthModal(true); }} />} />
-            <Route path="/chat" element={<Chat user={user} userLocation={userLocation} />} />
+            <Route path="/chat" element={<WhatsAppChatView user={user} userLocation={userLocation} />} />
             <Route path="/create-post" element={<div className="max-w-2xl mx-auto py-6 px-3 sm:px-4"><CreatePost user={user} onPostSuccess={() => {}} /></div>} />
             <Route path="/profile/:id" element={<ProfilePage user={user} onUpdateUser={handleUpdateUser} />} />
             <Route path="/admin" element={<AdminPanel user={user} onUpdateUser={handleUpdateUser} />} />
@@ -12986,8 +13176,15 @@ export default function App() {
             <span className="text-[10px] font-black text-blue-600 uppercase tracking-wider mt-0.5">Post</span>
           </button>
 
-          <Link to="/chat" className="flex flex-col items-center justify-center p-2 text-slate-500 hover:text-blue-600 transition-colors focus:outline-none shrink-0" title="B2B Chat">
-            <MessageSquare className="w-5 h-5" />
+          <Link to="/chat" className="flex flex-col items-center justify-center p-2 text-slate-500 hover:text-blue-600 transition-colors focus:outline-none shrink-0 relative" title="B2B Chat">
+            <div className="relative">
+              <MessageSquare className="w-5 h-5" />
+              {unreadChatCount > 0 && (
+                <span className="absolute -top-1.5 -right-2.5 min-w-[18px] h-[18px] px-1 bg-gradient-to-tr from-emerald-500 to-teal-600 text-white text-[10px] font-black rounded-full flex items-center justify-center shadow-md shadow-emerald-500/40 animate-pulse border-2 border-white dark:border-zinc-900">
+                  {unreadChatCount > 99 ? '99+' : unreadChatCount}
+                </span>
+              )}
+            </div>
             <span className="text-[10px] font-black uppercase tracking-wider mt-1">Chat</span>
           </Link>
 
